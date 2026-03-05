@@ -78,3 +78,7 @@ crashlytics-build.properties
 Assets/Plugins/Google*
 Assets/Plugins/Grpc*
 Assets/Plugins/System*
+
+# Keep repository build output folder versioned.
+!/Build/
+!/Build/**
