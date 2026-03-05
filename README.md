@@ -17,7 +17,7 @@ As of March 5, 2026, this repo includes a runtime control UI (`ReachyControlApp`
 - connection health checking and reconnect cooldown
 - restart-signal recovery during retries (real robot mode)
 - real-robot endpoint prechecks (optional DNS resolve + TCP reachability probe)
-- preset poses with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`)
+- preset poses with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`)
 
 UI layout:
 

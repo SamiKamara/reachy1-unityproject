@@ -26,7 +26,7 @@ The UI appears automatically in Play mode.
 4. Click `Refresh Joints` to fetch names.
 5. Send commands:
    - `Single Joint Command` by joint name and goal degree
-   - `Preset Poses` with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`)
+   - `Preset Poses` with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`)
 
 ## Recovery automation
 
