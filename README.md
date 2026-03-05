@@ -1,52 +1,71 @@
-# reachy2021-unity-package
+# Reachy Controller and Simulator (Unity 2021)
 
-|   License     |     |
-| ------------- | :-------------: |
-| Title  | [Creatives Commons BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode) |
-| Logo  | [![Creative Commons BY-NC-SA 4.0](https://i.creativecommons.org/l/by-nc-sa/4.0/88x31.png) ](http://creativecommons.org/licenses/by-nc-sa/4.0/)  |
+This project is no longer only a simulator package.  
+It is now a Unity 2021 project that combines:
 
-Reachy simulator based on Unity 2021. It allows to simply play around with our SDK or the teleoperation app.
+- Reachy1 simulator services (gRPC)
+- an in-Play-Mode control app for simulation and real robot targets
+- runtime tools for connection management, commanding joints, and preset poses
 
-## Quick start
+## Current State
 
-Download the zip archive from the [release page](https://github.com/pollen-robotics/Simulator_Reachy2021/releases), and unzip it on a Windows computer. Simply run *Simulator.exe*. The simulator is ready [to be used](#use-your-simulator)!
+As of March 5, 2026, this repo includes a runtime control UI (`ReachyControlApp`) that auto-loads in Play Mode and supports:
 
+- Simulation mode and Real Robot mode switching
+- mode-aware connect/disconnect behavior
+- auto-connect on Play and auto-reconnect monitoring
+- connection health checking and reconnect cooldown
+- restart-signal recovery during retries (real robot mode)
+- real-robot endpoint prechecks (optional DNS resolve + TCP reachability probe)
+- preset poses with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`)
 
-## Install the simulator to your Unity project
+UI layout:
 
-1. Download the Unity package available on the [release page](https://github.com/pollen-robotics/Simulator_Reachy2021/releases), or add
-```
-https://github.com/pollen-robotics/reachy2021-unity-package.git?path=/Packages/ReachySimulator#master
-```
+- left panel: connection + automation
+- right panel: commands + poses + status
+- right panel header: `Windowed`, `Fullscreen`, `Exit` controls
+- configurable windowed resolution fields (default `1280 x 720`)
 
-to the Package Manager (add package from git URL).
+Build app name is set to:
 
-2. Download the [grpc_unity_package](https://packages.grpc.io/archive/2022/04/67538122780f8a081c774b66884289335c290cbe-f15a2c1c-582b-4c51-acf2-ab6d711d2c59/csharp/grpc_unity_package.2.47.0-dev202204190851.zip) from the [gRPC daily builds](https://packages.grpc.io/archive/2022/04/67538122780f8a081c774b66884289335c290cbe-f15a2c1c-582b-4c51-acf2-ab6d711d2c59/index.xml). Unzip it in the **Assets** folder. It can be done automatically from the menu "Pollen Robotics/Install GRPC". You may want to restart Unity if the menu is not visible after installing the package.
+- `Reachy controller & simulator`
 
-## Create your own simulator
+## Quick Start
 
-1. Create a new 3D Unity project (or open an existing one).
-2. Follow the previous installation steps to add the package to your project.
-3. Drag and drop Reachy and the Server from the Prefabs folder into your scene.
-4. Then click Play and start controlling the robot.
+1. Open `reachy1-unityproject` in Unity 2021.
+2. Open a scene (for example `Assets/Scenes/SampleScene.unity` or `Assets/Scenes/OfficeScene.unity`).
+3. Press Play. The runtime control panel appears automatically.
+4. Choose mode (Simulation or Real Robot), configure host/port, then connect.
 
-You can create your own scene and environment for Reachy to evolve in!
+## Connection Defaults
 
-## Use your simulator
+- Simulation default: `localhost:50055`
+- Real robot default: `192.168.1.118:3972`
+- Real robot fallback ports: `50055`
+- Restart-signal port (real robot): `50059`
 
-The Unity simulator is only offering the gRPC services of the robot, not the below ROS2 services.  
-For this reason, the simulator is compatible with:
-- [Reachy 2021 Python SDK](https://docs.pollen-robotics.com/sdk/getting-started/introduction/): 
-connect to the simulated robot with the usual command:
+Notes:
 
-```
+- The connection logic was hardened by comparing against official Reachy Unity/SDK repositories.
+- Real hardware was not available during this setup, so physical validation is still required.
+
+## SDK Compatibility (Reachy 2021)
+
+For Reachy 2021 Python SDK usage, use:
+
+```python
 from reachy_sdk import ReachySDK
+reachy = ReachySDK(host="localhost")
+```
 
-reachy = ReachySDK(host='localhost') # Replace with the actual IP
-``` 
-**Use the SDK version 0.5.4**. Later versions are for Reachy 2023. ``` pip install reachy-sdk==0.5.4```
+Recommended SDK version for Reachy 2021:
 
-- VR teleoperation app
-- Any gRPC client you may create, based on [reachy-sdk-api](https://github.com/pollen-robotics/reachy-sdk-api)
+```bash
+pip install reachy-sdk==0.5.4
+```
 
-Check out our [Medium article](https://medium.com/pollen-robotics/controlling-a-reachy-robot-in-unity-f3d90d550345) to see the python SDK in action!
+## License
+
+Creative Commons BY-NC-SA 4.0:
+
+- https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
