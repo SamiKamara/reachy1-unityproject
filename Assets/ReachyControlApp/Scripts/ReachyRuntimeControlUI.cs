@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 
 using UnityEngine;
 
@@ -18,6 +19,10 @@ namespace Reachy.ControlApp
         private const float DesignRightPanelWidth = 430f;
         private const float DesignExpandedPanelHeight = 640f;
         private const float DesignCollapsedPanelHeight = 95f;
+        private const float ExpandedLeftPanelWidthRatio = 0.36f;
+        private const float ExpandedRightPanelWidthRatio = 0.36f;
+        private const float DesignCameraPanelWidth = 560f;
+        private const float DesignCameraPanelHeight = 265f;
 
         [Header("Endpoints")]
         [SerializeField] private string simulationHost = "localhost";
@@ -45,6 +50,14 @@ namespace Reachy.ControlApp
         [SerializeField] private bool resolveRobotHostnames = true;
         [SerializeField] private bool precheckRobotEndpointReachability = true;
         [SerializeField] private float precheckTimeoutSeconds = 1.5f;
+        
+        [Header("Camera Preview")]
+        [SerializeField] private bool showCameraPreview = true;
+        [SerializeField] private int simulationCameraPort = 50057;
+        [SerializeField] private int robotCameraPort = 50057;
+        [SerializeField] private float cameraRefreshIntervalSeconds = 0.2f;
+        [SerializeField] private float cameraRpcTimeoutSeconds = 0.8f;
+        [SerializeField] private bool cameraUseRightEye;
 
         [Header("Single Joint Command")]
         [SerializeField] private string jointName = "r_shoulder_pitch";
@@ -56,6 +69,7 @@ namespace Reachy.ControlApp
 
         private ReachyGrpcClient _client;
         private string _status = "Idle.";
+        private Vector2 _leftPanelScroll;
         private Vector2 _jointScroll;
         private bool _collapsed;
         private GUIStyle _titleStyle;
@@ -73,6 +87,13 @@ namespace Reachy.ControlApp
         private float _uiScale = 1f;
         private string _windowedWidthText;
         private string _windowedHeightText;
+        private float _nextCameraFetchAt;
+        private Task<ReachyGrpcClient.CameraImageFetchResult> _cameraFetchTask;
+        private Texture2D _cameraPreviewTexture;
+        private string _cameraPreviewStatus = "No camera frame yet.";
+        private ReachyControlMode _cameraPreviewMode;
+        private string _cameraPreviewHost = string.Empty;
+        private int _cameraPreviewPort;
 
         private void Awake()
         {
@@ -81,6 +102,10 @@ namespace Reachy.ControlApp
             _autoReconnectMode = mode;
             windowedWidth = Mathf.Clamp(windowedWidth, 320, 7680);
             windowedHeight = Mathf.Clamp(windowedHeight, 240, 4320);
+            simulationCameraPort = Mathf.Clamp(simulationCameraPort, 1, 65535);
+            robotCameraPort = Mathf.Clamp(robotCameraPort, 1, 65535);
+            cameraRefreshIntervalSeconds = Mathf.Max(0.05f, cameraRefreshIntervalSeconds);
+            cameraRpcTimeoutSeconds = Mathf.Max(0.2f, cameraRpcTimeoutSeconds);
             _windowedWidthText = windowedWidth.ToString(CultureInfo.InvariantCulture);
             _windowedHeightText = windowedHeight.ToString(CultureInfo.InvariantCulture);
         }
@@ -93,12 +118,21 @@ namespace Reachy.ControlApp
                 _connectAttemptCoroutine = null;
             }
 
+            _cameraFetchTask = null;
+            if (_cameraPreviewTexture != null)
+            {
+                Destroy(_cameraPreviewTexture);
+                _cameraPreviewTexture = null;
+            }
+
             _client?.Dispose();
             _client = null;
         }
 
         private void Update()
         {
+            UpdateCameraPreview();
+
             if (_isConnectAttemptInProgress)
             {
                 return;
@@ -162,6 +196,77 @@ namespace Reachy.ControlApp
                 ensureOneUiFrameBeforeConnect: false);
         }
 
+        private void UpdateCameraPreview()
+        {
+            if (_cameraFetchTask != null && _cameraFetchTask.IsCompleted)
+            {
+                try
+                {
+                    ReachyGrpcClient.CameraImageFetchResult fetchResult = _cameraFetchTask.Result;
+                    if (!fetchResult.Success)
+                    {
+                        _cameraPreviewStatus = fetchResult.Message;
+                    }
+                    else if (fetchResult.ImageBytes == null || fetchResult.ImageBytes.Length == 0)
+                    {
+                        _cameraPreviewStatus = "Camera frame was empty.";
+                    }
+                    else
+                    {
+                        if (_cameraPreviewTexture == null)
+                        {
+                            _cameraPreviewTexture = new Texture2D(2, 2, TextureFormat.RGB24, false);
+                        }
+
+                        bool loaded = _cameraPreviewTexture.LoadImage(fetchResult.ImageBytes);
+                        _cameraPreviewStatus = loaded
+                            ? $"Live {GetModeLabel(_cameraPreviewMode)} camera ({(cameraUseRightEye ? "right" : "left")} eye) from {_cameraPreviewHost}:{_cameraPreviewPort}."
+                            : "Received frame but failed to decode image.";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _cameraPreviewStatus = $"Camera preview task failed: {ex.Message}";
+                }
+                finally
+                {
+                    _cameraFetchTask = null;
+                }
+            }
+
+            if (!showCameraPreview || _client == null)
+            {
+                return;
+            }
+
+            if (_cameraFetchTask != null || Time.unscaledTime < _nextCameraFetchAt)
+            {
+                return;
+            }
+
+            ReachyControlMode previewMode = _connectedMode ?? mode;
+            string host = previewMode == ReachyControlMode.Simulation ? simulationHost : robotHost;
+            int port = previewMode == ReachyControlMode.Simulation ? simulationCameraPort : robotCameraPort;
+            if (string.IsNullOrWhiteSpace(host) || port <= 0 || port > 65535)
+            {
+                _cameraPreviewStatus = "Camera preview not configured: invalid host or port.";
+                _nextCameraFetchAt = Time.unscaledTime + Mathf.Max(0.2f, cameraRefreshIntervalSeconds);
+                return;
+            }
+
+            _cameraPreviewMode = previewMode;
+            _cameraPreviewHost = host;
+            _cameraPreviewPort = port;
+
+            var cameraId = cameraUseRightEye
+                ? Reachy.Sdk.Camera.CameraId.Right
+                : Reachy.Sdk.Camera.CameraId.Left;
+            double timeout = Math.Max(0.2f, cameraRpcTimeoutSeconds);
+
+            _cameraFetchTask = Task.Run(() => _client.FetchCameraImage(host, port, cameraId, timeout));
+            _nextCameraFetchAt = Time.unscaledTime + Mathf.Max(0.05f, cameraRefreshIntervalSeconds);
+        }
+
         private void OnGUI()
         {
             if (_titleStyle == null)
@@ -169,9 +274,10 @@ namespace Reachy.ControlApp
                 _titleStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = 14 };
             }
 
-            float designTotalWidth = _collapsed
+            float topPanelsWidth = _collapsed
                 ? DesignLeftPanelWidth
                 : DesignLeftPanelWidth + DesignPanelGap + DesignRightPanelWidth;
+            float designTotalWidth = topPanelsWidth;
             float designTotalHeight = _collapsed ? DesignCollapsedPanelHeight : DesignExpandedPanelHeight;
 
             float availableWidth = Mathf.Max(160f, Screen.width - (2f * DesignMarginPixels));
@@ -184,15 +290,49 @@ namespace Reachy.ControlApp
 
             float logicalMargin = DesignMarginPixels / _uiScale;
             float logicalScreenWidth = Screen.width / _uiScale;
+            float logicalScreenHeight = Screen.height / _uiScale;
             float leftPanelX = logicalMargin;
             float topY = logicalMargin;
 
-            DrawLeftPanel(new Rect(leftPanelX, topY, DesignLeftPanelWidth, _collapsed ? DesignCollapsedPanelHeight : DesignExpandedPanelHeight));
-
-            if (!_collapsed)
+            if (_collapsed)
             {
-                float rightPanelX = logicalScreenWidth - logicalMargin - DesignRightPanelWidth;
-                DrawRightPanel(new Rect(rightPanelX, topY, DesignRightPanelWidth, DesignExpandedPanelHeight));
+                float collapsedHeight = DesignCollapsedPanelHeight;
+                DrawLeftPanel(new Rect(leftPanelX, topY, DesignLeftPanelWidth, collapsedHeight));
+
+                if (showCameraPreview)
+                {
+                    float logicalMaxWidth = Mathf.Max(260f, logicalScreenWidth - (2f * logicalMargin));
+                    float cameraPanelWidth = Mathf.Min(DesignCameraPanelWidth, logicalMaxWidth);
+                    float cameraPanelHeight = Mathf.Min(
+                        DesignCameraPanelHeight,
+                        Mathf.Max(140f, logicalScreenHeight - (2f * logicalMargin)));
+                    float cameraPanelX = (logicalScreenWidth - cameraPanelWidth) * 0.5f;
+                    float cameraPanelY = logicalScreenHeight - logicalMargin - cameraPanelHeight;
+                    DrawCameraPreviewPanel(new Rect(cameraPanelX, cameraPanelY, cameraPanelWidth, cameraPanelHeight));
+                }
+            }
+            else
+            {
+                float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+                float topPanelHeight = Mathf.Max(220f, logicalScreenHeight - (2f * logicalMargin));
+
+                float leftPanelWidth = usableWidth * ExpandedLeftPanelWidthRatio;
+                float rightPanelWidth = usableWidth * ExpandedRightPanelWidthRatio;
+                float centerPanelWidth = Mathf.Max(180f, usableWidth - leftPanelWidth - rightPanelWidth);
+
+                float centerPanelX = leftPanelX + leftPanelWidth;
+                float rightPanelX = centerPanelX + centerPanelWidth;
+
+                DrawLeftPanel(new Rect(leftPanelX, topY, leftPanelWidth, topPanelHeight));
+                DrawRightPanel(new Rect(rightPanelX, topY, rightPanelWidth, topPanelHeight));
+
+                if (showCameraPreview)
+                {
+                    float maxCameraHeight = Mathf.Max(140f, topPanelHeight - 16f);
+                    float cameraPanelHeight = Mathf.Min(DesignCameraPanelHeight, maxCameraHeight);
+                    float cameraPanelY = logicalScreenHeight - logicalMargin - cameraPanelHeight;
+                    DrawCameraPreviewPanel(new Rect(centerPanelX, cameraPanelY, centerPanelWidth, cameraPanelHeight));
+                }
             }
 
             GUI.matrix = previousMatrix;
@@ -218,9 +358,18 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            float scrollHeight = Mathf.Max(120f, area.height - 45f);
+            _leftPanelScroll = GUILayout.BeginScrollView(
+                _leftPanelScroll,
+                false,
+                true,
+                GUILayout.Height(scrollHeight));
+
             DrawConnectionSection();
             GUILayout.Space(10f);
             DrawAutomationSection();
+
+            GUILayout.EndScrollView();
 
             GUILayout.EndArea();
         }
@@ -235,6 +384,48 @@ namespace Reachy.ControlApp
             DrawPresetSection();
             GUILayout.Space(10f);
             DrawStatusSection();
+            GUILayout.EndArea();
+        }
+
+        private void DrawCameraPreviewPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Reachy Camera Preview", _titleStyle);
+            GUILayout.FlexibleSpace();
+
+            bool nextUseRightEye = GUILayout.Toggle(cameraUseRightEye, "Right eye", GUILayout.Width(90f));
+            if (nextUseRightEye != cameraUseRightEye)
+            {
+                cameraUseRightEye = nextUseRightEye;
+                _nextCameraFetchAt = 0f;
+            }
+
+            if (GUILayout.Button("Refresh", GUILayout.Width(70f), GUILayout.Height(22f)))
+            {
+                _nextCameraFetchAt = 0f;
+            }
+
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label(
+                $"Source mode: {GetModeLabel(_cameraPreviewMode)} | Endpoint: {_cameraPreviewHost}:{_cameraPreviewPort}");
+
+            Rect imageRect = GUILayoutUtility.GetRect(
+                area.width - 24f,
+                Mathf.Max(120f, area.height - 85f),
+                GUILayout.ExpandWidth(true));
+
+            if (_cameraPreviewTexture != null)
+            {
+                GUI.DrawTexture(imageRect, _cameraPreviewTexture, ScaleMode.ScaleToFit, false);
+            }
+            else
+            {
+                GUI.Box(imageRect, "No camera frame yet.");
+            }
+
+            GUILayout.Label(_cameraPreviewStatus);
             GUILayout.EndArea();
         }
 
@@ -420,6 +611,12 @@ namespace Reachy.ControlApp
 
             autoConnectOnPlay = GUILayout.Toggle(autoConnectOnPlay, "Auto-connect when Play starts");
             autoReconnect = GUILayout.Toggle(autoReconnect, "Watch connection and auto-reconnect");
+            bool previousShowCameraPreview = showCameraPreview;
+            showCameraPreview = GUILayout.Toggle(showCameraPreview, "Show bottom-center camera preview");
+            if (showCameraPreview && !previousShowCameraPreview)
+            {
+                _nextCameraFetchAt = 0f;
+            }
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Attempts/host", GUILayout.Width(100f));
@@ -477,6 +674,54 @@ namespace Reachy.ControlApp
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
+            GUILayout.Label("Sim cam port", GUILayout.Width(100f));
+            string simCamPortText = GUILayout.TextField(
+                simulationCameraPort.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (int.TryParse(simCamPortText, out int parsedSimCamPort))
+            {
+                simulationCameraPort = Mathf.Clamp(parsedSimCamPort, 1, 65535);
+            }
+
+            GUILayout.Label("Robot cam port", GUILayout.Width(100f));
+            string robotCamPortText = GUILayout.TextField(
+                robotCameraPort.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (int.TryParse(robotCamPortText, out int parsedRobotCamPort))
+            {
+                robotCameraPort = Mathf.Clamp(parsedRobotCamPort, 1, 65535);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Frame every", GUILayout.Width(100f));
+            string cameraRefreshText = GUILayout.TextField(
+                cameraRefreshIntervalSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (float.TryParse(
+                cameraRefreshText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedCameraRefresh))
+            {
+                cameraRefreshIntervalSeconds = Mathf.Max(0.05f, parsedCameraRefresh);
+            }
+
+            GUILayout.Label("Cam timeout", GUILayout.Width(80f));
+            string cameraTimeoutText = GUILayout.TextField(
+                cameraRpcTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (float.TryParse(
+                cameraTimeoutText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedCameraTimeout))
+            {
+                cameraRpcTimeoutSeconds = Mathf.Max(0.2f, parsedCameraTimeout);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
             GUILayout.Label("Reconnect cool-down", GUILayout.Width(130f));
             string cooldownText = GUILayout.TextField(
                 reconnectCooldownSeconds.ToString(CultureInfo.InvariantCulture),
@@ -486,6 +731,16 @@ namespace Reachy.ControlApp
                 reconnectCooldownSeconds = Mathf.Max(1f, parsedCooldown);
             }
             GUILayout.EndHorizontal();
+
+            bool previousEyeSelection = cameraUseRightEye;
+            int eyeSelection = cameraUseRightEye ? 1 : 0;
+            string[] eyeLabels = { "Left Eye", "Right Eye" };
+            eyeSelection = GUILayout.Toolbar(eyeSelection, eyeLabels, GUILayout.Height(22f));
+            cameraUseRightEye = eyeSelection == 1;
+            if (cameraUseRightEye != previousEyeSelection)
+            {
+                _nextCameraFetchAt = 0f;
+            }
 
             if (mode == ReachyControlMode.RealRobot)
             {

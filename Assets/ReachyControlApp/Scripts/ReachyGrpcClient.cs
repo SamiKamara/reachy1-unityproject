@@ -6,6 +6,7 @@ using System.Threading;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 
+using Reachy.Sdk.Camera;
 using Reachy.Sdk.Joint;
 using Reachy.Sdk.Restart;
 
@@ -26,6 +27,11 @@ namespace Reachy.ControlApp
 
         private Channel _jointChannel;
         private JointService.JointServiceClient _jointClient;
+        private Channel _cameraChannel;
+        private CameraService.CameraServiceClient _cameraClient;
+        private readonly object _cameraLock = new object();
+        private string _cameraHost = string.Empty;
+        private int _cameraPort;
         private readonly List<string> _jointNames = new List<string>();
         private readonly List<string> _presetPoseNames = new List<string>();
         private readonly List<PosePreset> _presetPoses = BuildPresetPoseLibrary();
@@ -36,6 +42,13 @@ namespace Reachy.ControlApp
 
         public IReadOnlyList<string> JointNames => _jointNames;
         public IReadOnlyList<string> PresetPoseNames => _presetPoseNames;
+
+        public struct CameraImageFetchResult
+        {
+            public bool Success;
+            public byte[] ImageBytes;
+            public string Message;
+        }
 
         public ReachyGrpcClient()
         {
@@ -174,6 +187,91 @@ namespace Reachy.ControlApp
 
             _jointClient = null;
             _jointChannel = null;
+            DisconnectCamera();
+        }
+
+        public CameraImageFetchResult FetchCameraImage(
+            string host,
+            int port,
+            CameraId cameraId,
+            double timeoutSeconds)
+        {
+            var result = new CameraImageFetchResult
+            {
+                Success = false,
+                ImageBytes = null,
+                Message = string.Empty
+            };
+
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                result.Message = "Camera host is empty.";
+                return result;
+            }
+
+            if (port <= 0 || port > 65535)
+            {
+                result.Message = $"Invalid camera port '{port}'.";
+                return result;
+            }
+
+            double timeout = timeoutSeconds > 0 ? timeoutSeconds : HealthCheckRpcTimeoutSeconds;
+            if (timeout <= 0)
+            {
+                timeout = 1.0;
+            }
+
+            try
+            {
+                lock (_cameraLock)
+                {
+                    if (!EnsureCameraClientLocked(host, port, out string ensureMessage))
+                    {
+                        result.Message = ensureMessage;
+                        return result;
+                    }
+
+                    var request = new ImageRequest
+                    {
+                        Camera = new Reachy.Sdk.Camera.Camera { Id = cameraId }
+                    };
+
+                    Image image = _cameraClient.GetImage(
+                        request,
+                        deadline: DateTime.UtcNow.AddSeconds(timeout));
+
+                    if (image == null || image.Data == null || image.Data.Length == 0)
+                    {
+                        result.Message = "Camera service returned an empty frame.";
+                        return result;
+                    }
+
+                    result.Success = true;
+                    result.ImageBytes = image.Data.ToByteArray();
+                    result.Message = $"Fetched {(cameraId == CameraId.Left ? "left" : "right")} camera frame.";
+                    return result;
+                }
+            }
+            catch (RpcException rpcEx)
+            {
+                lock (_cameraLock)
+                {
+                    DisconnectCameraLocked();
+                }
+
+                result.Message = $"Camera RPC {rpcEx.Status.StatusCode}: {rpcEx.Status.Detail}";
+                return result;
+            }
+            catch (Exception ex)
+            {
+                lock (_cameraLock)
+                {
+                    DisconnectCameraLocked();
+                }
+
+                result.Message = $"Camera fetch failed: {ex.Message}";
+                return result;
+            }
         }
 
         public bool RefreshJoints(out string message)
@@ -397,6 +495,64 @@ namespace Reachy.ControlApp
 
             message = string.Empty;
             return true;
+        }
+
+        private void DisconnectCamera()
+        {
+            lock (_cameraLock)
+            {
+                DisconnectCameraLocked();
+            }
+        }
+
+        private void DisconnectCameraLocked()
+        {
+            _cameraHost = string.Empty;
+            _cameraPort = 0;
+
+            if (_cameraChannel != null)
+            {
+                try
+                {
+                    _cameraChannel.ShutdownAsync().Wait(1500);
+                }
+                catch
+                {
+                    // Ignore cleanup errors during disconnect.
+                }
+            }
+
+            _cameraClient = null;
+            _cameraChannel = null;
+        }
+
+        private bool EnsureCameraClientLocked(string host, int port, out string message)
+        {
+            message = string.Empty;
+
+            if (_cameraClient != null &&
+                string.Equals(_cameraHost, host, StringComparison.OrdinalIgnoreCase) &&
+                _cameraPort == port)
+            {
+                return true;
+            }
+
+            DisconnectCameraLocked();
+
+            try
+            {
+                _cameraChannel = new Channel($"{host}:{port}", ChannelCredentials.Insecure);
+                _cameraClient = new CameraService.CameraServiceClient(_cameraChannel);
+                _cameraHost = host;
+                _cameraPort = port;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                DisconnectCameraLocked();
+                message = $"Camera connection failed: {ex.Message}";
+                return false;
+            }
         }
 
         private bool ConnectInternal(string host, int port, double timeoutSeconds, out string message)
