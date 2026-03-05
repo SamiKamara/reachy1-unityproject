@@ -37,6 +37,7 @@ namespace Reachy.ControlApp
         [SerializeField] private string robotFallbackPortsCsv = "50055";
         [SerializeField] private int connectAttemptsPerHost = 3;
         [SerializeField] private float retryDelaySeconds = 1.0f;
+        [SerializeField] private float grpcConnectTimeoutSeconds = 3.0f;
         [SerializeField] private float postRestartWaitSeconds = 2.5f;
         [SerializeField] private float healthCheckIntervalSeconds = 2.0f;
         [SerializeField] private float reconnectCooldownSeconds = 4.0f;
@@ -441,6 +442,21 @@ namespace Reachy.ControlApp
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
+            GUILayout.Label("gRPC timeout", GUILayout.Width(100f));
+            string connectTimeoutText = GUILayout.TextField(
+                grpcConnectTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (float.TryParse(
+                connectTimeoutText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedConnectTimeout))
+            {
+                grpcConnectTimeoutSeconds = Mathf.Max(0.2f, parsedConnectTimeout);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
             GUILayout.Label("Post-restart wait", GUILayout.Width(100f));
             string postRestartText = GUILayout.TextField(
                 postRestartWaitSeconds.ToString(CultureInfo.InvariantCulture),
@@ -689,6 +705,7 @@ namespace Reachy.ControlApp
             bool allowRestart = targetMode == ReachyControlMode.RealRobot && allowRestartSignalRecovery;
             int attempts = Math.Max(1, connectAttemptsPerHost);
             double retryDelay = Math.Max(0f, retryDelaySeconds);
+            double connectTimeout = Math.Max(0.2f, grpcConnectTimeoutSeconds);
             double postRestartWait = Math.Max(0f, postRestartWaitSeconds);
             int restartPort = targetMode == ReachyControlMode.RealRobot ? robotRestartPort : 0;
 
@@ -712,6 +729,7 @@ namespace Reachy.ControlApp
                     preparedEndpoint.Host,
                     preparedEndpoint.Port,
                     attempts,
+                    connectTimeout,
                     allowRestart,
                     retryDelay,
                     postRestartWait,

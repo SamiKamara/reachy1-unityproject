@@ -61,6 +61,7 @@ namespace Reachy.ControlApp
             string host,
             int port,
             int maxAttempts,
+            double connectTimeoutSeconds,
             bool sendRestartSignalBetweenAttempts,
             double retryDelaySeconds,
             double postRestartWaitSeconds,
@@ -86,10 +87,15 @@ namespace Reachy.ControlApp
                 maxAttempts = 1;
             }
 
+            if (connectTimeoutSeconds <= 0)
+            {
+                connectTimeoutSeconds = DefaultRpcTimeoutSeconds;
+            }
+
             var details = new StringBuilder();
             for (int attempt = 1; attempt <= maxAttempts; attempt++)
             {
-                if (ConnectInternal(host, port, DefaultRpcTimeoutSeconds, out string connectMessage))
+                if (ConnectInternal(host, port, connectTimeoutSeconds, out string connectMessage))
                 {
                     if (attempt == 1)
                     {
