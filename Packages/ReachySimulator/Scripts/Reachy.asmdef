@@ -1,0 +1,13 @@
+{
+  "name": "Reachy",
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Google.Protobuf.dll",
+    "Grpc.Core.Api.dll",
+    "Grpc.Core.dll",
+    "System.Buffers.dll",
+    "System.Memory.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+  ],
+  "autoReferenced": true
+}
