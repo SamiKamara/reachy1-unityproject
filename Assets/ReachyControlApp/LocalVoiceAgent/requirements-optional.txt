@@ -1,0 +1,12 @@
+# Optional dependencies for local voice sidecar.
+# The sidecar runs without these packages in fallback mode.
+
+# Offline STT (optional)
+vosk>=0.3.45
+sounddevice>=0.4.6
+
+# Local TTS (optional)
+pyttsx3>=2.90
+
+# Optional local help LLM (GGUF via llama.cpp)
+llama-cpp-python>=0.2.90

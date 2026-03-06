@@ -37,16 +37,16 @@ Why sidecar:
 - simpler profiling and model swapping.
 
 ## 4) Lightweight Stack Options
-Option A (most lightweight):
+Option A (most lightweight, current project baseline):
 - STT: `Vosk` (offline, low resource).
 - Intent: deterministic parser/rules.
-- TTS: `Piper`.
-- LLM: none in MVP.
+- TTS: `pyttsx3` (Windows path uses local SAPI subprocess for reliability).
+- LLM: optional local `llama_cpp` for help text only.
 
 Option B (better STT quality, still local):
 - STT: `whisper.cpp` (`tiny` or `base` model).
 - Intent: deterministic parser/rules.
-- TTS: `Piper`.
+- TTS: `Piper` or existing `pyttsx3` path.
 - Optional small local LLM for help text only.
 
 Guideline:
@@ -103,6 +103,8 @@ Core intents:
 - `connect_robot`
 - `disconnect_robot`
 - `status`
+- `confirm_pending`
+- `reject_pending`
 
 Require confirmation for:
 - any command that can move hardware,
@@ -161,6 +163,10 @@ Phase 5 (optional): local LLM for help
 - Keep LLM out of direct motion command execution path.
 - Use only for user guidance text.
 
+Status note:
+- Phases 1-5 are implemented in current project scope (with iterative polish after Phase 5).
+- Next recommended active phase is Phase 6 in section 16.
+
 ## 11) Suggested Config File
 Create: `Assets/ReachyControlApp/voice_agent_config.json`
 
@@ -184,3 +190,76 @@ Include:
 - Keep automation behavior (auto-reconnect etc.) separate from voice logic.
 - Voice layer should request actions; robot control layer remains source of truth.
 
+## 14) Current Project Progress Snapshot (as of 2026-03-06)
+Implemented in this repository:
+- Unity-side phases (bridge/router/status panel, transcript parsing, TTS wiring, robustness controls, optional help-model UI path).
+- Local sidecar reference implementation:
+  - `Assets/ReachyControlApp/LocalVoiceAgent/local_voice_agent_sidecar.py`
+  - `Assets/ReachyControlApp/LocalVoiceAgent/local_voice_agent_sidecar_config.json`
+  - `Assets/ReachyControlApp/LocalVoiceAgent/README.md`
+- Push-to-talk/listening-control wiring:
+  - Unity bridge + UI support for `/listening`
+  - Sidecar listening toggle endpoint integrated with STT runtime state
+- Sidecar lifecycle wiring:
+  - Unity can auto-start the local sidecar process when AI is enabled
+  - AI bridge enable is gated until sidecar endpoint is reachable
+  - Unity can auto-stop sidecar on AI disable (default true) and runs shutdown cleanup on play-stop/app-exit
+- Safety/robustness polish:
+  - Simulation-only voice mode toggle for blocking real-robot voice motion/connect actions
+  - Duplicate command suppression window for STT burst protection
+- Parser hardening:
+  - Safe numeric parsing controls for `move_joint` extraction
+  - Configurable joint degree range reject policy (Unity parser + sidecar parser)
+- STT quality gating:
+  - Minimum transcript chars/words thresholds to reduce short-noise false positives
+  - Parser fallback routes unrecognized final transcripts to `help` (including short lone-word safety fallback)
+  - Sidecar STT now ignores input while TTS is speaking, then flushes queued audio and resets recognizer on resume
+- Confirmation UX:
+  - Hands-free confirmation/rejection intents (`confirm_pending` / `reject_pending`) in Unity parser + sidecar parser
+- Config persistence UX:
+  - Local AI panel can now load and save `voice_agent_config.json` directly for tuning persistence
+  - Local AI panel can sync shared parser/listening/help settings into `local_voice_agent_sidecar_config.json`
+  - Local AI panel can load shared parser/listening/help settings from `local_voice_agent_sidecar_config.json`
+  - Optional auto-sync-on-start toggle ensures sidecar picks up current shared UI config at startup
+- Optional local LLM help path:
+  - Sidecar `/help` supports both `rule_based` and `llama_cpp` backends with safe fallback
+  - Unity panel exposes help backend/model tuning fields and syncs them to sidecar config
+  - Unity startup now auto-loads `voice_agent_config.json` defaults/overrides at `Awake()`
+  - Sidecar sync/load now converts help model paths between Unity-project-relative and sidecar-config-relative forms
+  - Sidecar startup prioritizes bundled `.venv` Python when local `llama_cpp` help is enabled (to avoid missing module in system Python)
+- Hands-free defaults:
+  - Voice/sidecar defaults tuned so enabling Local AI can run spoken help flow directly (`vosk` + `pyttsx3` + local help enabled)
+  - Vosk model storage moved outside Unity `Assets/` (`.local_voice_models`) to avoid Unity importer conflicts with model binary files
+  - Current default help backend/path is set for local `llama_cpp` with a small GGUF model path under `.local_voice_models/llm/`
+
+## 15) Remaining Gaps (Priority)
+P0:
+- Add automated regression tests for:
+  - parser mapping/fallback (`help`, confirm/reject, joints/range),
+  - bridge state transitions (healthy/degraded/timeouts),
+  - sidecar lifecycle (auto-start, auto-stop, quit cleanup, stale process cleanup).
+- Add explicit runtime diagnostics in Unity panel for help backend health:
+  - model load success/failure reason,
+  - active Python executable used to launch sidecar.
+
+P1:
+- Tighten local LLM safety and relevance:
+  - stronger prompt constraints to Reachy-only guidance,
+  - response post-filter (ban out-of-domain advice),
+  - optional retrieval from local app-specific docs/intents.
+- Add benchmark scripts for target laptop:
+  - STT latency, help latency, CPU/RAM over 30+ minutes.
+
+P2:
+- Packaging/self-contained setup:
+  - one-click bootstrap for sidecar `.venv` + optional dependencies,
+  - model presence checks + guided download helper.
+- Audio quality improvements:
+  - optional noise suppression / AEC path,
+  - optional wake-word mode if hands-free false positives remain.
+
+## 16) Suggested Next Implementation Phase
+Phase 6: Reliability + diagnostics hardening
+- Build lightweight test harnesses for sidecar endpoints and parser behavior.
+- Surface sidecar launch executable, help backend status, and model-load errors directly in Unity UI.
+- Run and record a 30+ minute stability/performance soak on target hardware with current defaults.
