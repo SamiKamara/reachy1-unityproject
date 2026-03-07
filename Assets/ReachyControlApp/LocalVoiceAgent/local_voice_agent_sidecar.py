@@ -61,6 +61,296 @@ DEFAULT_JOINTS = [
     "l_gripper",
 ]
 
+DEFAULT_SHOW_MOVEMENT_SYNONYMS = [
+    "show movement",
+    "show motion",
+    "do something",
+    "do anything",
+    "move",
+    "move around",
+    "make a move",
+    "do a movement",
+    "do a motion",
+    "show me movement",
+    "show me motion",
+    "perform movement",
+    "perform a movement",
+    "perform motion",
+    "make it move",
+    "move a bit",
+    "start moving",
+    "do random movement",
+    "do random motion",
+    "surprise me",
+]
+
+DEFAULT_HELP_SYNONYMS = [
+    "help",
+    "help me",
+    "i need help",
+    "need help",
+    "can you help",
+    "please help",
+    "give me help",
+    "voice help",
+    "show commands",
+    "show me commands",
+    "list commands",
+    "list voice commands",
+    "what can i say",
+    "what commands are available",
+    "what can you do",
+    "how do i use this",
+    "how to use this",
+    "give instructions",
+    "usage instructions",
+    "guide me",
+    "i need guidance",
+    "show help",
+    "open help",
+    "display help",
+    "need instructions",
+    "how does this work",
+    "teach me",
+    "walk me through commands",
+    "command list",
+    "available commands",
+    "help with commands",
+]
+
+DEFAULT_HELLO_SYNONYMS = [
+    "hello",
+    "hello there",
+    "hi",
+    "hi there",
+    "hey",
+    "hey there",
+    "hey robot",
+    "hello robot",
+    "hi robot",
+    "hey reachy",
+    "hello reachy",
+    "hi reachy",
+    "greetings",
+    "greetings robot",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "say hello",
+    "greet me",
+    "do a greeting",
+]
+
+DEFAULT_WHO_ARE_YOU_SYNONYMS = [
+    "who are you",
+    "what are you",
+    "what are you exactly",
+    "what is this assistant",
+    "what is this agent",
+    "who am i talking to",
+    "identify yourself",
+    "tell me who you are",
+    "tell me what you are",
+    "what is your name",
+    "whats your name",
+    "who is this",
+    "are you a robot",
+    "are you an assistant",
+    "are you ai",
+    "what kind of assistant are you",
+    "what kind of ai are you",
+    "who is speaking",
+    "introduce yourself",
+    "tell me about yourself",
+]
+
+DEFAULT_STOP_MOTION_SYNONYMS = [
+    "stop",
+    "stop now",
+    "stop motion",
+    "stop moving",
+    "halt",
+    "halt now",
+    "halt motion",
+    "halt movement",
+    "abort",
+    "abort command",
+    "cancel",
+    "cancel motion",
+    "cancel command",
+    "emergency stop",
+    "hard stop",
+    "freeze",
+    "freeze motion",
+    "cease movement",
+    "terminate motion",
+    "end movement",
+    "stop immediately",
+]
+
+DEFAULT_CONFIRM_PENDING_SYNONYMS = [
+    "confirm",
+    "confirm it",
+    "confirm command",
+    "yes",
+    "yes do it",
+    "yes execute",
+    "go ahead",
+    "go for it",
+    "proceed",
+    "approved",
+    "approve it",
+    "execute it",
+    "run it",
+    "do it",
+    "sounds good",
+    "looks good",
+    "ok do it",
+    "okay proceed",
+    "affirmative",
+    "that is right",
+]
+
+DEFAULT_REJECT_PENDING_SYNONYMS = [
+    "reject",
+    "reject it",
+    "decline",
+    "decline it",
+    "deny",
+    "deny it",
+    "no",
+    "no thanks",
+    "do not",
+    "do not do it",
+    "do not proceed",
+    "do not execute",
+    "not now",
+    "negative",
+    "skip it",
+    "dismiss that",
+    "forget it",
+    "hold off",
+    "never mind",
+    "i reject that",
+]
+
+DEFAULT_DISCONNECT_ROBOT_SYNONYMS = [
+    "disconnect",
+    "disconnect robot",
+    "disconnect now",
+    "go offline",
+    "switch offline",
+    "take robot offline",
+    "end connection",
+    "close connection",
+    "drop connection",
+    "cut connection",
+    "disconnect from robot",
+    "shut down connection",
+    "terminate connection",
+    "leave session",
+    "end session",
+    "disconnect session",
+    "unpair robot",
+    "go disconnected",
+    "disconnect please",
+    "disconnect link",
+]
+
+DEFAULT_CONNECT_ROBOT_SYNONYMS = [
+    "connect",
+    "connect robot",
+    "connect now",
+    "reconnect",
+    "reconnect robot",
+    "go online",
+    "come online",
+    "bring robot online",
+    "start connection",
+    "open connection",
+    "establish connection",
+    "pair robot",
+    "link robot",
+    "join session",
+    "connect please",
+    "resume connection",
+    "restore connection",
+    "reconnect now",
+    "connect to robot",
+    "start robot connection",
+]
+
+DEFAULT_STATUS_SYNONYMS = [
+    "status",
+    "robot status",
+    "connection status",
+    "show status",
+    "check status",
+    "status report",
+    "what is status",
+    "what is the status",
+    "are you connected",
+    "is robot connected",
+    "connection state",
+    "health status",
+    "system status",
+    "current status",
+    "tell me status",
+    "get status",
+    "show connection",
+    "check connection",
+    "am i connected",
+    "are we connected",
+]
+
+DEFAULT_MOVE_JOINT_TRIGGER_SYNONYMS = [
+    "move",
+    "set",
+    "turn",
+    "rotate",
+    "bend",
+    "joint",
+    "adjust",
+    "tilt",
+    "twist",
+    "lift",
+    "raise",
+    "lower",
+    "drop",
+    "flex",
+    "extend",
+    "position",
+    "point",
+    "pitch",
+    "roll",
+    "yaw",
+    "swing",
+    "angle",
+]
+
+DEFAULT_SET_POSE_TRIGGER_SYNONYMS = [
+    "set pose",
+    "change pose",
+    "switch pose",
+    "use pose",
+    "apply pose",
+    "go to pose",
+    "activate pose",
+    "load pose",
+    "run pose",
+    "do pose",
+    "pick pose",
+    "select pose",
+    "choose pose",
+    "make pose",
+    "show pose",
+    "assume pose",
+    "strike pose",
+    "set posture",
+    "change posture",
+    "set position",
+]
+
 SHORT_LONE_HELP_FALLBACK_MAX_CHARS = 8
 
 
@@ -70,6 +360,92 @@ def normalize(text: str) -> str:
 
 def tokenize(text: str) -> list[str]:
     return [tok for tok in re.split(r"[^a-zA-Z0-9_]+", (text or "").lower()) if tok]
+
+
+def contains_word_sequence(words: list[str], sequence: list[str]) -> bool:
+    if not words or not sequence or len(words) < len(sequence):
+        return False
+
+    limit = len(words) - len(sequence) + 1
+    for idx in range(limit):
+        if words[idx:idx + len(sequence)] == sequence:
+            return True
+    return False
+
+
+def contains_any_word_sequence(words: list[str], sequences: list[list[str]]) -> bool:
+    if not words or not sequences:
+        return False
+    for sequence in sequences:
+        if contains_word_sequence(words, sequence):
+            return True
+    return False
+
+
+def build_token_sets_from_phrases(phrases: list[str]) -> list[list[str]]:
+    token_sets: list[list[str]] = []
+    for phrase in phrases:
+        tokens = tokenize(str(phrase))
+        if tokens and tokens not in token_sets:
+            token_sets.append(tokens)
+    return token_sets
+
+
+STOP_MOTION_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_STOP_MOTION_SYNONYMS)
+CONFIRM_PENDING_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_CONFIRM_PENDING_SYNONYMS)
+REJECT_PENDING_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_REJECT_PENDING_SYNONYMS)
+DISCONNECT_ROBOT_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_DISCONNECT_ROBOT_SYNONYMS)
+CONNECT_ROBOT_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_CONNECT_ROBOT_SYNONYMS)
+STATUS_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_STATUS_SYNONYMS)
+MOVE_JOINT_TRIGGER_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_MOVE_JOINT_TRIGGER_SYNONYMS)
+SET_POSE_TRIGGER_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_SET_POSE_TRIGGER_SYNONYMS)
+
+
+def transcript_mentions_known_joint(compact_transcript: str, known_joints: list[str]) -> bool:
+    if not compact_transcript or not known_joints:
+        return False
+    for joint in known_joints:
+        token = normalize(str(joint))
+        if token and token in compact_transcript:
+            return True
+    return False
+
+
+def looks_like_joint_specific_command(
+    transcript: str,
+    words: list[str],
+    compact_transcript: str,
+    config: dict,
+) -> bool:
+    has_joint_verb = contains_any_word_sequence(words, MOVE_JOINT_TRIGGER_TOKEN_SETS)
+    if not has_joint_verb:
+        return False
+
+    known_joints = config.get("known_joints", [])
+    mentions_known_joint = transcript_mentions_known_joint(compact_transcript, known_joints)
+    has_joint_descriptor = any(
+        w in words
+        for w in (
+            "joint",
+            "degree",
+            "degrees",
+            "deg",
+            "shoulder",
+            "elbow",
+            "wrist",
+            "gripper",
+            "arm",
+            "neck",
+            "head",
+        )
+    )
+    has_target_angle = extract_joint_number(
+        transcript,
+        safe_mode=parse_bool(config.get("safe_numeric_parsing"), True),
+        require_target_token=parse_bool(config.get("require_target_token_for_joint"), False),
+    ) is not None
+
+    return mentions_known_joint or has_joint_descriptor or has_target_angle
 
 
 def is_short_confirm_or_reject(text: str, words: list[str]) -> bool:
@@ -145,6 +521,26 @@ def parse_bool(value, default: bool) -> bool:
     return default
 
 
+def normalize_phrase_list(value, fallback: list[str]) -> list[str]:
+    source = value if isinstance(value, list) else []
+    normalized: list[str] = []
+
+    for item in source:
+        phrase = " ".join(tokenize(str(item)))
+        if phrase and phrase not in normalized:
+            normalized.append(phrase)
+
+    if normalized:
+        return normalized
+
+    fallback_normalized: list[str] = []
+    for item in fallback:
+        phrase = " ".join(tokenize(str(item)))
+        if phrase and phrase not in fallback_normalized:
+            fallback_normalized.append(phrase)
+    return fallback_normalized
+
+
 def load_config(path: Path) -> dict:
     config = {
         "bind_host": "127.0.0.1",
@@ -159,6 +555,10 @@ def load_config(path: Path) -> dict:
         "tts_voice_name": "",
         "known_poses": list(DEFAULT_POSES),
         "known_joints": list(DEFAULT_JOINTS),
+        "show_movement_synonyms": list(DEFAULT_SHOW_MOVEMENT_SYNONYMS),
+        "help_synonyms": list(DEFAULT_HELP_SYNONYMS),
+        "hello_synonyms": list(DEFAULT_HELLO_SYNONYMS),
+        "who_are_you_synonyms": list(DEFAULT_WHO_ARE_YOU_SYNONYMS),
         "log_history_size": 200,
         "event_queue_size": 120,
         "help_context": "Reachy Unity app guidance only.",
@@ -206,6 +606,22 @@ def load_config(path: Path) -> dict:
     joints = [str(x).strip() for x in config.get("known_joints", []) if str(x).strip()]
     config["known_poses"] = poses if poses else list(DEFAULT_POSES)
     config["known_joints"] = joints if joints else list(DEFAULT_JOINTS)
+    config["show_movement_synonyms"] = normalize_phrase_list(
+        config.get("show_movement_synonyms", []),
+        DEFAULT_SHOW_MOVEMENT_SYNONYMS,
+    )
+    config["help_synonyms"] = normalize_phrase_list(
+        config.get("help_synonyms", []),
+        DEFAULT_HELP_SYNONYMS,
+    )
+    config["hello_synonyms"] = normalize_phrase_list(
+        config.get("hello_synonyms", []),
+        DEFAULT_HELLO_SYNONYMS,
+    )
+    config["who_are_you_synonyms"] = normalize_phrase_list(
+        config.get("who_are_you_synonyms", []),
+        DEFAULT_WHO_ARE_YOU_SYNONYMS,
+    )
     config["help_context"] = str(config.get("help_context", "")).strip() or "Reachy Unity app guidance only."
     config["help_model_backend"] = str(config.get("help_model_backend", "rule_based")).strip().lower()
     if config["help_model_backend"] not in ("rule_based", "llama_cpp"):
@@ -285,6 +701,10 @@ def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
 class Parser:
     def __init__(self, config: dict) -> None:
         self.config = config
+        self.help_phrase_tokens = self._build_help_phrase_tokens()
+        self.hello_phrase_tokens = self._build_hello_phrase_tokens()
+        self.who_are_you_phrase_tokens = self._build_who_are_you_phrase_tokens()
+        self.show_movement_phrase_tokens = self._build_show_movement_phrase_tokens()
 
     def parse(self, transcript: str, confidence: float) -> tuple[dict | None, str]:
         text = (transcript or "").strip()
@@ -308,38 +728,40 @@ class Parser:
             return fallback_to_help(f"help_fallback_fewer_than_{min_words}_words")
         compact = normalize(transcript)
 
-        if any(w in words for w in ("stop", "cancel", "halt", "abort")):
+        if self._is_stop_motion_phrase(words):
             return self._intent("stop_motion", transcript, confidence, False), "stop_motion"
-        confirm_phrase = (
-            "confirm" in words or
-            "approve" in words or
-            "approved" in words or
-            "proceed" in words or
-            "yes" in words or
-            ("go" in words and "ahead" in words) or
-            ("execute" in words and "it" in words)
-        )
-        if confirm_phrase:
-            return self._intent("confirm_pending", transcript, confidence, False), "confirm_pending"
-        reject_phrase = (
-            "reject" in words or
-            "decline" in words or
-            "deny" in words or
-            "no" in words or
-            ("do" in words and "not" in words)
-        )
-        if reject_phrase:
+        if self._is_reject_pending_phrase(words):
             return self._intent("reject_pending", transcript, confidence, False), "reject_pending"
-        if "disconnect" in words or ("go" in words and "offline" in words):
+        if self._is_confirm_pending_phrase(words):
+            return self._intent("confirm_pending", transcript, confidence, False), "confirm_pending"
+        if self._is_disconnect_robot_phrase(words):
             return self._intent("disconnect_robot", transcript, confidence, False), "disconnect_robot"
-        if "connect" in words or "reconnect" in words:
+        if self._is_connect_robot_phrase(words):
             return self._intent("connect_robot", transcript, confidence, False), "connect_robot"
-        if "status" in words or ("connected" in words and ("is" in words or "are" in words)):
+        if self._is_status_phrase(words):
             return self._intent("status", transcript, confidence, False), "status"
-        if "help" in words or ("how" in words and ("use" in words or "do" in words)):
+        if self._is_who_are_you_phrase(words):
+            return self._intent("who_are_you", transcript, confidence, False), "who_are_you"
+        if self._is_help_phrase(words):
             return self._intent("help", transcript, confidence, False), "help"
+        show_movement_phrase = self._is_show_movement_phrase(transcript, words, compact)
+        if show_movement_phrase:
+            return self._intent("show_movement", transcript, confidence, True), "show_movement"
 
-        likely_joint = any(w in words for w in ("move", "set", "turn", "rotate", "bend", "joint"))
+        likely_pose = self._is_likely_set_pose_phrase(words)
+        best_pose = ""
+        best_len = 0
+        for pose in self.config["known_poses"]:
+            token = normalize(pose)
+            if token and token in compact and len(token) > best_len:
+                best_pose = pose
+                best_len = len(token)
+        if best_pose:
+            intent = self._intent("set_pose", transcript, confidence, True)
+            intent["pose_name"] = best_pose
+            return intent, "set_pose"
+
+        likely_joint = self._is_likely_move_joint_phrase(words)
         if likely_joint:
             number = extract_joint_number(
                 transcript,
@@ -372,25 +794,107 @@ class Parser:
                 intent["joint_degrees"] = float(number)
                 return intent, "move_joint"
 
-        best_pose = ""
-        best_len = 0
-        for pose in self.config["known_poses"]:
-            token = normalize(pose)
-            if token and token in compact and len(token) > best_len:
-                best_pose = pose
-                best_len = len(token)
-        if best_pose:
-            intent = self._intent("set_pose", transcript, confidence, True)
-            intent["pose_name"] = best_pose
-            return intent, "set_pose"
+        if likely_pose:
+            return fallback_to_help("help_fallback_pose_name_not_found")
+
+        if self._is_hello_phrase(words):
+            return self._intent("hello", transcript, confidence, False), "hello"
 
         if short_lone_help_fallback:
             return self._intent("help", transcript, confidence, False), "help_fallback_short_lone_word"
 
         return fallback_to_help("help_fallback_unrecognized_transcript")
 
+    def _build_help_phrase_tokens(self) -> list[list[str]]:
+        phrases = normalize_phrase_list(
+            self.config.get("help_synonyms", []),
+            DEFAULT_HELP_SYNONYMS,
+        )
+        token_sets: list[list[str]] = []
+        for phrase in phrases:
+            tokens = tokenize(phrase)
+            if tokens and tokens not in token_sets:
+                token_sets.append(tokens)
+        return token_sets
+
+    def _is_help_phrase(self, words: list[str]) -> bool:
+        if contains_any_word_sequence(words, self.help_phrase_tokens):
+            return True
+        return ("how" in words and ("use" in words or "do" in words)) or ("what" in words and "say" in words)
+
+    def _build_hello_phrase_tokens(self) -> list[list[str]]:
+        phrases = normalize_phrase_list(
+            self.config.get("hello_synonyms", []),
+            DEFAULT_HELLO_SYNONYMS,
+        )
+        token_sets: list[list[str]] = []
+        for phrase in phrases:
+            tokens = tokenize(phrase)
+            if tokens and tokens not in token_sets:
+                token_sets.append(tokens)
+        return token_sets
+
+    def _is_hello_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, self.hello_phrase_tokens)
+
+    def _build_who_are_you_phrase_tokens(self) -> list[list[str]]:
+        phrases = normalize_phrase_list(
+            self.config.get("who_are_you_synonyms", []),
+            DEFAULT_WHO_ARE_YOU_SYNONYMS,
+        )
+        token_sets: list[list[str]] = []
+        for phrase in phrases:
+            tokens = tokenize(phrase)
+            if tokens and tokens not in token_sets:
+                token_sets.append(tokens)
+        return token_sets
+
+    def _is_who_are_you_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, self.who_are_you_phrase_tokens)
+
+    def _is_stop_motion_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, STOP_MOTION_TOKEN_SETS)
+
+    def _is_confirm_pending_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, CONFIRM_PENDING_TOKEN_SETS)
+
+    def _is_reject_pending_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, REJECT_PENDING_TOKEN_SETS)
+
+    def _is_disconnect_robot_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, DISCONNECT_ROBOT_TOKEN_SETS)
+
+    def _is_connect_robot_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, CONNECT_ROBOT_TOKEN_SETS)
+
+    def _is_status_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, STATUS_TOKEN_SETS)
+
+    def _is_likely_move_joint_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, MOVE_JOINT_TRIGGER_TOKEN_SETS)
+
+    def _is_likely_set_pose_phrase(self, words: list[str]) -> bool:
+        return contains_any_word_sequence(words, SET_POSE_TRIGGER_TOKEN_SETS)
+
+    def _build_show_movement_phrase_tokens(self) -> list[list[str]]:
+        phrases = normalize_phrase_list(
+            self.config.get("show_movement_synonyms", []),
+            DEFAULT_SHOW_MOVEMENT_SYNONYMS,
+        )
+        token_sets: list[list[str]] = []
+        for phrase in phrases:
+            tokens = tokenize(phrase)
+            if tokens and tokens not in token_sets:
+                token_sets.append(tokens)
+        return token_sets
+
+    def _is_show_movement_phrase(self, transcript: str, words: list[str], compact: str) -> bool:
+        if not contains_any_word_sequence(words, self.show_movement_phrase_tokens):
+            return False
+        return not looks_like_joint_specific_command(transcript, words, compact, self.config)
+
     def _intent(self, name: str, spoken: str, confidence: float, requires_confirmation: bool) -> dict:
-        if name in ("set_pose", "move_joint") and confidence < float(self.config["intent_confidence_threshold"]):
+        if name in ("set_pose", "move_joint", "show_movement") and confidence < float(self.config["intent_confidence_threshold"]):
             requires_confirmation = True
         return {
             "type": "robot_command",
@@ -1145,6 +1649,12 @@ class LocalHelpResponder:
             return "Say 'disconnect robot' to close the current robot session."
         if "pose" in words:
             return "Try: 'set neutral arms pose' or 'set hello pose b'. Movement requires confirmation in Unity."
+        if "hello" in words or "hi" in words or "greeting" in words:
+            return "Try: 'hello' to say hello, then trigger 'Hello Pose C' without extra confirmation."
+        if "who" in words and "you" in words:
+            return "Try: 'who are you' to hear the local agent identity response."
+        if "movement" in words or "motion" in words:
+            return "Try: 'show movement' to run 3 random preset poses with 4-second spacing after confirmation in Unity."
         if "joint" in words or "degree" in words:
             return "Try: 'move r_shoulder_pitch to 10 degrees'."
         if "stop" in words or "cancel" in words:
@@ -1157,7 +1667,7 @@ class LocalHelpResponder:
             return "Say 'status' to ask Unity for connection and bridge status."
 
         default_help = (
-            "Supported intents: help, status, connect robot, disconnect robot, set pose, move joint, stop motion, confirm pending, reject pending."
+            "Supported intents: hello, who are you, help, status, connect robot, disconnect robot, set pose, move joint, show movement, stop motion, confirm pending, reject pending."
         )
         final_context = (context or "").strip() or str(self.config.get("help_context", ""))
         return f"{default_help} Context: {final_context}"

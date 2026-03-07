@@ -25,6 +25,10 @@ namespace Reachy.ControlApp
         private const float DesignLocalAgentCollapsedHeight = 64f;
         private const float DesignCameraPanelWidth = 560f;
         private const float DesignCameraPanelHeight = 265f;
+        private const int VoiceShowMovementPoseCount = 3;
+        private const float VoiceShowMovementIntervalSeconds = 4f;
+        private const float VoiceHelloReturnDelaySeconds = 4f;
+        private const string VoiceHelloReturnPoseName = "Neutral Arms";
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private static readonly string[] DefaultSidecarKnownPoses =
@@ -54,6 +58,109 @@ namespace Reachy.ControlApp
             "l_wrist_pitch",
             "l_wrist_roll",
             "l_gripper"
+        };
+        private static readonly string[] DefaultSidecarShowMovementSynonyms =
+        {
+            "show movement",
+            "show motion",
+            "do something",
+            "do anything",
+            "move",
+            "move around",
+            "make a move",
+            "do a movement",
+            "do a motion",
+            "show me movement",
+            "show me motion",
+            "perform movement",
+            "perform a movement",
+            "perform motion",
+            "make it move",
+            "move a bit",
+            "start moving",
+            "do random movement",
+            "do random motion",
+            "surprise me"
+        };
+        private static readonly string[] DefaultSidecarHelpSynonyms =
+        {
+            "help",
+            "help me",
+            "i need help",
+            "need help",
+            "can you help",
+            "please help",
+            "give me help",
+            "voice help",
+            "show commands",
+            "show me commands",
+            "list commands",
+            "list voice commands",
+            "what can i say",
+            "what commands are available",
+            "what can you do",
+            "how do i use this",
+            "how to use this",
+            "give instructions",
+            "usage instructions",
+            "guide me",
+            "i need guidance",
+            "show help",
+            "open help",
+            "display help",
+            "need instructions",
+            "how does this work",
+            "teach me",
+            "walk me through commands",
+            "command list",
+            "available commands",
+            "help with commands"
+        };
+        private static readonly string[] DefaultSidecarHelloSynonyms =
+        {
+            "hello",
+            "hello there",
+            "hi",
+            "hi there",
+            "hey",
+            "hey there",
+            "hey robot",
+            "hello robot",
+            "hi robot",
+            "hey reachy",
+            "hello reachy",
+            "hi reachy",
+            "greetings",
+            "greetings robot",
+            "good morning",
+            "good afternoon",
+            "good evening",
+            "say hello",
+            "greet me",
+            "do a greeting"
+        };
+        private static readonly string[] DefaultSidecarWhoAreYouSynonyms =
+        {
+            "who are you",
+            "what are you",
+            "what are you exactly",
+            "what is this assistant",
+            "what is this agent",
+            "who am i talking to",
+            "identify yourself",
+            "tell me who you are",
+            "tell me what you are",
+            "what is your name",
+            "whats your name",
+            "who is this",
+            "are you a robot",
+            "are you an assistant",
+            "are you ai",
+            "what kind of assistant are you",
+            "what kind of ai are you",
+            "who is speaking",
+            "introduce yourself",
+            "tell me about yourself"
         };
 
         [Header("Endpoints")]
@@ -172,6 +279,8 @@ namespace Reachy.ControlApp
         private ReachyControlMode _connectAttemptMode;
         private float _connectAttemptReconnectDelaySeconds = 0.5f;
         private Coroutine _connectAttemptCoroutine;
+        private Coroutine _voiceShowMovementCoroutine;
+        private Coroutine _voiceHelloReturnCoroutine;
         private float _uiScale = 1f;
         private string _windowedWidthText;
         private string _windowedHeightText;
@@ -316,6 +425,10 @@ namespace Reachy.ControlApp
             public string tts_voice_name = string.Empty;
             public string[] known_poses = DefaultSidecarKnownPoses;
             public string[] known_joints = DefaultSidecarKnownJoints;
+            public string[] show_movement_synonyms = DefaultSidecarShowMovementSynonyms;
+            public string[] help_synonyms = DefaultSidecarHelpSynonyms;
+            public string[] hello_synonyms = DefaultSidecarHelloSynonyms;
+            public string[] who_are_you_synonyms = DefaultSidecarWhoAreYouSynonyms;
             public int log_history_size = 200;
             public int event_queue_size = 120;
             public string help_context = "Reachy Unity app guidance only.";
@@ -432,6 +545,9 @@ namespace Reachy.ControlApp
                 StopCoroutine(_connectAttemptCoroutine);
                 _connectAttemptCoroutine = null;
             }
+
+            StopVoiceShowMovementSequence(updateStatus: false, reason: "UI destroyed");
+            StopVoiceHelloReturnTimer(updateStatus: false, reason: "UI destroyed");
 
             _cameraFetchTask = null;
             if (_cameraPreviewTexture != null)
@@ -932,7 +1048,9 @@ namespace Reachy.ControlApp
 
             bool isMotionAction =
                 routedAction.Kind == VoiceCommandRouter.VoiceActionKind.SetPose ||
-                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint;
+                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint ||
+                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.ShowMovement ||
+                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Hello;
             if (isMotionAction && localAiAgentBlockMotionWhenBridgeUnhealthy)
             {
                 if (!IsBridgeHealthyForMotion(out string bridgeHealthReason))
@@ -2638,7 +2756,7 @@ namespace Reachy.ControlApp
                         }
                     }
 
-                    message = "Help: use voice intents like set_pose, move_joint, status, connect_robot, disconnect_robot, stop_motion, confirm_pending, reject_pending.";
+                    message = "Help: use voice intents like hello, who_are_you, set_pose, move_joint, show_movement, status, connect_robot, disconnect_robot, stop_motion, confirm_pending, reject_pending.";
                     return true;
 
                 case VoiceCommandRouter.VoiceActionKind.Status:
@@ -2668,6 +2786,8 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopVoiceShowMovementSequence(updateStatus: false, reason: "Disconnected by voice command.");
+                    StopVoiceHelloReturnTimer(updateStatus: false, reason: "Disconnected by voice command.");
                     _manualDisconnect = true;
                     _autoReconnectScheduled = false;
                     _client.Disconnect();
@@ -2705,6 +2825,8 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
+                    StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_pose command.");
                     bool wasConnected = _client.IsConnected;
                     bool poseOk = _client.SendPresetPose(action.PoseName, out string poseMessage);
                     HandlePotentialDisconnectAfterOperation($"voice pose '{action.PoseName}'", wasConnected);
@@ -2721,6 +2843,8 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
+                    StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by move_joint command.");
                     bool wasConnectedBeforeJoint = _client.IsConnected;
                     bool jointOk = _client.SendSingleJointGoal(action.JointName, action.JointDegrees, out string jointMessage);
                     HandlePotentialDisconnectAfterOperation($"voice move_joint '{action.JointName}'", wasConnectedBeforeJoint);
@@ -2730,12 +2854,52 @@ namespace Reachy.ControlApp
                     SetStatus(jointOk ? "Voice joint command sent" : "Voice joint command failed", message);
                     return jointOk;
 
+                case VoiceCommandRouter.VoiceActionKind.ShowMovement:
+                    return TryStartVoiceShowMovementSequence(out message);
+
+                case VoiceCommandRouter.VoiceActionKind.Hello:
+                    if (_client == null || !_client.IsConnected)
+                    {
+                        message = "Hello command blocked: robot is not connected.";
+                        return false;
+                    }
+
+                    StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by hello command.");
+                    StopVoiceHelloReturnTimer(updateStatus: false, reason: "Restarted by hello command.");
+                    bool wasConnectedBeforeHello = _client.IsConnected;
+                    bool helloPoseOk = _client.SendPresetPose(
+                        VoiceCommandRouter.HelloPoseName,
+                        out string helloPoseMessage);
+                    HandlePotentialDisconnectAfterOperation(
+                        $"voice hello pose '{VoiceCommandRouter.HelloPoseName}'",
+                        wasConnectedBeforeHello);
+                    if (helloPoseOk)
+                    {
+                        _voiceHelloReturnCoroutine = StartCoroutine(
+                            VoiceHelloReturnToNeutralCoroutine(VoiceHelloReturnDelaySeconds));
+                    }
+
+                    message = helloPoseOk
+                        ? VoiceCommandRouter.HelloResponseText
+                        : $"{VoiceCommandRouter.HelloResponseText} (failed to set '{VoiceCommandRouter.HelloPoseName}': {helloPoseMessage})";
+                    SetStatus(helloPoseOk ? "Voice hello" : "Voice hello failed", message);
+                    return helloPoseOk;
+
+                case VoiceCommandRouter.VoiceActionKind.WhoAreYou:
+                    message = VoiceCommandRouter.WhoAreYouResponseText;
+                    SetStatus("Voice identity", message);
+                    return true;
+
                 case VoiceCommandRouter.VoiceActionKind.StopMotion:
                     bool hadPending = _voiceHasPendingAction;
+                    bool stoppedSequence = StopVoiceShowMovementSequence(
+                        updateStatus: false,
+                        reason: "Stopped by voice command.");
+                    StopVoiceHelloReturnTimer(updateStatus: false, reason: "Stopped by voice command.");
                     _voiceHasPendingAction = false;
                     _voicePendingAction = default(VoiceCommandRouter.RoutedAction);
-                    message = hadPending
-                        ? "Stop command acknowledged. Pending voice action was cancelled."
+                    message = hadPending || stoppedSequence
+                        ? BuildStopAcknowledgementMessage(hadPending, stoppedSequence)
                         : "Stop command acknowledged. No explicit robot stop API is available yet.";
                     SetStatus("Voice stop", message);
                     return true;
@@ -2744,6 +2908,237 @@ namespace Reachy.ControlApp
                     message = "Voice action is not implemented.";
                     return false;
             }
+        }
+
+        private bool TryStartVoiceShowMovementSequence(out string message)
+        {
+            message = string.Empty;
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Show movement command blocked: robot is not connected.";
+                return false;
+            }
+
+            IReadOnlyList<string> availablePoses = _client.PresetPoseNames;
+            if (availablePoses == null || availablePoses.Count == 0)
+            {
+                message = "Show movement command blocked: no preset poses are available.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(updateStatus: false, reason: "Restarted by show movement command.");
+            StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by show movement command.");
+            List<string> selectedPoses = BuildRandomPoseSequence(availablePoses, VoiceShowMovementPoseCount);
+            if (selectedPoses.Count == 0)
+            {
+                message = "Show movement command blocked: could not select random poses.";
+                return false;
+            }
+
+            _voiceShowMovementCoroutine = StartCoroutine(VoiceShowMovementSequenceCoroutine(selectedPoses));
+            message =
+                $"Started show movement: {selectedPoses.Count} random poses with {VoiceShowMovementIntervalSeconds:F0}s spacing.";
+            SetStatus("Voice show movement", message);
+            return true;
+        }
+
+        private IEnumerator VoiceShowMovementSequenceCoroutine(IReadOnlyList<string> poseNames)
+        {
+            if (poseNames == null || poseNames.Count == 0)
+            {
+                _voiceShowMovementCoroutine = null;
+                yield break;
+            }
+
+            float intervalSeconds = Mathf.Max(0f, VoiceShowMovementIntervalSeconds);
+            for (int i = 0; i < poseNames.Count; i++)
+            {
+                if (_client == null || !_client.IsConnected)
+                {
+                    string disconnectedMessage = "Show movement stopped: robot disconnected.";
+                    _voiceLastActionResult = disconnectedMessage;
+                    SetStatus("Voice show movement stopped", disconnectedMessage);
+                    _voiceShowMovementCoroutine = null;
+                    yield break;
+                }
+
+                string poseName = poseNames[i] ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(poseName))
+                {
+                    continue;
+                }
+
+                bool wasConnected = _client.IsConnected;
+                bool poseOk = _client.SendPresetPose(poseName, out string poseMessage);
+                HandlePotentialDisconnectAfterOperation($"voice show_movement pose '{poseName}'", wasConnected);
+
+                string perPoseMessage = poseOk
+                    ? $"Show movement pose {i + 1}/{poseNames.Count} sent ('{poseName}'). {poseMessage}"
+                    : $"Show movement pose {i + 1}/{poseNames.Count} failed ('{poseName}'). {poseMessage}";
+                _voiceLastActionResult = perPoseMessage;
+                SetStatus(
+                    poseOk ? "Voice show movement pose sent" : "Voice show movement pose failed",
+                    perPoseMessage);
+
+                if (i < poseNames.Count - 1 && intervalSeconds > 0f)
+                {
+                    yield return new WaitForSecondsRealtime(intervalSeconds);
+                }
+            }
+
+            string completedMessage = $"Show movement completed ({poseNames.Count} poses).";
+            _voiceLastActionResult = completedMessage;
+            SetStatus("Voice show movement", completedMessage);
+            _voiceShowMovementCoroutine = null;
+        }
+
+        private static List<string> BuildRandomPoseSequence(IReadOnlyList<string> availablePoses, int desiredCount)
+        {
+            var uniquePoses = new List<string>();
+            if (availablePoses == null || desiredCount <= 0)
+            {
+                return uniquePoses;
+            }
+
+            for (int i = 0; i < availablePoses.Count; i++)
+            {
+                string pose = (availablePoses[i] ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(pose))
+                {
+                    continue;
+                }
+
+                bool exists = false;
+                for (int j = 0; j < uniquePoses.Count; j++)
+                {
+                    if (string.Equals(uniquePoses[j], pose, StringComparison.OrdinalIgnoreCase))
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+
+                if (!exists)
+                {
+                    uniquePoses.Add(pose);
+                }
+            }
+
+            for (int i = uniquePoses.Count - 1; i > 0; i--)
+            {
+                int swapIndex = UnityEngine.Random.Range(0, i + 1);
+                string tmp = uniquePoses[i];
+                uniquePoses[i] = uniquePoses[swapIndex];
+                uniquePoses[swapIndex] = tmp;
+            }
+
+            int uniqueCount = Math.Min(desiredCount, uniquePoses.Count);
+            var sequence = new List<string>(desiredCount);
+            for (int i = 0; i < uniqueCount; i++)
+            {
+                sequence.Add(uniquePoses[i]);
+            }
+
+            while (sequence.Count < desiredCount && uniquePoses.Count > 0)
+            {
+                int randomIndex = UnityEngine.Random.Range(0, uniquePoses.Count);
+                sequence.Add(uniquePoses[randomIndex]);
+            }
+
+            return sequence;
+        }
+
+        private bool StopVoiceShowMovementSequence(bool updateStatus, string reason)
+        {
+            if (_voiceShowMovementCoroutine == null)
+            {
+                return false;
+            }
+
+            StopCoroutine(_voiceShowMovementCoroutine);
+            _voiceShowMovementCoroutine = null;
+
+            if (updateStatus)
+            {
+                string finalReason = string.IsNullOrWhiteSpace(reason)
+                    ? "Show movement sequence stopped."
+                    : $"Show movement sequence stopped: {reason}";
+                _voiceLastActionResult = finalReason;
+                SetStatus("Voice show movement stopped", finalReason);
+            }
+
+            return true;
+        }
+
+        private IEnumerator VoiceHelloReturnToNeutralCoroutine(float delaySeconds)
+        {
+            float safeDelay = Mathf.Max(0f, delaySeconds);
+            if (safeDelay > 0f)
+            {
+                yield return new WaitForSecondsRealtime(safeDelay);
+            }
+
+            _voiceHelloReturnCoroutine = null;
+            if (_client == null || !_client.IsConnected)
+            {
+                yield break;
+            }
+
+            bool wasConnected = _client.IsConnected;
+            bool neutralOk = _client.SendPresetPose(VoiceHelloReturnPoseName, out string neutralMessage);
+            HandlePotentialDisconnectAfterOperation(
+                $"voice hello return pose '{VoiceHelloReturnPoseName}'",
+                wasConnected);
+
+            string message = neutralOk
+                ? $"Returned to neutral pose '{VoiceHelloReturnPoseName}' after hello."
+                : $"Failed to return to neutral pose '{VoiceHelloReturnPoseName}' after hello. {neutralMessage}";
+            _voiceLastActionResult = message;
+            SetStatus(
+                neutralOk ? "Voice hello neutral pose sent" : "Voice hello neutral pose failed",
+                message);
+        }
+
+        private bool StopVoiceHelloReturnTimer(bool updateStatus, string reason)
+        {
+            if (_voiceHelloReturnCoroutine == null)
+            {
+                return false;
+            }
+
+            StopCoroutine(_voiceHelloReturnCoroutine);
+            _voiceHelloReturnCoroutine = null;
+
+            if (updateStatus)
+            {
+                string finalReason = string.IsNullOrWhiteSpace(reason)
+                    ? "Hello return-to-neutral timer stopped."
+                    : $"Hello return-to-neutral timer stopped: {reason}";
+                _voiceLastActionResult = finalReason;
+                SetStatus("Voice hello timer stopped", finalReason);
+            }
+
+            return true;
+        }
+
+        private static string BuildStopAcknowledgementMessage(bool hadPendingAction, bool stoppedShowMovement)
+        {
+            if (hadPendingAction && stoppedShowMovement)
+            {
+                return "Stop command acknowledged. Pending voice action was cancelled and show movement sequence was stopped.";
+            }
+
+            if (hadPendingAction)
+            {
+                return "Stop command acknowledged. Pending voice action was cancelled.";
+            }
+
+            if (stoppedShowMovement)
+            {
+                return "Stop command acknowledged. Show movement sequence was stopped.";
+            }
+
+            return "Stop command acknowledged. No explicit robot stop API is available yet.";
         }
 
         private bool IsActionBlockedBySimulationOnlyMode(
@@ -2758,7 +3153,9 @@ namespace Reachy.ControlApp
 
             if (action.Kind != VoiceCommandRouter.VoiceActionKind.ConnectRobot &&
                 action.Kind != VoiceCommandRouter.VoiceActionKind.SetPose &&
-                action.Kind != VoiceCommandRouter.VoiceActionKind.MoveJoint)
+                action.Kind != VoiceCommandRouter.VoiceActionKind.MoveJoint &&
+                action.Kind != VoiceCommandRouter.VoiceActionKind.ShowMovement &&
+                action.Kind != VoiceCommandRouter.VoiceActionKind.Hello)
             {
                 return false;
             }
@@ -3306,6 +3703,22 @@ namespace Reachy.ControlApp
                 if (config.known_joints == null || config.known_joints.Length == 0)
                 {
                     config.known_joints = DefaultSidecarKnownJoints;
+                }
+                if (config.show_movement_synonyms == null || config.show_movement_synonyms.Length == 0)
+                {
+                    config.show_movement_synonyms = DefaultSidecarShowMovementSynonyms;
+                }
+                if (config.help_synonyms == null || config.help_synonyms.Length == 0)
+                {
+                    config.help_synonyms = DefaultSidecarHelpSynonyms;
+                }
+                if (config.hello_synonyms == null || config.hello_synonyms.Length == 0)
+                {
+                    config.hello_synonyms = DefaultSidecarHelloSynonyms;
+                }
+                if (config.who_are_you_synonyms == null || config.who_are_you_synonyms.Length == 0)
+                {
+                    config.who_are_you_synonyms = DefaultSidecarWhoAreYouSynonyms;
                 }
 
                 float normalizedJointMin = Mathf.Min(localAiAgentJointMinDegrees, localAiAgentJointMaxDegrees);

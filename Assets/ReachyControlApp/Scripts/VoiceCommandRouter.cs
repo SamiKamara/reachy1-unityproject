@@ -6,6 +6,9 @@ namespace Reachy.ControlApp
     public sealed class VoiceCommandRouter
     {
         public const float DefaultConfidenceThreshold = 0.78f;
+        public const string HelloPoseName = "Hello Pose C";
+        public const string HelloResponseText = "hello there how may i assist you";
+        public const string WhoAreYouResponseText = "i am reachy's local ai assistant for voice robot control";
 
         public enum VoiceActionKind
         {
@@ -18,7 +21,10 @@ namespace Reachy.ControlApp
             ConnectRobot = 6,
             DisconnectRobot = 7,
             ConfirmPending = 8,
-            RejectPending = 9
+            RejectPending = 9,
+            ShowMovement = 10,
+            Hello = 11,
+            WhoAreYou = 12
         }
 
         public struct RoutedAction
@@ -91,6 +97,19 @@ namespace Reachy.ControlApp
                     action.JointDegrees = intent.joint_degrees;
                     action.Summary = $"Move joint '{action.JointName}' to {action.JointDegrees:F1} deg.";
                     break;
+                case "show_movement":
+                    action.Kind = VoiceActionKind.ShowMovement;
+                    action.Summary = "Show movement sequence: 3 random poses at 4-second intervals.";
+                    break;
+                case "hello":
+                    action.Kind = VoiceActionKind.Hello;
+                    action.PoseName = HelloPoseName;
+                    action.Summary = HelloResponseText;
+                    break;
+                case "who_are_you":
+                    action.Kind = VoiceActionKind.WhoAreYou;
+                    action.Summary = WhoAreYouResponseText;
+                    break;
                 case "stop_motion":
                     action.Kind = VoiceActionKind.StopMotion;
                     action.Summary = "Stop robot motion.";
@@ -117,13 +136,22 @@ namespace Reachy.ControlApp
             }
 
             bool motionIntentRequiringConfirm = action.Kind == VoiceActionKind.SetPose ||
-                action.Kind == VoiceActionKind.MoveJoint;
+                action.Kind == VoiceActionKind.MoveJoint ||
+                action.Kind == VoiceActionKind.ShowMovement;
             action.RequiresConfirmation = motionIntentRequiringConfirm || intent.requires_confirmation || lowConfidence;
             if (action.Kind == VoiceActionKind.StopMotion)
             {
                 action.RequiresConfirmation = false;
             }
             if (action.Kind == VoiceActionKind.ConfirmPending || action.Kind == VoiceActionKind.RejectPending)
+            {
+                action.RequiresConfirmation = false;
+            }
+            if (action.Kind == VoiceActionKind.Hello)
+            {
+                action.RequiresConfirmation = false;
+            }
+            if (action.Kind == VoiceActionKind.WhoAreYou)
             {
                 action.RequiresConfirmation = false;
             }
