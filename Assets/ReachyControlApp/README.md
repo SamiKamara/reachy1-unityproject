@@ -56,4 +56,6 @@ Typical real robot setup:
 - Restart-signal recovery depends on robot-side support for `reachy.sdk.restart.RestartService`.
   If unavailable, retries continue without restart assistance.
 - Joint goals entered in the UI are in degrees and converted to radians before gRPC send.
+- Motion commands automatically request `Compliant = false` for the addressed joints.
+  When joint state RPC is available, the app first latches compliant joints to their present position before sending the target move.
 - Commands can move real hardware. Test with small values first.

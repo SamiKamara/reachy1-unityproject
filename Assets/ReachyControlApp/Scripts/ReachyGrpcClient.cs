@@ -16,7 +16,9 @@ namespace Reachy.ControlApp
     {
         private const double DefaultRpcTimeoutSeconds = 3.0;
         private const double HealthCheckRpcTimeoutSeconds = 1.5;
+        private const double MotionPreparationRpcTimeoutSeconds = 1.5;
         private const double RestartRpcTimeoutSeconds = 2.0;
+        private const int MotionPreparationSettleDelayMs = 100;
         private const string NeutralArmsPoseName = "Neutral Arms";
         private const string TPoseName = "T-Pose";
         private const string HelloPoseName = "Hello Pose A";
@@ -328,7 +330,7 @@ namespace Reachy.ControlApp
                 GoalPosition = DegreesToRadians(goalDegrees)
             });
 
-            return SendJointCommand(command, out message);
+            return SendMotionCommand(command, out message);
         }
 
         public bool SendNeutralArmsPreset(out string message)
@@ -366,7 +368,7 @@ namespace Reachy.ControlApp
                 });
             }
 
-            bool ok = SendJointCommand(command, out string sendMessage);
+            bool ok = SendMotionCommand(command, out string sendMessage);
             message = ok
                 ? $"Preset '{preset.Name}' sent ({preset.Goals.Count} joints). {sendMessage}"
                 : $"Preset '{preset.Name}' failed. {sendMessage}";
@@ -457,9 +459,45 @@ namespace Reachy.ControlApp
             }
         }
 
-        private bool SendJointCommand(JointsCommand command, out string message)
+        private bool SendMotionCommand(JointsCommand command, out string message)
         {
             message = string.Empty;
+
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            if (command == null || command.Commands == null || command.Commands.Count == 0)
+            {
+                message = "Joint command is empty.";
+                return false;
+            }
+
+            JointsCommand targetCommand = command.Clone();
+            ForceMotionComplianceOff(targetCommand);
+
+            string preparationMessage = PrepareJointsForMotion(targetCommand);
+            bool ok = SendJointCommandRaw(targetCommand, out string sendMessage);
+
+            if (string.IsNullOrWhiteSpace(preparationMessage))
+            {
+                message = sendMessage;
+            }
+            else
+            {
+                message = $"{preparationMessage} {sendMessage}".Trim();
+            }
+
+            return ok;
+        }
+
+        private bool SendJointCommandRaw(JointsCommand command, out string message)
+        {
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
 
             try
             {
@@ -483,6 +521,287 @@ namespace Reachy.ControlApp
                 message = $"Command failed: {ex.Message}";
                 return false;
             }
+        }
+
+        private static void ForceMotionComplianceOff(JointsCommand command)
+        {
+            if (command == null || command.Commands == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < command.Commands.Count; i++)
+            {
+                JointCommand jointCommand = command.Commands[i];
+                if (jointCommand == null)
+                {
+                    continue;
+                }
+
+                jointCommand.Compliant = false;
+            }
+        }
+
+        private string PrepareJointsForMotion(JointsCommand targetCommand)
+        {
+            if (targetCommand == null || targetCommand.Commands == null || targetCommand.Commands.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            JointsState stateResponse = TryGetJointsState(targetCommand, out string stateMessage);
+            if (stateResponse == null)
+            {
+                return string.IsNullOrWhiteSpace(stateMessage)
+                    ? "Joint state unavailable; using direct compliance-off motion."
+                    : $"Joint state unavailable ({stateMessage}); using direct compliance-off motion.";
+            }
+
+            Dictionary<string, JointStateSnapshot> stateMap = BuildJointStateSnapshotMap(stateResponse);
+            if (stateMap.Count == 0)
+            {
+                return "Joint state response was empty; using direct compliance-off motion.";
+            }
+
+            var stiffenCommand = new JointsCommand();
+            int preparedCount = 0;
+            int missingStateCount = 0;
+            int alreadyStiffCount = 0;
+
+            for (int i = 0; i < targetCommand.Commands.Count; i++)
+            {
+                JointCommand targetJointCommand = targetCommand.Commands[i];
+                if (targetJointCommand == null || targetJointCommand.Id == null)
+                {
+                    continue;
+                }
+
+                if (!TryResolveSnapshot(stateMap, targetJointCommand.Id, out JointStateSnapshot snapshot))
+                {
+                    missingStateCount++;
+                    continue;
+                }
+
+                if (snapshot.Compliant.HasValue && !snapshot.Compliant.Value)
+                {
+                    alreadyStiffCount++;
+                    continue;
+                }
+
+                var stiffenJoint = new JointCommand
+                {
+                    Id = targetJointCommand.Id.Clone(),
+                    Compliant = false
+                };
+
+                if (snapshot.PresentPosition.HasValue)
+                {
+                    stiffenJoint.GoalPosition = snapshot.PresentPosition.Value;
+                }
+                else if (targetJointCommand.GoalPosition.HasValue)
+                {
+                    stiffenJoint.GoalPosition = targetJointCommand.GoalPosition.Value;
+                }
+
+                stiffenCommand.Commands.Add(stiffenJoint);
+                preparedCount++;
+            }
+
+            if (preparedCount <= 0)
+            {
+                if (missingStateCount > 0)
+                {
+                    return $"State missing for {missingStateCount} joint(s); direct compliance-off motion active.";
+                }
+
+                if (alreadyStiffCount > 0)
+                {
+                    return string.Empty;
+                }
+
+                return "Motion preparation skipped; direct compliance-off motion active.";
+            }
+
+            bool prepOk = SendJointCommandRaw(stiffenCommand, out string prepMessage);
+            if (prepOk)
+            {
+                Thread.Sleep(MotionPreparationSettleDelayMs);
+
+                if (missingStateCount > 0)
+                {
+                    return $"Prepared {preparedCount} joint(s) for motion. State missing for {missingStateCount} joint(s); direct compliance-off fallback active.";
+                }
+
+                return $"Prepared {preparedCount} joint(s) for motion.";
+            }
+
+            return $"Motion preparation failed ({prepMessage}); continuing with direct compliance-off motion.";
+        }
+
+        private JointsState TryGetJointsState(JointsCommand command, out string message)
+        {
+            message = string.Empty;
+
+            if (_jointClient == null)
+            {
+                message = "Not connected.";
+                return null;
+            }
+
+            var request = new JointsStateRequest();
+            request.RequestedFields.Add(JointField.Compliant);
+            request.RequestedFields.Add(JointField.PresentPosition);
+
+            var addedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < command.Commands.Count; i++)
+            {
+                JointCommand jointCommand = command.Commands[i];
+                if (jointCommand == null || jointCommand.Id == null)
+                {
+                    continue;
+                }
+
+                JointId requestId = BuildStateRequestId(jointCommand.Id, addedKeys);
+                if (requestId != null)
+                {
+                    request.Ids.Add(requestId);
+                }
+            }
+
+            if (request.Ids.Count == 0)
+            {
+                message = "No valid joint ids in motion command.";
+                return null;
+            }
+
+            try
+            {
+                return _jointClient.GetJointsState(
+                    request,
+                    deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds)
+                );
+            }
+            catch (RpcException rpcEx)
+            {
+                message = $"RPC {rpcEx.Status.StatusCode}: {rpcEx.Status.Detail}";
+                return null;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return null;
+            }
+        }
+
+        private static JointId BuildStateRequestId(JointId sourceId, HashSet<string> addedKeys)
+        {
+            if (sourceId == null)
+            {
+                return null;
+            }
+
+            if (!string.IsNullOrWhiteSpace(sourceId.Name))
+            {
+                string key = BuildJointNameKey(sourceId.Name);
+                if (addedKeys.Add(key))
+                {
+                    return new JointId { Name = sourceId.Name };
+                }
+
+                return null;
+            }
+
+            if (sourceId.Uid != 0)
+            {
+                string key = BuildJointUidKey(sourceId.Uid);
+                if (addedKeys.Add(key))
+                {
+                    return new JointId { Uid = sourceId.Uid };
+                }
+            }
+
+            return null;
+        }
+
+        private static Dictionary<string, JointStateSnapshot> BuildJointStateSnapshotMap(JointsState stateResponse)
+        {
+            var snapshots = new Dictionary<string, JointStateSnapshot>(StringComparer.OrdinalIgnoreCase);
+            if (stateResponse == null)
+            {
+                return snapshots;
+            }
+
+            int pairCount = Math.Min(stateResponse.Ids.Count, stateResponse.States.Count);
+            for (int i = 0; i < pairCount; i++)
+            {
+                JointId id = stateResponse.Ids[i];
+                JointState state = stateResponse.States[i];
+                if (state == null)
+                {
+                    continue;
+                }
+
+                var snapshot = new JointStateSnapshot(state.Compliant, state.PresentPosition);
+
+                if (id != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(id.Name))
+                    {
+                        snapshots[BuildJointNameKey(id.Name)] = snapshot;
+                    }
+
+                    if (id.Uid != 0)
+                    {
+                        snapshots[BuildJointUidKey(id.Uid)] = snapshot;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(state.Name))
+                {
+                    snapshots[BuildJointNameKey(state.Name)] = snapshot;
+                }
+
+                if (state.Uid.HasValue && state.Uid.Value != 0)
+                {
+                    snapshots[BuildJointUidKey(state.Uid.Value)] = snapshot;
+                }
+            }
+
+            return snapshots;
+        }
+
+        private static bool TryResolveSnapshot(
+            Dictionary<string, JointStateSnapshot> stateMap,
+            JointId jointId,
+            out JointStateSnapshot snapshot)
+        {
+            snapshot = null;
+            if (stateMap == null || jointId == null)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(jointId.Name))
+            {
+                return stateMap.TryGetValue(BuildJointNameKey(jointId.Name), out snapshot);
+            }
+
+            if (jointId.Uid != 0)
+            {
+                return stateMap.TryGetValue(BuildJointUidKey(jointId.Uid), out snapshot);
+            }
+
+            return false;
+        }
+
+        private static string BuildJointNameKey(string jointName)
+        {
+            return (jointName ?? string.Empty).Trim().ToLowerInvariant();
+        }
+
+        private static string BuildJointUidKey(uint jointUid)
+        {
+            return $"uid:{jointUid}";
         }
 
         private bool EnsureConnected(out string message)
@@ -808,6 +1127,18 @@ namespace Reachy.ControlApp
 
             public string JointName { get; }
             public float GoalDegrees { get; }
+        }
+
+        private sealed class JointStateSnapshot
+        {
+            public JointStateSnapshot(bool? compliant, float? presentPosition)
+            {
+                Compliant = compliant;
+                PresentPosition = presentPosition;
+            }
+
+            public bool? Compliant { get; }
+            public float? PresentPosition { get; }
         }
     }
 }
