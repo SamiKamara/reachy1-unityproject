@@ -29,6 +29,8 @@ namespace Reachy.ControlApp
         private const float VoiceShowMovementIntervalSeconds = 4f;
         private const float VoiceHelloReturnDelaySeconds = 4f;
         private const string VoiceHelloReturnPoseName = "Neutral Arms";
+        private const int RuntimeRunLogHistoryCount = 5;
+        private const string RuntimeRunLogFilePrefix = "runtime_run_";
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private static readonly string[] DefaultSidecarKnownPoses =
@@ -261,9 +263,15 @@ namespace Reachy.ControlApp
         [Header("Window Controls")]
         [SerializeField] private int windowedWidth = 1280;
         [SerializeField] private int windowedHeight = 720;
+        [SerializeField] private bool runtimeFileLoggingEnabled = false;
 
         private ReachyGrpcClient _client;
         private string _status = "Idle.";
+        private readonly object _runtimeLogGate = new object();
+        private string _runtimeLogsDirectory = string.Empty;
+        private string _runtimeSessionLogPath = string.Empty;
+        private StreamWriter _runtimeLogWriter;
+        private bool _runtimeLogSessionInitialized;
         private Vector2 _leftPanelScroll;
         private Vector2 _jointScroll;
         private bool _collapsed;
@@ -536,6 +544,15 @@ namespace Reachy.ControlApp
             _windowedWidthText = windowedWidth.ToString(CultureInfo.InvariantCulture);
             _windowedHeightText = windowedHeight.ToString(CultureInfo.InvariantCulture);
             RefreshVoiceAgentStatusState();
+            if (runtimeFileLoggingEnabled)
+            {
+                InitializeRuntimeLogSession();
+                LogRuntimeEvent(
+                    "lifecycle",
+                    "awake",
+                    $"mode={GetModeLabel(mode)}; autoConnectOnPlay={autoConnectOnPlay}; autoReconnect={autoReconnect}; runtimeFileLoggingEnabled={runtimeFileLoggingEnabled}.",
+                    "INFO");
+            }
         }
 
         private void OnDestroy()
@@ -566,11 +583,13 @@ namespace Reachy.ControlApp
 
             _client?.Dispose();
             _client = null;
+            ShutdownRuntimeLogSession("OnDestroy");
         }
 
         private void OnApplicationQuit()
         {
             CleanupAllSidecarsOnShutdown("application quit");
+            ShutdownRuntimeLogSession("OnApplicationQuit");
         }
 
         private void Update()
@@ -610,6 +629,12 @@ namespace Reachy.ControlApp
                     bool pingOk = _client.Ping(out string pingMessage);
                     if (!pingOk)
                     {
+                        ReachyControlMode droppedMode = _connectedMode ?? mode;
+                        LogConnectionEvent(
+                            droppedMode,
+                            "health-check-failed",
+                            $"Ping failed: {pingMessage}",
+                            "WARN");
                         SetStatus("Connection lost", $"{pingMessage}\nScheduling auto-reconnect.");
                         _client.Disconnect();
                         ReachyControlMode reconnectMode = _connectedMode ?? mode;
@@ -2736,9 +2761,11 @@ namespace Reachy.ControlApp
         private bool ExecuteVoiceAction(VoiceCommandRouter.RoutedAction action, out string message)
         {
             message = string.Empty;
+            LogRuntimeEvent("voice", "action-received", $"{action.Kind}: {action.Summary}");
             if (IsActionBlockedBySimulationOnlyMode(action, out string blockReason))
             {
                 message = blockReason;
+                LogRuntimeEvent("voice", "action-blocked", blockReason, "WARN");
                 return false;
             }
 
@@ -2776,6 +2803,11 @@ namespace Reachy.ControlApp
                     message = started
                         ? $"Started voice-driven connect attempt for {GetModeLabel(mode)}."
                         : "Could not start voice connect attempt.";
+                    LogConnectionEvent(
+                        mode,
+                        "voice-connect",
+                        message,
+                        started ? "INFO" : "WARN");
                     return started;
                 }
 
@@ -2783,16 +2815,19 @@ namespace Reachy.ControlApp
                     if (_client == null || !_client.IsConnected)
                     {
                         message = "Disconnect ignored: not currently connected.";
+                        LogRuntimeEvent("voice", "disconnect-ignored", message, "WARN");
                         return false;
                     }
 
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Disconnected by voice command.");
+                    ReachyControlMode disconnectedMode = _connectedMode ?? mode;
                     _manualDisconnect = true;
                     _autoReconnectScheduled = false;
                     _client.Disconnect();
                     _connectedMode = null;
                     message = "Disconnected by voice command.";
+                    LogConnectionEvent(disconnectedMode, "voice-disconnect", message);
                     SetStatus("Voice disconnect", message);
                     return true;
 
@@ -2822,14 +2857,28 @@ namespace Reachy.ControlApp
                     if (_client == null || !_client.IsConnected)
                     {
                         message = "Pose command blocked: robot is not connected.";
+                        LogRuntimeEvent("voice", "set-pose-blocked", message, "WARN");
                         return false;
                     }
 
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_pose command.");
+                    bool setPoseTargetsRealRobot = IsRealRobotSessionActive();
+                    LogMotionEvent(
+                        "voice",
+                        "set-pose-attempt",
+                        $"pose={action.PoseName}; summary={action.Summary}",
+                        success: true,
+                        targetsRealRobot: setPoseTargetsRealRobot);
                     bool wasConnected = _client.IsConnected;
                     bool poseOk = _client.SendPresetPose(action.PoseName, out string poseMessage);
                     HandlePotentialDisconnectAfterOperation($"voice pose '{action.PoseName}'", wasConnected);
+                    LogMotionEvent(
+                        "voice",
+                        "set-pose-result",
+                        $"pose={action.PoseName}; result={(poseOk ? "ok" : "failed")}; detail={poseMessage}",
+                        success: poseOk,
+                        targetsRealRobot: setPoseTargetsRealRobot);
                     message = poseOk
                         ? $"Voice pose '{action.PoseName}' sent. {poseMessage}"
                         : $"Voice pose '{action.PoseName}' failed. {poseMessage}";
@@ -2840,14 +2889,28 @@ namespace Reachy.ControlApp
                     if (_client == null || !_client.IsConnected)
                     {
                         message = "Move-joint command blocked: robot is not connected.";
+                        LogRuntimeEvent("voice", "move-joint-blocked", message, "WARN");
                         return false;
                     }
 
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by move_joint command.");
+                    bool moveJointTargetsRealRobot = IsRealRobotSessionActive();
+                    LogMotionEvent(
+                        "voice",
+                        "move-joint-attempt",
+                        $"joint={action.JointName}; degrees={action.JointDegrees.ToString("F3", CultureInfo.InvariantCulture)}; summary={action.Summary}",
+                        success: true,
+                        targetsRealRobot: moveJointTargetsRealRobot);
                     bool wasConnectedBeforeJoint = _client.IsConnected;
                     bool jointOk = _client.SendSingleJointGoal(action.JointName, action.JointDegrees, out string jointMessage);
                     HandlePotentialDisconnectAfterOperation($"voice move_joint '{action.JointName}'", wasConnectedBeforeJoint);
+                    LogMotionEvent(
+                        "voice",
+                        "move-joint-result",
+                        $"joint={action.JointName}; degrees={action.JointDegrees.ToString("F3", CultureInfo.InvariantCulture)}; result={(jointOk ? "ok" : "failed")}; detail={jointMessage}",
+                        success: jointOk,
+                        targetsRealRobot: moveJointTargetsRealRobot);
                     message = jointOk
                         ? $"Voice joint command sent for '{action.JointName}'. {jointMessage}"
                         : $"Voice joint command failed for '{action.JointName}'. {jointMessage}";
@@ -2861,11 +2924,19 @@ namespace Reachy.ControlApp
                     if (_client == null || !_client.IsConnected)
                     {
                         message = "Hello command blocked: robot is not connected.";
+                        LogRuntimeEvent("voice", "hello-blocked", message, "WARN");
                         return false;
                     }
 
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Restarted by hello command.");
+                    bool helloTargetsRealRobot = IsRealRobotSessionActive();
+                    LogMotionEvent(
+                        "voice",
+                        "hello-attempt",
+                        $"pose={VoiceCommandRouter.HelloPoseName}",
+                        success: true,
+                        targetsRealRobot: helloTargetsRealRobot);
                     bool wasConnectedBeforeHello = _client.IsConnected;
                     bool helloPoseOk = _client.SendPresetPose(
                         VoiceCommandRouter.HelloPoseName,
@@ -2873,6 +2944,12 @@ namespace Reachy.ControlApp
                     HandlePotentialDisconnectAfterOperation(
                         $"voice hello pose '{VoiceCommandRouter.HelloPoseName}'",
                         wasConnectedBeforeHello);
+                    LogMotionEvent(
+                        "voice",
+                        "hello-result",
+                        $"pose={VoiceCommandRouter.HelloPoseName}; result={(helloPoseOk ? "ok" : "failed")}; detail={helloPoseMessage}",
+                        success: helloPoseOk,
+                        targetsRealRobot: helloTargetsRealRobot);
                     if (helloPoseOk)
                     {
                         _voiceHelloReturnCoroutine = StartCoroutine(
@@ -2901,6 +2978,12 @@ namespace Reachy.ControlApp
                     message = hadPending || stoppedSequence
                         ? BuildStopAcknowledgementMessage(hadPending, stoppedSequence)
                         : "Stop command acknowledged. No explicit robot stop API is available yet.";
+                    LogMotionEvent(
+                        "voice",
+                        "stop-motion",
+                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; message={message}",
+                        success: true,
+                        targetsRealRobot: IsRealRobotSessionActive());
                     SetStatus("Voice stop", message);
                     return true;
 
@@ -2916,6 +2999,7 @@ namespace Reachy.ControlApp
             if (_client == null || !_client.IsConnected)
             {
                 message = "Show movement command blocked: robot is not connected.";
+                LogRuntimeEvent("voice", "show-movement-blocked", message, "WARN");
                 return false;
             }
 
@@ -2923,6 +3007,7 @@ namespace Reachy.ControlApp
             if (availablePoses == null || availablePoses.Count == 0)
             {
                 message = "Show movement command blocked: no preset poses are available.";
+                LogRuntimeEvent("voice", "show-movement-blocked", message, "WARN");
                 return false;
             }
 
@@ -2932,9 +3017,17 @@ namespace Reachy.ControlApp
             if (selectedPoses.Count == 0)
             {
                 message = "Show movement command blocked: could not select random poses.";
+                LogRuntimeEvent("voice", "show-movement-blocked", message, "WARN");
                 return false;
             }
 
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "voice",
+                "show-movement-start",
+                $"poseCount={selectedPoses.Count}; poses={string.Join(", ", selectedPoses)}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
             _voiceShowMovementCoroutine = StartCoroutine(VoiceShowMovementSequenceCoroutine(selectedPoses));
             message =
                 $"Started show movement: {selectedPoses.Count} random poses with {VoiceShowMovementIntervalSeconds:F0}s spacing.";
@@ -2957,6 +3050,7 @@ namespace Reachy.ControlApp
                 {
                     string disconnectedMessage = "Show movement stopped: robot disconnected.";
                     _voiceLastActionResult = disconnectedMessage;
+                    LogRuntimeEvent("voice", "show-movement-stopped", disconnectedMessage, "WARN");
                     SetStatus("Voice show movement stopped", disconnectedMessage);
                     _voiceShowMovementCoroutine = null;
                     yield break;
@@ -2969,8 +3063,15 @@ namespace Reachy.ControlApp
                 }
 
                 bool wasConnected = _client.IsConnected;
+                bool targetsRealRobot = IsRealRobotSessionActive();
                 bool poseOk = _client.SendPresetPose(poseName, out string poseMessage);
                 HandlePotentialDisconnectAfterOperation($"voice show_movement pose '{poseName}'", wasConnected);
+                LogMotionEvent(
+                    "voice",
+                    "show-movement-pose",
+                    $"index={i + 1}/{poseNames.Count}; pose={poseName}; result={(poseOk ? "ok" : "failed")}; detail={poseMessage}",
+                    success: poseOk,
+                    targetsRealRobot: targetsRealRobot);
 
                 string perPoseMessage = poseOk
                     ? $"Show movement pose {i + 1}/{poseNames.Count} sent ('{poseName}'). {poseMessage}"
@@ -2988,6 +3089,12 @@ namespace Reachy.ControlApp
 
             string completedMessage = $"Show movement completed ({poseNames.Count} poses).";
             _voiceLastActionResult = completedMessage;
+            LogMotionEvent(
+                "voice",
+                "show-movement-complete",
+                completedMessage,
+                success: true,
+                targetsRealRobot: IsRealRobotSessionActive());
             SetStatus("Voice show movement", completedMessage);
             _voiceShowMovementCoroutine = null;
         }
@@ -3057,6 +3164,11 @@ namespace Reachy.ControlApp
 
             StopCoroutine(_voiceShowMovementCoroutine);
             _voiceShowMovementCoroutine = null;
+            LogRuntimeEvent(
+                "voice",
+                "show-movement-stopped",
+                string.IsNullOrWhiteSpace(reason) ? "Show movement sequence stopped." : reason,
+                "WARN");
 
             if (updateStatus)
             {
@@ -3081,14 +3193,28 @@ namespace Reachy.ControlApp
             _voiceHelloReturnCoroutine = null;
             if (_client == null || !_client.IsConnected)
             {
+                LogRuntimeEvent("voice", "hello-return-skipped", "Return-to-neutral skipped because robot is disconnected.", "WARN");
                 yield break;
             }
 
             bool wasConnected = _client.IsConnected;
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "voice",
+                "hello-return-attempt",
+                $"pose={VoiceHelloReturnPoseName}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
             bool neutralOk = _client.SendPresetPose(VoiceHelloReturnPoseName, out string neutralMessage);
             HandlePotentialDisconnectAfterOperation(
                 $"voice hello return pose '{VoiceHelloReturnPoseName}'",
                 wasConnected);
+            LogMotionEvent(
+                "voice",
+                "hello-return-result",
+                $"pose={VoiceHelloReturnPoseName}; result={(neutralOk ? "ok" : "failed")}; detail={neutralMessage}",
+                success: neutralOk,
+                targetsRealRobot: targetsRealRobot);
 
             string message = neutralOk
                 ? $"Returned to neutral pose '{VoiceHelloReturnPoseName}' after hello."
@@ -3108,6 +3234,11 @@ namespace Reachy.ControlApp
 
             StopCoroutine(_voiceHelloReturnCoroutine);
             _voiceHelloReturnCoroutine = null;
+            LogRuntimeEvent(
+                "voice",
+                "hello-return-timer-stopped",
+                string.IsNullOrWhiteSpace(reason) ? "Hello return timer stopped." : reason,
+                "WARN");
 
             if (updateStatus)
             {
@@ -4825,10 +4956,12 @@ namespace Reachy.ControlApp
                 GUI.enabled = !_isConnectAttemptInProgress;
                 if (GUILayout.Button("Disconnect", GUILayout.Height(30f)))
                 {
+                    ReachyControlMode disconnectedMode = _connectedMode ?? mode;
                     _manualDisconnect = true;
                     _autoReconnectScheduled = false;
                     _client.Disconnect();
                     _connectedMode = null;
+                    LogConnectionEvent(disconnectedMode, "manual-disconnect", "Disconnected by UI button.");
                     SetStatus("Disconnected", "Connection closed.");
                 }
                 GUI.enabled = previousEnabled;
@@ -4841,6 +4974,12 @@ namespace Reachy.ControlApp
                 {
                     bool wasConnected = _client.IsConnected;
                     bool ok = _client.RefreshJoints(out string message);
+                    ReachyControlMode activeMode = _connectedMode ?? mode;
+                    LogConnectionEvent(
+                        activeMode,
+                        "refresh-joints",
+                        $"Result={(ok ? "ok" : "failed")}; message={message}",
+                        ok ? "INFO" : "ERROR");
                     SetStatus(ok ? "Joint list updated" : "Refresh failed", message);
                     HandlePotentialDisconnectAfterOperation("joint refresh", wasConnected);
                 }
@@ -5116,8 +5255,21 @@ namespace Reachy.ControlApp
                 }
                 else
                 {
+                    bool targetsRealRobot = IsRealRobotSessionActive();
+                    LogMotionEvent(
+                        "manual",
+                        "single-joint-attempt",
+                        $"joint={jointName}; degrees={goal.ToString("F3", CultureInfo.InvariantCulture)}; mode={GetConnectedModeLabel()}",
+                        success: true,
+                        targetsRealRobot: targetsRealRobot);
                     bool wasConnected = _client.IsConnected;
                     bool ok = _client.SendSingleJointGoal(jointName, goal, out string message);
+                    LogMotionEvent(
+                        "manual",
+                        "single-joint-result",
+                        $"joint={jointName}; degrees={goal.ToString("F3", CultureInfo.InvariantCulture)}; result={(ok ? "ok" : "failed")}; detail={message}",
+                        success: ok,
+                        targetsRealRobot: targetsRealRobot);
                     SetStatus(ok ? "Command sent" : "Command failed", message);
                     HandlePotentialDisconnectAfterOperation("single joint command", wasConnected);
                 }
@@ -5162,8 +5314,21 @@ namespace Reachy.ControlApp
                     string presetName = presetNames[index];
                     if (GUILayout.Button(presetName, GUILayout.Height(28f)))
                     {
+                        bool targetsRealRobot = IsRealRobotSessionActive();
+                        LogMotionEvent(
+                            "manual",
+                            "preset-attempt",
+                            $"pose={presetName}; mode={GetConnectedModeLabel()}",
+                            success: true,
+                            targetsRealRobot: targetsRealRobot);
                         bool wasConnected = _client.IsConnected;
                         bool ok = _client.SendPresetPose(presetName, out string message);
+                        LogMotionEvent(
+                            "manual",
+                            "preset-result",
+                            $"pose={presetName}; result={(ok ? "ok" : "failed")}; detail={message}",
+                            success: ok,
+                            targetsRealRobot: targetsRealRobot);
                         SetStatus(ok ? $"Preset '{presetName}' sent" : $"Preset '{presetName}' failed", message);
                         HandlePotentialDisconnectAfterOperation($"preset '{presetName}'", wasConnected);
                     }
@@ -5178,10 +5343,326 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void InitializeRuntimeLogSession()
+        {
+            if (_runtimeLogSessionInitialized)
+            {
+                return;
+            }
+
+            try
+            {
+                string logsDirectory = EnsureRuntimeLogsDirectory();
+                string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+                string runtimeTag = Application.isEditor ? "editor" : "player";
+                _runtimeSessionLogPath = Path.Combine(
+                    logsDirectory,
+                    $"{RuntimeRunLogFilePrefix}{stamp}_{runtimeTag}.log");
+
+                _runtimeLogWriter = new StreamWriter(
+                    new FileStream(_runtimeSessionLogPath, FileMode.Create, FileAccess.Write, FileShare.Read),
+                    Encoding.UTF8);
+                _runtimeLogWriter.AutoFlush = true;
+                _runtimeLogSessionInitialized = true;
+
+                PruneRuntimeRunLogs();
+                LogRuntimeEvent(
+                    "lifecycle",
+                    "run-start",
+                    $"session={_runtimeSessionLogPath}; persistentDataPath={Application.persistentDataPath}; company={Application.companyName}; product={Application.productName}.",
+                    "INFO",
+                    forceWrite: true);
+            }
+            catch (Exception ex)
+            {
+                _runtimeLogSessionInitialized = false;
+                _runtimeLogWriter = null;
+                Debug.LogWarning($"[ReachyControlUI] Failed to initialize runtime logs: {ex.Message}");
+            }
+        }
+
+        private string EnsureRuntimeLogsDirectory()
+        {
+            if (string.IsNullOrWhiteSpace(_runtimeLogsDirectory))
+            {
+                _runtimeLogsDirectory = Path.Combine(
+                    Application.persistentDataPath,
+                    "ReachyControlApp",
+                    "Logs",
+                    "RuntimeRuns");
+            }
+
+            Directory.CreateDirectory(_runtimeLogsDirectory);
+            return _runtimeLogsDirectory;
+        }
+
+        private void PruneRuntimeRunLogs()
+        {
+            if (string.IsNullOrWhiteSpace(_runtimeLogsDirectory) || !Directory.Exists(_runtimeLogsDirectory))
+            {
+                return;
+            }
+
+            try
+            {
+                string[] files = Directory.GetFiles(
+                    _runtimeLogsDirectory,
+                    RuntimeRunLogFilePrefix + "*.log",
+                    SearchOption.TopDirectoryOnly);
+                if (files.Length <= RuntimeRunLogHistoryCount)
+                {
+                    return;
+                }
+
+                Array.Sort(
+                    files,
+                    (left, right) => string.CompareOrdinal(Path.GetFileName(right), Path.GetFileName(left)));
+                for (int i = RuntimeRunLogHistoryCount; i < files.Length; i++)
+                {
+                    try
+                    {
+                        File.Delete(files[i]);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[ReachyControlUI] Could not delete old run log '{files[i]}': {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[ReachyControlUI] Could not prune run logs: {ex.Message}");
+            }
+        }
+
+        private void ShutdownRuntimeLogSession(string reason)
+        {
+            lock (_runtimeLogGate)
+            {
+                if (_runtimeLogWriter == null)
+                {
+                    _runtimeLogSessionInitialized = false;
+                    return;
+                }
+
+                try
+                {
+                    string finalReason = string.IsNullOrWhiteSpace(reason) ? "unknown" : reason.Trim();
+                    _runtimeLogWriter.WriteLine(
+                        $"{DateTime.UtcNow:O} [INFO] [lifecycle] run-stop :: reason={NormalizeLogText(finalReason)}");
+                    _runtimeLogWriter.Flush();
+                    _runtimeLogWriter.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[ReachyControlUI] Failed to close runtime log session: {ex.Message}");
+                }
+                finally
+                {
+                    _runtimeLogWriter = null;
+                    _runtimeLogSessionInitialized = false;
+                }
+            }
+        }
+
+        private void LogRuntimeEvent(
+            string category,
+            string title,
+            string detail,
+            string severity = "INFO",
+            bool forceWrite = false)
+        {
+            if (!forceWrite && !runtimeFileLoggingEnabled)
+            {
+                return;
+            }
+
+            lock (_runtimeLogGate)
+            {
+                if (_runtimeLogWriter == null || !_runtimeLogSessionInitialized)
+                {
+                    return;
+                }
+
+                try
+                {
+                    string normalizedCategory = string.IsNullOrWhiteSpace(category)
+                        ? "general"
+                        : NormalizeLogText(category).ToLowerInvariant();
+                    string normalizedTitle = string.IsNullOrWhiteSpace(title)
+                        ? "event"
+                        : NormalizeLogText(title);
+                    string normalizedDetail = NormalizeLogText(detail);
+                    string normalizedSeverity = NormalizeLogSeverity(severity);
+                    string line = $"{DateTime.UtcNow:O} [{normalizedSeverity}] [{normalizedCategory}] {normalizedTitle}";
+                    if (!string.IsNullOrWhiteSpace(normalizedDetail))
+                    {
+                        line += $" :: {normalizedDetail}";
+                    }
+
+                    _runtimeLogWriter.WriteLine(line);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[ReachyControlUI] Runtime logging write failed: {ex.Message}");
+                }
+            }
+        }
+
+        private static string NormalizeLogSeverity(string severity)
+        {
+            string normalized = string.IsNullOrWhiteSpace(severity)
+                ? "INFO"
+                : severity.Trim().ToUpperInvariant();
+            if (normalized == "DEBUG" || normalized == "INFO" || normalized == "WARN" || normalized == "ERROR")
+            {
+                return normalized;
+            }
+
+            return "INFO";
+        }
+
+        private static string NormalizeLogText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            return value
+                .Replace("\r\n", " | ")
+                .Replace('\r', ' ')
+                .Replace('\n', ' ')
+                .Trim();
+        }
+
+        private static string InferStatusSeverity(string header, string detail)
+        {
+            string combined = ((header ?? string.Empty) + " " + (detail ?? string.Empty)).ToLowerInvariant();
+            if (combined.Contains("fail") ||
+                combined.Contains("error") ||
+                combined.Contains("exception") ||
+                combined.Contains("timeout"))
+            {
+                return "ERROR";
+            }
+
+            if (combined.Contains("lost") ||
+                combined.Contains("drop") ||
+                combined.Contains("blocked") ||
+                combined.Contains("cancel") ||
+                combined.Contains("warning"))
+            {
+                return "WARN";
+            }
+
+            return "INFO";
+        }
+
+        private bool IsRealRobotSessionActive()
+        {
+            return _client != null && _client.IsConnected && IsConnectionForMode(ReachyControlMode.RealRobot);
+        }
+
+        private void LogConnectionEvent(
+            ReachyControlMode targetMode,
+            string title,
+            string detail,
+            string severity = "INFO",
+            bool forceWrite = false)
+        {
+            string category = targetMode == ReachyControlMode.RealRobot ? "connect-real-robot" : "connect-sim";
+            LogRuntimeEvent(category, title, detail, severity, forceWrite);
+        }
+
+        private void LogMotionEvent(
+            string source,
+            string action,
+            string detail,
+            bool success,
+            bool targetsRealRobot)
+        {
+            string category = targetsRealRobot ? "motion-real-robot" : "motion";
+            string title = $"{source}:{action}";
+            string severity = success ? "INFO" : "ERROR";
+            LogRuntimeEvent(category, title, detail, severity);
+        }
+
+        private void OpenRuntimeLogsFolderInExplorer()
+        {
+            try
+            {
+                string logsDirectory = EnsureRuntimeLogsDirectory();
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+                var startInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = logsDirectory,
+                    Verb = "open",
+                    UseShellExecute = true
+                };
+                System.Diagnostics.Process.Start(startInfo);
+#else
+                Application.OpenURL("file://" + logsDirectory.Replace('\\', '/'));
+#endif
+                LogRuntimeEvent(
+                    "logging",
+                    "open-folder",
+                    $"Opened runtime log folder at {logsDirectory}.",
+                    "INFO",
+                    forceWrite: true);
+            }
+            catch (Exception ex)
+            {
+                LogRuntimeEvent(
+                    "logging",
+                    "open-folder-failed",
+                    ex.Message,
+                    "ERROR",
+                    forceWrite: true);
+                SetStatus("Log folder error", $"Could not open runtime log folder: {ex.Message}");
+            }
+        }
+
         private void DrawStatusSection()
         {
+            GUILayout.BeginHorizontal();
             GUILayout.Label("Status", _titleStyle);
+            GUILayout.FlexibleSpace();
+            bool previousLoggingEnabled = runtimeFileLoggingEnabled;
+            runtimeFileLoggingEnabled = GUILayout.Toggle(runtimeFileLoggingEnabled, "File Log", GUILayout.Width(78f));
+            if (runtimeFileLoggingEnabled != previousLoggingEnabled)
+            {
+                if (runtimeFileLoggingEnabled)
+                {
+                    InitializeRuntimeLogSession();
+                    LogRuntimeEvent(
+                        "logging",
+                        "toggle",
+                        "Runtime file logging enabled by operator.",
+                        "INFO",
+                        forceWrite: true);
+                }
+                else
+                {
+                    LogRuntimeEvent(
+                        "logging",
+                        "toggle",
+                        "Runtime file logging disabled by operator.",
+                        "WARN",
+                        forceWrite: true);
+                }
+            }
+
+            if (GUILayout.Button("Open Logs", GUILayout.Width(82f), GUILayout.Height(22f)))
+            {
+                OpenRuntimeLogsFolderInExplorer();
+            }
+            GUILayout.EndHorizontal();
             GUILayout.Label($"UI scale: {_uiScale:F2}x");
+            if (!string.IsNullOrWhiteSpace(_runtimeSessionLogPath))
+            {
+                GUILayout.Label($"Run log: {_runtimeSessionLogPath}");
+            }
             GUILayout.TextArea(_status, GUILayout.Height(120f));
         }
 
@@ -5195,6 +5676,7 @@ namespace Reachy.ControlApp
             }
             _status = sb.ToString();
             Debug.Log($"[ReachyControlUI] {header} - {detail}");
+            LogRuntimeEvent("status", header, detail, InferStatusSeverity(header, detail));
         }
 
         private void ApplyWindowedResolutionFromFields()
@@ -5252,6 +5734,10 @@ namespace Reachy.ControlApp
             }
 
             List<Endpoint> endpoints = BuildConnectionCandidates(targetMode);
+            LogConnectionEvent(
+                targetMode,
+                "connect-with-automation",
+                $"{statusHeader}: evaluating {endpoints.Count} endpoint candidate(s).");
             bool allowRestart = targetMode == ReachyControlMode.RealRobot && allowRestartSignalRecovery;
             int attempts = Math.Max(1, connectAttemptsPerHost);
             double retryDelay = Math.Max(0f, retryDelaySeconds);
@@ -5267,14 +5753,27 @@ namespace Reachy.ControlApp
                     aggregate.AppendLine($"{endpoint.Host}:{endpoint.Port}");
                     aggregate.AppendLine($"Skipped: {prepMessage}");
                     aggregate.AppendLine();
+                    LogConnectionEvent(
+                        targetMode,
+                        "endpoint-skipped",
+                        $"{endpoint.Host}:{endpoint.Port} skipped before gRPC connect: {prepMessage}",
+                        "WARN");
                     continue;
                 }
 
                 if (!string.IsNullOrWhiteSpace(prepMessage))
                 {
                     aggregate.AppendLine(prepMessage);
+                    LogConnectionEvent(
+                        targetMode,
+                        "endpoint-prepared",
+                        prepMessage);
                 }
 
+                LogConnectionEvent(
+                    targetMode,
+                    "attempt-endpoint",
+                    $"Trying {preparedEndpoint.Host}:{preparedEndpoint.Port} (attempts={attempts}, timeout={connectTimeout:F1}s, retryDelay={retryDelay:F1}s, restartRecovery={allowRestart}).");
                 bool ok = _client.ConnectWithRecovery(
                     preparedEndpoint.Host,
                     preparedEndpoint.Port,
@@ -5306,10 +5805,19 @@ namespace Reachy.ControlApp
                     _autoReconnectScheduled = false;
                     _connectedMode = targetMode;
                     _nextHealthCheckAt = Time.unscaledTime + Mathf.Max(0.5f, healthCheckIntervalSeconds);
+                    LogConnectionEvent(
+                        targetMode,
+                        "connect-success",
+                        $"{preparedEndpoint.Host}:{preparedEndpoint.Port} connected successfully. {connectMessage}");
                     SetStatus(statusHeader, aggregate.ToString().Trim());
                     return true;
                 }
 
+                LogConnectionEvent(
+                    targetMode,
+                    "connect-failure",
+                    $"{preparedEndpoint.Host}:{preparedEndpoint.Port} failed to connect. {connectMessage}",
+                    "ERROR");
                 aggregate.AppendLine();
             }
 
@@ -5320,6 +5828,11 @@ namespace Reachy.ControlApp
                 failureDetail = "No valid connection endpoints configured.";
             }
 
+            LogConnectionEvent(
+                targetMode,
+                "connect-failed-all-endpoints",
+                $"{statusHeader}: {failureDetail}",
+                "ERROR");
             SetStatus($"{statusHeader} failed", failureDetail);
             return false;
         }
@@ -5338,6 +5851,11 @@ namespace Reachy.ControlApp
 
             if (_isConnectAttemptInProgress)
             {
+                LogConnectionEvent(
+                    targetMode,
+                    "connect-attempt-ignored",
+                    $"{statusHeader}: connect attempt already in progress.",
+                    "WARN");
                 return false;
             }
 
@@ -5346,6 +5864,10 @@ namespace Reachy.ControlApp
             _isConnectAttemptInProgress = true;
             _connectAttemptMode = targetMode;
             _connectAttemptReconnectDelaySeconds = Mathf.Max(0f, reconnectDelayOnFailure);
+            LogConnectionEvent(
+                targetMode,
+                "connect-attempt-started",
+                $"{statusHeader}: ensureOneUiFrameBeforeConnect={ensureOneUiFrameBeforeConnect}, reconnectDelayOnFailure={_connectAttemptReconnectDelaySeconds:F2}s.");
             SetStatus(statusHeader, $"Attempting connection to {GetModeLabel(targetMode)}...");
             _connectAttemptCoroutine = StartCoroutine(
                 ConnectAttemptCoroutine(statusHeader, targetMode, ensureOneUiFrameBeforeConnect));
@@ -5385,6 +5907,10 @@ namespace Reachy.ControlApp
             _autoReconnectScheduled = true;
             _autoReconnectMode = reconnectMode;
             _nextAutoReconnectAt = Time.unscaledTime + Mathf.Max(0f, delaySeconds);
+            LogConnectionEvent(
+                reconnectMode,
+                "auto-reconnect-scheduled",
+                $"Next reconnect in {Mathf.Max(0f, delaySeconds):F2}s.");
         }
 
         private void HandlePotentialDisconnectAfterOperation(string context, bool wasConnectedBeforeOperation)
@@ -5397,6 +5923,11 @@ namespace Reachy.ControlApp
             ReachyControlMode reconnectMode = _connectedMode ?? mode;
             _connectedMode = null;
             ScheduleAutoReconnect(0.5f, reconnectMode);
+            LogConnectionEvent(
+                reconnectMode,
+                "connection-dropped-after-operation",
+                $"Detected after {context}.",
+                "WARN");
             SetStatus("Connection dropped", $"Detected after {context}. Auto-reconnect scheduled.");
         }
 
