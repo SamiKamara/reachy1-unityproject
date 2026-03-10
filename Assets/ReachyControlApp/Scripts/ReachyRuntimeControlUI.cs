@@ -14,8 +14,36 @@ namespace Reachy.ControlApp
 {
     public class ReachyRuntimeControlUI : MonoBehaviour
     {
+        private enum RuntimeMenuView
+        {
+            General = 0,
+            AI = 1,
+            AnimationsAndPoses = 2,
+            ManualControl = 3,
+            Teleoperation = 4,
+            Connections = 5
+        }
+
+        private static readonly string[] RuntimeMenuViewLabels =
+        {
+            "General",
+            "AI",
+            "Animations & Poses",
+            "Manual Control",
+            "Teleoperation",
+            "Connections"
+        };
         private const float DesignMarginPixels = 10f;
         private const float DesignPanelGap = 10f;
+        private const float DesignViewTopBarHeight = 42f;
+        private const float DesignViewTopBarGap = 8f;
+        private const float DesignMinimumTopBarWidth = 1220f;
+        private const float DesignTopBarGroupGap = 24f;
+        private const float DesignAiPanelWidthRatio = 0.32f;
+        private const float DesignAiPanelMinWidth = 340f;
+        private const float DesignAiPanelMaxWidth = 620f;
+        private const float DesignAiCenterOpenMinWidth = 320f;
+        private const float DesignAiMiddleSpaceFactor = 0.64f;
         private const float DesignLeftPanelWidth = 500f;
         private const float DesignRightPanelWidth = 430f;
         private const float DesignExpandedPanelHeight = 640f;
@@ -169,7 +197,7 @@ namespace Reachy.ControlApp
         [Header("Endpoints")]
         [SerializeField] private string simulationHost = "localhost";
         [SerializeField] private int simulationPort = 50055;
-        [SerializeField] private string robotHost = "192.168.1.118";
+        [SerializeField] private string robotHost = "192.168.1.109";
         [SerializeField] private int robotPort = 50055;
 
         [Header("Runtime")]
@@ -277,6 +305,7 @@ namespace Reachy.ControlApp
         private Vector2 _leftPanelScroll;
         private Vector2 _jointScroll;
         private bool _collapsed;
+        private RuntimeMenuView _activeMenuView = RuntimeMenuView.General;
         private GUIStyle _titleStyle;
         private float _nextHealthCheckAt;
         private float _nextAutoReconnectAt;
@@ -302,6 +331,11 @@ namespace Reachy.ControlApp
         private string _cameraPreviewHost = string.Empty;
         private int _cameraPreviewPort;
         private Vector2 _localAgentScroll;
+        private Vector2 _connectionsScroll;
+        private Vector2 _manualControlScroll;
+        private Vector2 _animationsAndPosesScroll;
+        private Vector2 _aiPrimaryScroll;
+        private Vector2 _aiRuntimeScroll;
         private VoiceAgentBridge _voiceAgentBridge;
         private VoiceCommandRouter _voiceCommandRouter;
         private VoiceTranscriptIntentParser _voiceTranscriptParser;
@@ -4034,8 +4068,12 @@ namespace Reachy.ControlApp
             float topPanelsWidth = _collapsed
                 ? DesignLeftPanelWidth
                 : DesignLeftPanelWidth + DesignPanelGap + DesignRightPanelWidth;
-            float designTotalWidth = topPanelsWidth;
-            float designTotalHeight = _collapsed ? DesignCollapsedPanelHeight : DesignExpandedPanelHeight;
+            float topBarWidth = Mathf.Max(topPanelsWidth, DesignMinimumTopBarWidth);
+            float designTotalWidth = topBarWidth;
+            float designTotalHeight =
+                (_collapsed ? DesignCollapsedPanelHeight : DesignExpandedPanelHeight) +
+                DesignViewTopBarHeight +
+                DesignViewTopBarGap;
 
             float availableWidth = Mathf.Max(160f, Screen.width - (2f * DesignMarginPixels));
             float availableHeight = Mathf.Max(160f, Screen.height - (2f * DesignMarginPixels));
@@ -4048,12 +4086,54 @@ namespace Reachy.ControlApp
             float logicalMargin = DesignMarginPixels / _uiScale;
             float logicalScreenWidth = Screen.width / _uiScale;
             float logicalScreenHeight = Screen.height / _uiScale;
+            float topBarX = 0f;
+            float topBarY = logicalMargin;
+            DrawViewTopBar(new Rect(topBarX, topBarY, logicalScreenWidth, DesignViewTopBarHeight));
+
             float leftPanelX = logicalMargin;
-            float topY = logicalMargin;
+            float topY = topBarY + DesignViewTopBarHeight + DesignViewTopBarGap;
+
+            if (_activeMenuView != RuntimeMenuView.General)
+            {
+                if (_activeMenuView == RuntimeMenuView.AI)
+                {
+                    DrawAiView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
+                if (_activeMenuView == RuntimeMenuView.AnimationsAndPoses)
+                {
+                    DrawAnimationsAndPosesView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
+                if (_activeMenuView == RuntimeMenuView.ManualControl)
+                {
+                    DrawManualControlView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
+                if (_activeMenuView == RuntimeMenuView.Connections)
+                {
+                    DrawConnectionsView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
+                float placeholderHeight = Mathf.Max(160f, logicalScreenHeight - topY - logicalMargin);
+                DrawPlaceholderMenuView(new Rect(leftPanelX, topY, topBarWidth, placeholderHeight));
+                GUI.matrix = previousMatrix;
+                return;
+            }
 
             if (localAiAgentPanelExpanded)
             {
-                DrawLocalAgentPanel(new Rect(0f, 0f, logicalScreenWidth, logicalScreenHeight));
+                float expandedPanelWidth = Mathf.Max(240f, logicalScreenWidth - (2f * logicalMargin));
+                float expandedPanelHeight = Mathf.Max(160f, logicalScreenHeight - topY - logicalMargin);
+                DrawLocalAgentPanel(new Rect(leftPanelX, topY, expandedPanelWidth, expandedPanelHeight));
                 GUI.matrix = previousMatrix;
                 return;
             }
@@ -4069,7 +4149,7 @@ namespace Reachy.ControlApp
                     float cameraPanelWidth = Mathf.Min(DesignCameraPanelWidth, logicalMaxWidth);
                     float cameraPanelHeight = Mathf.Min(
                         DesignCameraPanelHeight,
-                        Mathf.Max(140f, logicalScreenHeight - (2f * logicalMargin)));
+                        Mathf.Max(140f, logicalScreenHeight - topY - logicalMargin));
                     float cameraPanelX = (logicalScreenWidth - cameraPanelWidth) * 0.5f;
                     float cameraPanelY = logicalScreenHeight - logicalMargin - cameraPanelHeight;
                     DrawCameraPreviewPanel(new Rect(cameraPanelX, cameraPanelY, cameraPanelWidth, cameraPanelHeight));
@@ -4078,7 +4158,7 @@ namespace Reachy.ControlApp
             else
             {
                 float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
-                float topPanelHeight = Mathf.Max(220f, logicalScreenHeight - (2f * logicalMargin));
+                float topPanelHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
 
                 float leftPanelWidth = usableWidth * ExpandedLeftPanelWidthRatio;
                 float rightPanelWidth = usableWidth * ExpandedRightPanelWidthRatio;
@@ -4129,6 +4209,1156 @@ namespace Reachy.ControlApp
             }
 
             GUI.matrix = previousMatrix;
+        }
+
+        private void DrawViewTopBar(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Views", GUILayout.Width(44f));
+
+            for (int i = 0; i < RuntimeMenuViewLabels.Length; i++)
+            {
+                RuntimeMenuView candidateView = (RuntimeMenuView)i;
+                bool isActive = candidateView == _activeMenuView;
+                float buttonWidth = CalcUiButtonWidth(RuntimeMenuViewLabels[i], 72f);
+                bool toggled = GUILayout.Toggle(
+                    isActive,
+                    RuntimeMenuViewLabels[i],
+                    GUI.skin.button,
+                    GUILayout.Width(buttonWidth),
+                    GUILayout.Height(24f));
+                if (toggled && !isActive)
+                {
+                    _activeMenuView = candidateView;
+                    if (_activeMenuView != RuntimeMenuView.General)
+                    {
+                        localAiAgentPanelExpanded = false;
+                    }
+                }
+
+                if (i < RuntimeMenuViewLabels.Length - 1)
+                {
+                    GUILayout.Space(8f);
+                }
+            }
+
+            GUILayout.FlexibleSpace();
+            GUILayout.Space(DesignTopBarGroupGap);
+
+            GUILayout.Label("Windowed", GUILayout.Width(CalcUiLabelWidth("Windowed", 4f)));
+            _windowedWidthText = GUILayout.TextField(_windowedWidthText, GUILayout.Width(58f));
+            GUILayout.Label("x", GUILayout.Width(CalcUiLabelWidth("x", 2f)));
+            _windowedHeightText = GUILayout.TextField(_windowedHeightText, GUILayout.Width(58f));
+
+            if (GUILayout.Button("Windowed", GUILayout.Width(CalcUiButtonWidth("Windowed", 76f)), GUILayout.Height(24f)))
+            {
+                ApplyWindowedResolutionFromFields();
+            }
+
+            if (GUILayout.Button("Fullscreen", GUILayout.Width(CalcUiButtonWidth("Fullscreen", 88f)), GUILayout.Height(24f)))
+            {
+                SetFullscreenToDesktopResolution();
+            }
+
+            if (GUILayout.Button("Exit", GUILayout.Width(CalcUiButtonWidth("Exit", 52f)), GUILayout.Height(24f)))
+            {
+                SetStatus("Exit requested", "Closing application.");
+                Application.Quit();
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndArea();
+        }
+
+        private static float CalcUiButtonWidth(string text, float minWidth)
+        {
+            GUIStyle style = GUI.skin != null ? GUI.skin.button : null;
+            if (style == null)
+            {
+                return Mathf.Max(minWidth, 72f);
+            }
+
+            float width = style.CalcSize(new GUIContent(text)).x + 18f;
+            return Mathf.Max(minWidth, width);
+        }
+
+        private static float CalcUiLabelWidth(string text, float extraPadding)
+        {
+            GUIStyle style = GUI.skin != null ? GUI.skin.label : null;
+            if (style == null)
+            {
+                return Mathf.Max(12f, (text?.Length ?? 0) * 8f + extraPadding);
+            }
+
+            return style.CalcSize(new GUIContent(text)).x + extraPadding;
+        }
+
+        private static float AiW(float baseWidth, float widthScale, float minWidth = 20f)
+        {
+            return Mathf.Max(minWidth, baseWidth * widthScale);
+        }
+
+        private static float GetAiRuntimeContentWidth(float panelWidth)
+        {
+            float innerWidth = Mathf.Max(220f, panelWidth - 24f);
+            float minWidth = Mathf.Min(236f, innerWidth);
+            float maxWidth = Mathf.Max(minWidth, Mathf.Min(336f, innerWidth));
+            return Mathf.Clamp(innerWidth * 0.62f, minWidth, maxWidth);
+        }
+
+        private static float GetAiRuntimeHalfWidth(float totalWidth)
+        {
+            return Mathf.Max(96f, (totalWidth - 8f) * 0.5f);
+        }
+
+        private static void BeginAiCenteredColumn(float width)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            GUILayout.BeginVertical(GUILayout.Width(width));
+        }
+
+        private static void EndAiCenteredColumn()
+        {
+            GUILayout.EndVertical();
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawPlaceholderMenuView(Rect area)
+        {
+            string selectedViewName = RuntimeMenuViewLabels[(int)_activeMenuView];
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label(selectedViewName, _titleStyle);
+            GUILayout.Space(10f);
+            GUILayout.Label($"Menu items for the {selectedViewName} view will be added here.");
+            GUILayout.EndArea();
+        }
+
+        private void DrawAnimationsAndPosesView(
+            float topY,
+            float logicalMargin,
+            float logicalScreenWidth,
+            float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float desiredPanelWidth = Mathf.Clamp(
+                usableWidth * DesignAiPanelWidthRatio,
+                DesignAiPanelMinWidth,
+                DesignAiPanelMaxWidth);
+            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignAiCenterOpenMinWidth) * 0.5f);
+            float leftPanelWidth = Mathf.Min(desiredPanelWidth, maxPanelWidthByOpenSpace);
+            float rightPanelWidth = leftPanelWidth;
+
+            float originalCenterGap = Mathf.Max(0f, usableWidth - leftPanelWidth - rightPanelWidth);
+            float targetCenterGap = originalCenterGap * DesignAiMiddleSpaceFactor;
+            float expandPerSide = Mathf.Max(0f, (originalCenterGap - targetCenterGap) * 0.5f);
+            leftPanelWidth += expandPerSide;
+            rightPanelWidth += expandPerSide;
+
+            float minimumGap = Mathf.Max(12f, DesignPanelGap);
+            float availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+            if (availableGap < minimumGap)
+            {
+                float deficit = minimumGap - availableGap;
+                float leftShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, leftPanelWidth - 140f));
+                float rightShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, rightPanelWidth - 140f));
+                leftPanelWidth -= leftShrink;
+                rightPanelWidth -= rightShrink;
+
+                availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+                if (availableGap < minimumGap)
+                {
+                    float remainingDeficit = minimumGap - availableGap;
+                    float rightExtraShrink = Mathf.Min(remainingDeficit, Mathf.Max(0f, rightPanelWidth - 140f));
+                    rightPanelWidth -= rightExtraShrink;
+                }
+            }
+
+            float leftPanelX = logicalMargin;
+            float rightPanelX = logicalScreenWidth - logicalMargin - rightPanelWidth;
+
+            DrawAnimationsAndPosesControlsPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawAnimationsAndPosesStatusPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+        }
+
+        private void DrawAnimationsAndPosesControlsPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Animations & Poses", _titleStyle);
+
+            float bodyHeight = Mathf.Max(120f, area.height - 38f);
+            _animationsAndPosesScroll = GUILayout.BeginScrollView(
+                _animationsAndPosesScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            DrawPoseSpeedSliderSection();
+            GUILayout.Space(10f);
+            DrawPresetSection();
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawAnimationsAndPosesStatusPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            DrawStatusSection();
+            GUILayout.EndArea();
+        }
+
+        private void DrawManualControlView(
+            float topY,
+            float logicalMargin,
+            float logicalScreenWidth,
+            float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float desiredPanelWidth = Mathf.Clamp(
+                usableWidth * DesignAiPanelWidthRatio,
+                DesignAiPanelMinWidth,
+                DesignAiPanelMaxWidth);
+            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignAiCenterOpenMinWidth) * 0.5f);
+            float leftPanelWidth = Mathf.Min(desiredPanelWidth, maxPanelWidthByOpenSpace);
+            float rightPanelWidth = leftPanelWidth;
+
+            float originalCenterGap = Mathf.Max(0f, usableWidth - leftPanelWidth - rightPanelWidth);
+            float targetCenterGap = originalCenterGap * DesignAiMiddleSpaceFactor;
+            float expandPerSide = Mathf.Max(0f, (originalCenterGap - targetCenterGap) * 0.5f);
+            leftPanelWidth += expandPerSide;
+            rightPanelWidth += expandPerSide;
+
+            float minimumGap = Mathf.Max(12f, DesignPanelGap);
+            float availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+            if (availableGap < minimumGap)
+            {
+                float deficit = minimumGap - availableGap;
+                float leftShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, leftPanelWidth - 140f));
+                float rightShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, rightPanelWidth - 140f));
+                leftPanelWidth -= leftShrink;
+                rightPanelWidth -= rightShrink;
+
+                availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+                if (availableGap < minimumGap)
+                {
+                    float remainingDeficit = minimumGap - availableGap;
+                    float rightExtraShrink = Mathf.Min(remainingDeficit, Mathf.Max(0f, rightPanelWidth - 140f));
+                    rightPanelWidth -= rightExtraShrink;
+                }
+            }
+
+            float leftPanelX = logicalMargin;
+            float rightPanelX = logicalScreenWidth - logicalMargin - rightPanelWidth;
+
+            DrawManualControlPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawManualControlStatusPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+        }
+
+        private void DrawManualControlPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Manual Control", _titleStyle);
+
+            float bodyHeight = Mathf.Max(120f, area.height - 38f);
+            _manualControlScroll = GUILayout.BeginScrollView(
+                _manualControlScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            DrawJointSection();
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawManualControlStatusPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            DrawStatusSection();
+            GUILayout.EndArea();
+        }
+
+        private void DrawConnectionsView(
+            float topY,
+            float logicalMargin,
+            float logicalScreenWidth,
+            float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float desiredPanelWidth = Mathf.Clamp(
+                usableWidth * DesignAiPanelWidthRatio,
+                DesignAiPanelMinWidth,
+                DesignAiPanelMaxWidth);
+            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignAiCenterOpenMinWidth) * 0.5f);
+            float leftPanelWidth = Mathf.Min(desiredPanelWidth, maxPanelWidthByOpenSpace);
+            float rightPanelWidth = leftPanelWidth;
+
+            float originalCenterGap = Mathf.Max(0f, usableWidth - leftPanelWidth - rightPanelWidth);
+            float targetCenterGap = originalCenterGap * DesignAiMiddleSpaceFactor;
+            float expandPerSide = Mathf.Max(0f, (originalCenterGap - targetCenterGap) * 0.5f);
+            leftPanelWidth += expandPerSide;
+            rightPanelWidth += expandPerSide;
+
+            float minimumGap = Mathf.Max(12f, DesignPanelGap);
+            float availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+            if (availableGap < minimumGap)
+            {
+                float deficit = minimumGap - availableGap;
+                float leftShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, leftPanelWidth - 140f));
+                float rightShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, rightPanelWidth - 140f));
+                leftPanelWidth -= leftShrink;
+                rightPanelWidth -= rightShrink;
+
+                availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+                if (availableGap < minimumGap)
+                {
+                    float remainingDeficit = minimumGap - availableGap;
+                    float rightExtraShrink = Mathf.Min(remainingDeficit, Mathf.Max(0f, rightPanelWidth - 140f));
+                    rightPanelWidth -= rightExtraShrink;
+                }
+            }
+
+            float leftPanelX = logicalMargin;
+            float rightPanelX = logicalScreenWidth - logicalMargin - rightPanelWidth;
+
+            DrawConnectionsPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawConnectionsStatusPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+        }
+
+        private void DrawConnectionsPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Connections", _titleStyle);
+
+            float bodyHeight = Mathf.Max(120f, area.height - 38f);
+            _connectionsScroll = GUILayout.BeginScrollView(
+                _connectionsScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            DrawConnectionSection();
+            GUILayout.Space(10f);
+            DrawAutomationSection();
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawConnectionsStatusPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            DrawStatusSection();
+            GUILayout.EndArea();
+        }
+
+        private void DrawPoseSpeedSliderSection()
+        {
+            GUILayout.Label("Pose Speed", _titleStyle);
+            GUILayout.Label("Adjust preset pose transition speed.");
+
+            presetPoseTransitionSpeedScale = GUILayout.HorizontalSlider(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
+            presetPoseTransitionSpeedScale = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
+            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Slow");
+            GUILayout.FlexibleSpace();
+            GUILayout.Label($"{Mathf.RoundToInt(presetPoseTransitionSpeedScale * 100f)}%");
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("Fast");
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawAiView(float topY, float logicalMargin, float logicalScreenWidth, float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float desiredPanelWidth = Mathf.Clamp(
+                usableWidth * DesignAiPanelWidthRatio,
+                DesignAiPanelMinWidth,
+                DesignAiPanelMaxWidth);
+            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignAiCenterOpenMinWidth) * 0.5f);
+            float aiPanelWidth = Mathf.Min(desiredPanelWidth, maxPanelWidthByOpenSpace);
+            float leftPanelWidth = aiPanelWidth;
+            float rightPanelWidth = aiPanelWidth;
+
+            float originalCenterGap = Mathf.Max(0f, usableWidth - leftPanelWidth - rightPanelWidth);
+            float targetCenterGap = originalCenterGap * DesignAiMiddleSpaceFactor;
+            float expandPerSide = Mathf.Max(0f, (originalCenterGap - targetCenterGap) * 0.5f);
+            leftPanelWidth += expandPerSide;
+            rightPanelWidth += expandPerSide;
+
+            float minimumGap = Mathf.Max(12f, DesignPanelGap);
+            float availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+            if (availableGap < minimumGap)
+            {
+                float deficit = minimumGap - availableGap;
+                float leftShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, leftPanelWidth - 140f));
+                float rightShrink = Mathf.Min(deficit * 0.5f, Mathf.Max(0f, rightPanelWidth - 140f));
+                leftPanelWidth -= leftShrink;
+                rightPanelWidth -= rightShrink;
+
+                availableGap = usableWidth - leftPanelWidth - rightPanelWidth;
+                if (availableGap < minimumGap)
+                {
+                    float remainingDeficit = minimumGap - availableGap;
+                    float rightExtraShrink = Mathf.Min(remainingDeficit, Mathf.Max(0f, rightPanelWidth - 140f));
+                    rightPanelWidth -= rightExtraShrink;
+                }
+            }
+
+            float leftPanelX = logicalMargin;
+            float rightPanelX = logicalScreenWidth - logicalMargin - rightPanelWidth;
+            float centerPanelX = leftPanelX + leftPanelWidth;
+            float centerPanelWidth = Mathf.Max(0f, rightPanelX - centerPanelX);
+
+            DrawAiPrimaryPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawAiRuntimePanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+
+            float statusPanelHeight = Mathf.Min(DesignCameraPanelHeight, Mathf.Max(220f, usableHeight * 0.38f));
+            float statusPanelY = topY + usableHeight - statusPanelHeight;
+            if (centerPanelWidth >= 180f && statusPanelHeight >= 120f)
+            {
+                DrawAiStatusWindowPanel(new Rect(centerPanelX, statusPanelY, centerPanelWidth, statusPanelHeight));
+            }
+        }
+
+        private void DrawAiPrimaryPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("AI Input & Parsing", _titleStyle);
+            float aiWidthScale = Mathf.Clamp((area.width - 24f) / 700f, 0.62f, 0.92f);
+            bool aiCompact = area.width < 620f;
+
+            bool previousEnabled = enableLocalAiAgent;
+            enableLocalAiAgent = GUILayout.Toggle(enableLocalAiAgent, "Enable local AI agent");
+            if (previousEnabled && !enableLocalAiAgent)
+            {
+                RejectPendingVoiceAction();
+            }
+
+            GUILayout.Label("Voice endpoint, parser safety, listening, and microphone controls.");
+
+            float bodyHeight = Mathf.Max(60f, area.height - 80f);
+            _aiPrimaryScroll = GUILayout.BeginScrollView(
+                _aiPrimaryScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Endpoint", GUILayout.Width(AiW(62f, aiWidthScale)));
+            localAiAgentEndpoint = GUILayout.TextField(localAiAgentEndpoint);
+            GUILayout.EndHorizontal();
+
+            if (aiCompact)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Load cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool loaded = TryLoadVoiceAgentConfigFromDisk(out string loadMessage);
+                    _voiceLastActionResult = loadMessage;
+                    if (!loaded)
+                    {
+                        _voiceLastParserMessage = loadMessage;
+                    }
+                }
+                if (GUILayout.Button("Save cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+                    _voiceLastActionResult = saveMessage;
+                    if (!saved)
+                    {
+                        _voiceLastParserMessage = saveMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Sync sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+                    _voiceLastActionResult = syncMessage;
+                    if (!synced)
+                    {
+                        _voiceLastParserMessage = syncMessage;
+                    }
+                }
+                if (GUILayout.Button("Load sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool loadedSidecar = TryLoadLocalSidecarConfigIntoUi(out string sidecarLoadMessage);
+                    _voiceLastActionResult = sidecarLoadMessage;
+                    if (!loadedSidecar)
+                    {
+                        _voiceLastParserMessage = sidecarLoadMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Load cfg", GUILayout.Width(AiW(72f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool loaded = TryLoadVoiceAgentConfigFromDisk(out string loadMessage);
+                    _voiceLastActionResult = loadMessage;
+                    if (!loaded)
+                    {
+                        _voiceLastParserMessage = loadMessage;
+                    }
+                }
+                if (GUILayout.Button("Save cfg", GUILayout.Width(AiW(72f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+                    _voiceLastActionResult = saveMessage;
+                    if (!saved)
+                    {
+                        _voiceLastParserMessage = saveMessage;
+                    }
+                }
+                if (GUILayout.Button("Sync sidecar", GUILayout.Width(AiW(92f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+                    _voiceLastActionResult = syncMessage;
+                    if (!synced)
+                    {
+                        _voiceLastParserMessage = syncMessage;
+                    }
+                }
+                if (GUILayout.Button("Load sidecar", GUILayout.Width(AiW(92f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool loadedSidecar = TryLoadLocalSidecarConfigIntoUi(out string sidecarLoadMessage);
+                    _voiceLastActionResult = sidecarLoadMessage;
+                    if (!loadedSidecar)
+                    {
+                        _voiceLastParserMessage = sidecarLoadMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Poll(s)", GUILayout.Width(AiW(62f, aiWidthScale)));
+            string pollText = GUILayout.TextField(
+                localAiAgentPollIntervalSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(pollText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedPoll))
+            {
+                localAiAgentPollIntervalSeconds = Mathf.Max(0.1f, parsedPoll);
+            }
+
+            GUILayout.Label("Conf", GUILayout.Width(AiW(34f, aiWidthScale)));
+            string confText = GUILayout.TextField(
+                localAiAgentConfidenceThreshold.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(confText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedConf))
+            {
+                localAiAgentConfidenceThreshold = Mathf.Clamp01(parsedConf);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentEnableTranscriptParser = GUILayout.Toggle(
+                localAiAgentEnableTranscriptParser,
+                "Enable transcript parser",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            GUILayout.Label("STT conf", GUILayout.Width(AiW(52f, aiWidthScale)));
+            string sttConfText = GUILayout.TextField(
+                localAiAgentTranscriptConfidence.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(sttConfText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedSttConf))
+            {
+                localAiAgentTranscriptConfidence = Mathf.Clamp01(parsedSttConf);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Min chars", GUILayout.Width(AiW(58f, aiWidthScale)));
+            string minCharsText = GUILayout.TextField(
+                localAiAgentMinTranscriptChars.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(56f, aiWidthScale)));
+            if (int.TryParse(
+                minCharsText,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedMinChars))
+            {
+                localAiAgentMinTranscriptChars = Mathf.Max(0, parsedMinChars);
+            }
+
+            GUILayout.Label("Min words", GUILayout.Width(AiW(60f, aiWidthScale)));
+            string minWordsText = GUILayout.TextField(
+                localAiAgentMinTranscriptWords.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(56f, aiWidthScale)));
+            if (int.TryParse(
+                minWordsText,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedMinWords))
+            {
+                localAiAgentMinTranscriptWords = Mathf.Max(0, parsedMinWords);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentUseSafeNumericParsing = GUILayout.Toggle(
+                localAiAgentUseSafeNumericParsing,
+                "Safe numeric parsing",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            localAiAgentRequireTargetTokenForJoint = GUILayout.Toggle(
+                localAiAgentRequireTargetTokenForJoint,
+                "Require 'to/at'",
+                GUILayout.Width(AiW(110f, aiWidthScale)));
+            localAiAgentRejectOutOfRangeJointCommands = GUILayout.Toggle(
+                localAiAgentRejectOutOfRangeJointCommands,
+                "Reject out-of-range",
+                GUILayout.Width(AiW(140f, aiWidthScale)));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Joint min", GUILayout.Width(AiW(58f, aiWidthScale)));
+            string jointMinText = GUILayout.TextField(
+                localAiAgentJointMinDegrees.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(70f, aiWidthScale)));
+            if (float.TryParse(
+                jointMinText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedJointMin))
+            {
+                localAiAgentJointMinDegrees = parsedJointMin;
+            }
+
+            GUILayout.Label("max", GUILayout.Width(AiW(30f, aiWidthScale)));
+            string jointMaxText = GUILayout.TextField(
+                localAiAgentJointMaxDegrees.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(70f, aiWidthScale)));
+            if (float.TryParse(
+                jointMaxText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedJointMax))
+            {
+                localAiAgentJointMaxDegrees = parsedJointMax;
+            }
+            if (localAiAgentJointMinDegrees > localAiAgentJointMaxDegrees)
+            {
+                float swap = localAiAgentJointMinDegrees;
+                localAiAgentJointMinDegrees = localAiAgentJointMaxDegrees;
+                localAiAgentJointMaxDegrees = swap;
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentSuppressDuplicateCommands = GUILayout.Toggle(
+                localAiAgentSuppressDuplicateCommands,
+                "Suppress duplicates",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            GUILayout.Label("Dup win", GUILayout.Width(AiW(52f, aiWidthScale)));
+            string dupWindowText = GUILayout.TextField(
+                localAiAgentDuplicateCommandWindowSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(
+                dupWindowText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedDupWindow))
+            {
+                localAiAgentDuplicateCommandWindowSeconds = Mathf.Max(0.05f, parsedDupWindow);
+            }
+            localAiAgentSimulationOnlyMode = GUILayout.Toggle(
+                localAiAgentSimulationOnlyMode,
+                "Simulation-only voice",
+                GUILayout.Width(AiW(150f, aiWidthScale)));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentEnableTtsFeedback = GUILayout.Toggle(
+                localAiAgentEnableTtsFeedback,
+                "Enable TTS feedback",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            GUILayout.Label("TTS gap", GUILayout.Width(AiW(52f, aiWidthScale)));
+            string ttsGapText = GUILayout.TextField(
+                localAiAgentTtsMinIntervalSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(ttsGapText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedTtsGap))
+            {
+                localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, parsedTtsGap);
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("TTS url", GUILayout.Width(AiW(62f, aiWidthScale)));
+            localAiAgentTtsEndpoint = GUILayout.TextField(localAiAgentTtsEndpoint);
+            bool previousSpeakButtonEnabled = GUI.enabled;
+            GUI.enabled = enableLocalAiAgent && localAiAgentEnableTtsFeedback;
+            if (GUILayout.Button("Speak test", GUILayout.Width(AiW(88f, aiWidthScale)), GUILayout.Height(22f)))
+            {
+                QueueVoiceFeedback("Local TTS feedback test message.", interrupt: false);
+            }
+            GUI.enabled = previousSpeakButtonEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentEnablePushToTalk = GUILayout.Toggle(
+                localAiAgentEnablePushToTalk,
+                "Push-to-talk mode",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            GUILayout.Label("PTT key", GUILayout.Width(AiW(52f, aiWidthScale)));
+            localAiAgentPushToTalkKey = GUILayout.TextField(localAiAgentPushToTalkKey, GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (!localAiAgentEnablePushToTalk)
+            {
+                localAiAgentListeningEnabled = GUILayout.Toggle(
+                    localAiAgentListeningEnabled,
+                    "Listening enabled",
+                    GUILayout.Width(AiW(128f, aiWidthScale)));
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Listen url", GUILayout.Width(AiW(62f, aiWidthScale)));
+            localAiAgentListeningEndpoint = GUILayout.TextField(localAiAgentListeningEndpoint);
+            bool previousListenButtonEnabled = GUI.enabled;
+            GUI.enabled = enableLocalAiAgent;
+            if (GUILayout.Button("Listen ON", GUILayout.Width(AiW(78f, aiWidthScale)), GUILayout.Height(22f)))
+            {
+                localAiAgentListeningEnabled = true;
+                RequestRemoteListeningState(true, force: true);
+            }
+            if (GUILayout.Button("Listen OFF", GUILayout.Width(AiW(82f, aiWidthScale)), GUILayout.Height(22f)))
+            {
+                localAiAgentListeningEnabled = false;
+                RequestRemoteListeningState(false, force: true);
+            }
+            GUI.enabled = previousListenButtonEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentIgnoreVirtualMicrophones = GUILayout.Toggle(
+                localAiAgentIgnoreVirtualMicrophones,
+                "Prefer physical mic",
+                GUILayout.Width(AiW(136f, aiWidthScale)));
+            if (GUILayout.Button("Auto mic", GUILayout.Width(AiW(72f, aiWidthScale)), GUILayout.Height(22f)))
+            {
+                EnsurePreferredMicrophoneDevice(forceAuto: true);
+            }
+            if (GUILayout.Button("Refresh mics", GUILayout.Width(AiW(92f, aiWidthScale)), GUILayout.Height(22f)))
+            {
+                EnsurePreferredMicrophoneDevice();
+            }
+            GUILayout.EndHorizontal();
+
+            string[] orderedMicDevices = GetOrderedMicrophoneDevices();
+            string selectedMicLabel = string.IsNullOrWhiteSpace(localAiAgentPreferredMicrophoneDeviceName)
+                ? "No microphone detected"
+                : localAiAgentPreferredMicrophoneDeviceName;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Mic", GUILayout.Width(AiW(62f, aiWidthScale)));
+            float micButtonWidth = Mathf.Max(
+                84f,
+                area.width - AiW(62f, aiWidthScale) - AiW(130f, aiWidthScale) - 42f);
+            if (GUILayout.Button(selectedMicLabel, GUILayout.Width(micButtonWidth), GUILayout.Height(22f)))
+            {
+                _localAiMicDropdownOpen = !_localAiMicDropdownOpen;
+            }
+
+            bool holdMicTest = GUILayout.RepeatButton(
+                _localAiMicTestRecording ? "Release: play mic test" : "Hold: mic test",
+                GUILayout.Width(AiW(130f, aiWidthScale)),
+                GUILayout.Height(22f));
+            HandleMicTestButtonFromGui(holdMicTest, Event.current.type);
+            GUILayout.EndHorizontal();
+
+            if (_localAiMicDropdownOpen)
+            {
+                _localAiMicDropdownScroll = GUILayout.BeginScrollView(
+                    _localAiMicDropdownScroll,
+                    false,
+                    true,
+                    GUILayout.Height(110f));
+
+                if (orderedMicDevices.Length == 0)
+                {
+                    GUILayout.Label("No microphone devices detected.");
+                }
+                else
+                {
+                    for (int i = 0; i < orderedMicDevices.Length; i++)
+                    {
+                        string deviceName = orderedMicDevices[i];
+                        bool isSelected = DeviceNameEquals(deviceName, localAiAgentPreferredMicrophoneDeviceName);
+                        string virtualTag = IsLikelyVirtualMicrophone(deviceName) ? " (virtual)" : string.Empty;
+                        string buttonLabel = (isSelected ? "> " : "  ") + deviceName + virtualTag;
+                        if (GUILayout.Button(buttonLabel, GUILayout.Height(22f)))
+                        {
+                            localAiAgentPreferredMicrophoneDeviceName = deviceName;
+                            _localAiMicDropdownOpen = false;
+                            _voiceLastActionResult = $"Selected microphone: {deviceName}";
+                        }
+                    }
+                }
+
+                GUILayout.EndScrollView();
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawAiRuntimePanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("AI Runtime & Tools", _titleStyle);
+            GUILayout.Label("Sidecar lifecycle, health policy, local help model, and diagnostics.");
+            float bodyHeight = Mathf.Max(60f, area.height - 58f);
+            float contentWidth = GetAiRuntimeContentWidth(area.width);
+            float formWidth = Mathf.Max(200f, contentWidth - 18f);
+            float halfWidth = GetAiRuntimeHalfWidth(formWidth);
+            _aiRuntimeScroll = GUILayout.BeginScrollView(
+                _aiRuntimeScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+            BeginAiCenteredColumn(contentWidth);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Sidecar");
+            GUILayout.BeginHorizontal();
+            localAiAgentAutoStartSidecar = GUILayout.Toggle(
+                localAiAgentAutoStartSidecar,
+                "Auto-start",
+                GUILayout.Width(halfWidth));
+            localAiAgentAutoStopAutoStartedSidecarOnDisable = GUILayout.Toggle(
+                localAiAgentAutoStopAutoStartedSidecarOnDisable,
+                "Stop on disable",
+                GUILayout.Width(halfWidth));
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Python command");
+            localAiAgentSidecarPythonCommand = GUILayout.TextField(localAiAgentSidecarPythonCommand);
+
+            GUILayout.Label("Script path");
+            localAiAgentSidecarScriptRelativePath = GUILayout.TextField(localAiAgentSidecarScriptRelativePath);
+
+            GUILayout.Label("Config path");
+            localAiAgentSidecarConfigRelativePath = GUILayout.TextField(localAiAgentSidecarConfigRelativePath);
+
+            localAiAgentSyncSidecarConfigOnStart = GUILayout.Toggle(
+                localAiAgentSyncSidecarConfigOnStart,
+                "Sync UI config before start");
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Log level");
+            localAiAgentSidecarLogLevel = GUILayout.TextField(localAiAgentSidecarLogLevel);
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Startup s");
+            string sidecarStartupText = GUILayout.TextField(
+                localAiAgentSidecarStartupTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(
+                sidecarStartupText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedSidecarStartup))
+            {
+                localAiAgentSidecarStartupTimeoutSeconds = Mathf.Max(1f, parsedSidecarStartup);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Retry s");
+            string sidecarRetryText = GUILayout.TextField(
+                localAiAgentSidecarRetryIntervalSeconds.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(
+                sidecarRetryText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedSidecarRetry))
+            {
+                localAiAgentSidecarRetryIntervalSeconds = Mathf.Max(0.25f, parsedSidecarRetry);
+            }
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Probe ms");
+            string sidecarProbeMsText = GUILayout.TextField(
+                localAiAgentSidecarHealthTimeoutMs.ToString(CultureInfo.InvariantCulture));
+            if (int.TryParse(
+                sidecarProbeMsText,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedProbeMs))
+            {
+                localAiAgentSidecarHealthTimeoutMs = Mathf.Clamp(parsedProbeMs, 200, 10000);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            bool previousSidecarButtonsEnabled = GUI.enabled;
+            GUI.enabled = localAiAgentAutoStartSidecar;
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Start sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                bool started = TryStartLocalAiSidecarProcess(out string startMessage);
+                _localAiAgentSidecarStatus = startMessage;
+                if (started)
+                {
+                    _localAiAgentSidecarStartupActive = true;
+                    _localAiAgentSidecarInitialProbeCompleted = true;
+                    _localAiAgentSidecarStartupStartedAt = Time.unscaledTime;
+                    _localAiAgentSidecarNextProbeAt = Time.unscaledTime + 0.2f;
+                    _localAiAgentSidecarReady = false;
+                }
+            }
+            if (GUILayout.Button("Stop sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                StopAutoStartedSidecarIfRunning("manual stop");
+                _localAiAgentSidecarReady = false;
+            }
+            GUILayout.EndHorizontal();
+            GUI.enabled = previousSidecarButtonsEnabled;
+
+            if (!string.IsNullOrWhiteSpace(_localAiAgentSidecarStatus))
+            {
+                GUILayout.Label($"Status: {_localAiAgentSidecarStatus} (ready={_localAiAgentSidecarReady})");
+            }
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Bridge policy");
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Heartbeat s");
+            string heartbeatText = GUILayout.TextField(
+                localAiAgentHeartbeatTimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(heartbeatText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedHeartbeat))
+            {
+                localAiAgentHeartbeatTimeoutSeconds = Mathf.Max(0.5f, parsedHeartbeat);
+            }
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Degrade after");
+            string degradeText = GUILayout.TextField(
+                localAiAgentDegradedFailureThreshold.ToString(CultureInfo.InvariantCulture));
+            if (int.TryParse(degradeText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedDegradeThreshold))
+            {
+                localAiAgentDegradedFailureThreshold = Mathf.Max(1, parsedDegradeThreshold);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Backoff min");
+            string retryMinText = GUILayout.TextField(
+                localAiAgentRetryBackoffMinSeconds.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(retryMinText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedRetryMin))
+            {
+                localAiAgentRetryBackoffMinSeconds = Mathf.Max(0.05f, parsedRetryMin);
+            }
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Backoff max");
+            string retryMaxText = GUILayout.TextField(
+                localAiAgentRetryBackoffMaxSeconds.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(retryMaxText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedRetryMax))
+            {
+                localAiAgentRetryBackoffMaxSeconds = Mathf.Max(localAiAgentRetryBackoffMinSeconds, parsedRetryMax);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            localAiAgentBlockMotionWhenBridgeUnhealthy = GUILayout.Toggle(
+                localAiAgentBlockMotionWhenBridgeUnhealthy,
+                "Block motion when bridge is stale");
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Local help");
+            GUILayout.BeginHorizontal();
+            localAiAgentEnableLocalHelpModel = GUILayout.Toggle(
+                localAiAgentEnableLocalHelpModel,
+                "Enable help model",
+                GUILayout.Width(halfWidth));
+            bool previousHelpBtnEnabled = GUI.enabled;
+            GUI.enabled = enableLocalAiAgent && localAiAgentEnableLocalHelpModel;
+            if (GUILayout.Button("Ask help", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                QueueLocalHelpRequest(out string helpMsg);
+                _voiceLastActionResult = helpMsg;
+            }
+            GUI.enabled = previousHelpBtnEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Help URL");
+            localAiAgentHelpEndpoint = GUILayout.TextField(localAiAgentHelpEndpoint);
+
+            GUILayout.Label("Help context");
+            localAiAgentHelpContext = GUILayout.TextField(localAiAgentHelpContext);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Backend");
+            localAiAgentHelpModelBackend = GUILayout.TextField(localAiAgentHelpModelBackend);
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Temperature");
+            string helpTempText = GUILayout.TextField(
+                localAiAgentHelpModelTemperature.ToString(CultureInfo.InvariantCulture));
+            if (float.TryParse(helpTempText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedHelpTemp))
+            {
+                localAiAgentHelpModelTemperature = Mathf.Clamp(parsedHelpTemp, 0f, 1.5f);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Max tokens");
+            string helpMaxTokensText = GUILayout.TextField(
+                localAiAgentHelpModelMaxTokens.ToString(CultureInfo.InvariantCulture));
+            if (int.TryParse(helpMaxTokensText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxTokens))
+            {
+                localAiAgentHelpModelMaxTokens = Mathf.Clamp(parsedHelpMaxTokens, 16, 512);
+            }
+            GUILayout.EndVertical();
+            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+            GUILayout.Label("Max chars");
+            string helpMaxCharsText = GUILayout.TextField(
+                localAiAgentHelpMaxAnswerChars.ToString(CultureInfo.InvariantCulture));
+            if (int.TryParse(helpMaxCharsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxChars))
+            {
+                localAiAgentHelpMaxAnswerChars = Mathf.Clamp(parsedHelpMaxChars, 80, 1200);
+            }
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Model path");
+            localAiAgentHelpModelPath = GUILayout.TextField(localAiAgentHelpModelPath);
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Diagnostics");
+            bool previousBridgeControlEnabled = GUI.enabled;
+            GUI.enabled = enableLocalAiAgent;
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Force poll", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                ForceVoiceBridgePoll();
+            }
+            if (GUILayout.Button("Reset bridge", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                ResetVoiceBridgeState();
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Save logs", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                ExportVoiceBridgeLogs();
+            }
+            if (GUILayout.Button("Clear logs", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                ClearVoiceBridgeLogs();
+            }
+            GUILayout.EndHorizontal();
+            GUI.enabled = previousBridgeControlEnabled;
+
+            if (!string.IsNullOrWhiteSpace(_voiceLastLogExportPath))
+            {
+                GUILayout.Label($"Log file: {_voiceLastLogExportPath}");
+            }
+
+            GUILayout.Label("Mock STT");
+            localAiAgentTranscriptInput = GUILayout.TextField(localAiAgentTranscriptInput);
+
+            GUILayout.BeginHorizontal();
+            localAiAgentMockTranscriptIsFinal = GUILayout.Toggle(
+                localAiAgentMockTranscriptIsFinal,
+                "Final",
+                GUILayout.Width(halfWidth));
+            bool previousButtonEnabled = GUI.enabled;
+            GUI.enabled = enableLocalAiAgent;
+            if (GUILayout.Button("Send mock STT", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                EnqueueMockTranscriptIntent(
+                    localAiAgentTranscriptInput,
+                    localAiAgentTranscriptConfidence,
+                    localAiAgentMockTranscriptIsFinal);
+            }
+            GUI.enabled = previousButtonEnabled;
+            GUILayout.EndHorizontal();
+
+            if (enableLocalAiAgent)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Mock pose", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    EnqueueMockPoseIntent("Neutral Arms");
+                }
+                if (GUILayout.Button("Mock status", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    EnqueueMockStatusIntent();
+                }
+                if (GUILayout.Button("Mock help", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    EnqueueMockHelpIntent();
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            if (_voiceHasPendingAction)
+            {
+                GUILayout.Label($"Pending: {_voicePendingAction.Summary}");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Confirm", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    ConfirmPendingVoiceAction();
+                }
+                if (GUILayout.Button("Reject", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    RejectPendingVoiceAction();
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            localAiAgentShowRawIntentPayload = GUILayout.Toggle(localAiAgentShowRawIntentPayload, "Show raw payload");
+            GUILayout.EndVertical();
+
+            EndAiCenteredColumn();
+
+            GUILayout.Space(8f);
+            GUILayout.Label("Bridge readout");
+            VoiceAgentStatusPanel.DrawReadout(_voiceAgentStatusState);
+            if (localAiAgentShowRawIntentPayload && !string.IsNullOrWhiteSpace(_voiceLastRawIntentPayload))
+            {
+                GUILayout.Label("Raw intent payload");
+                GUILayout.TextArea(_voiceLastRawIntentPayload, GUILayout.Height(64f));
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawAiStatusWindowPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            DrawStatusSection();
+            GUILayout.EndArea();
         }
 
         private void DrawLeftPanel(Rect area)
@@ -4222,26 +5452,36 @@ namespace Reachy.ControlApp
             GUILayout.EndArea();
         }
 
-        private void DrawLocalAgentPanel(Rect area)
+        private void DrawLocalAgentPanel(
+            Rect area,
+            bool showExpandControls = true,
+            bool forceExpanded = false,
+            string panelTitle = "Local AI Agent")
         {
             GUILayout.BeginArea(area, GUI.skin.box);
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Local AI Agent", _titleStyle);
+            GUILayout.Label(panelTitle, _titleStyle);
             GUILayout.FlexibleSpace();
 
-            bool previousGuiEnabled = GUI.enabled;
-            GUI.enabled = !localAiAgentPanelExpanded;
-            if (GUILayout.Button("Expand", GUILayout.Width(68f), GUILayout.Height(22f)))
-            {
-                localAiAgentPanelExpanded = true;
-            }
+            bool panelExpanded = forceExpanded || localAiAgentPanelExpanded;
 
-            GUI.enabled = localAiAgentPanelExpanded;
-            if (GUILayout.Button("Collapse", GUILayout.Width(68f), GUILayout.Height(22f)))
+            if (showExpandControls)
             {
-                localAiAgentPanelExpanded = false;
+                bool previousGuiEnabled = GUI.enabled;
+                GUI.enabled = !localAiAgentPanelExpanded;
+                if (GUILayout.Button("Expand", GUILayout.Width(68f), GUILayout.Height(22f)))
+                {
+                    localAiAgentPanelExpanded = true;
+                }
+
+                GUI.enabled = localAiAgentPanelExpanded;
+                if (GUILayout.Button("Collapse", GUILayout.Width(68f), GUILayout.Height(22f)))
+                {
+                    localAiAgentPanelExpanded = false;
+                }
+                GUI.enabled = previousGuiEnabled;
+                panelExpanded = forceExpanded || localAiAgentPanelExpanded;
             }
-            GUI.enabled = previousGuiEnabled;
             GUILayout.EndHorizontal();
 
             bool previousEnabled = enableLocalAiAgent;
@@ -4251,7 +5491,7 @@ namespace Reachy.ControlApp
                 RejectPendingVoiceAction();
             }
 
-            if (!localAiAgentPanelExpanded)
+            if (!panelExpanded)
             {
                 GUILayout.EndArea();
                 return;
@@ -4863,35 +6103,6 @@ namespace Reachy.ControlApp
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label("Commands & Poses", _titleStyle);
-            GUILayout.FlexibleSpace();
-
-            if (GUILayout.Button("Windowed", GUILayout.Width(76f), GUILayout.Height(24f)))
-            {
-                ApplyWindowedResolutionFromFields();
-            }
-
-            if (GUILayout.Button("Fullscreen", GUILayout.Width(80f), GUILayout.Height(24f)))
-            {
-                SetFullscreenToDesktopResolution();
-            }
-
-            if (GUILayout.Button("Exit", GUILayout.Width(52f), GUILayout.Height(24f)))
-            {
-                SetStatus("Exit requested", "Closing application.");
-                Application.Quit();
-            }
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            GUILayout.Label("Windowed", GUILayout.Width(62f));
-            _windowedWidthText = GUILayout.TextField(_windowedWidthText, GUILayout.Width(58f));
-            GUILayout.Label("x", GUILayout.Width(10f));
-            _windowedHeightText = GUILayout.TextField(_windowedHeightText, GUILayout.Width(58f));
-            if (GUILayout.Button("Apply", GUILayout.Width(52f), GUILayout.Height(22f)))
-            {
-                ApplyWindowedResolutionFromFields();
-            }
             GUILayout.EndHorizontal();
         }
 

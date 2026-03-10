@@ -43,7 +43,7 @@ The runtime panel now includes automatic connection recovery:
 Typical real robot setup:
 
 1. Mode: `Real Robot`.
-2. Set primary robot `Host` (`192.168.1.118`) and `Port` (`50055`) or your robot endpoint.
+2. Set primary robot `Host` (`192.168.1.109`) and `Port` (`50055`) or your robot endpoint.
 3. Keep `Auto-connect` and `Auto-reconnect` enabled.
 4. Set `Attempts/host` to `3` to `5`.
 5. Keep `Fallback ports` including `3972` as backup if your robot exposes that endpoint.

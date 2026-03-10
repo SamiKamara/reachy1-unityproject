@@ -40,7 +40,7 @@ Build app name is set to:
 ## Connection Defaults
 
 - Simulation default: `localhost:50055`
-- Real robot default: `192.168.1.118:3972`
+- Real robot default: `192.168.1.109:3972`
 - Real robot fallback ports: `50055`
 - Restart-signal port (real robot): `50059`
 
