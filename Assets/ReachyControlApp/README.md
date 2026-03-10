@@ -21,12 +21,12 @@ The UI appears automatically in Play mode.
 3. In panel:
    - Select mode (`Simulation` or `Real Robot`)
    - Set `Host` and `Port`
-   - Configure `Automation` options (recommended for real robot)
+   - Configure `Automation` options (recommended for real robot), including `Pose speed %` (default 60)
    - Click `Connect` (or let auto-connect run)
 4. Click `Refresh Joints` to fetch names.
 5. Send commands:
    - `Single Joint Command` by joint name and goal degree
-   - `Preset Poses` with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`)
+   - `Preset Poses` with one click (`Neutral Arms`, `T-Pose`, `Tray Holding`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`)
 
 ## Recovery automation
 
@@ -43,10 +43,11 @@ The runtime panel now includes automatic connection recovery:
 Typical real robot setup:
 
 1. Mode: `Real Robot`.
-2. Set primary robot `Host` (`192.168.1.118`) and `Port` (`3972`) or your robot endpoint.
+2. Set primary robot `Host` (`192.168.1.118`) and `Port` (`50055`) or your robot endpoint.
 3. Keep `Auto-connect` and `Auto-reconnect` enabled.
 4. Set `Attempts/host` to `3` to `5`.
-5. Add fallback hosts if you use multiple network names/IPs.
+5. Keep `Fallback ports` including `3972` as backup if your robot exposes that endpoint.
+6. Add fallback hosts if you use multiple network names/IPs.
 
 ## Notes
 

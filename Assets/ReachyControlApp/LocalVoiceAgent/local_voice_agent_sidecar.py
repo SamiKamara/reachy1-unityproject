@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 DEFAULT_POSES = [
     "Neutral Arms",
     "T-Pose",
+    "Tray Holding",
     "Hello Pose A",
     "Hello Pose B",
     "Hello Pose C",
@@ -1648,7 +1649,7 @@ class LocalHelpResponder:
         if "disconnect" in words:
             return "Say 'disconnect robot' to close the current robot session."
         if "pose" in words:
-            return "Try: 'set neutral arms pose' or 'set hello pose b'. Movement requires confirmation in Unity."
+            return "Try: 'set tray holding pose' or 'set hello pose b'. Movement requires confirmation in Unity."
         if "hello" in words or "hi" in words or "greeting" in words:
             return "Try: 'hello' to say hello, then trigger 'Hello Pose C' without extra confirmation."
         if "who" in words and "you" in words:

@@ -37,6 +37,7 @@ namespace Reachy.ControlApp
         {
             "Neutral Arms",
             "T-Pose",
+            "Tray Holding",
             "Hello Pose A",
             "Hello Pose B",
             "Hello Pose C",
@@ -169,7 +170,7 @@ namespace Reachy.ControlApp
         [SerializeField] private string simulationHost = "localhost";
         [SerializeField] private int simulationPort = 50055;
         [SerializeField] private string robotHost = "192.168.1.118";
-        [SerializeField] private int robotPort = 3972;
+        [SerializeField] private int robotPort = 50055;
 
         [Header("Runtime")]
         [SerializeField] private ReachyControlMode mode = ReachyControlMode.Simulation;
@@ -180,10 +181,11 @@ namespace Reachy.ControlApp
         [SerializeField] private bool autoReconnect = true;
         [SerializeField] private bool allowRestartSignalRecovery = true;
         [SerializeField] private string robotFallbackHostsCsv = string.Empty;
-        [SerializeField] private string robotFallbackPortsCsv = "50055";
+        [SerializeField] private string robotFallbackPortsCsv = "3972";
         [SerializeField] private int connectAttemptsPerHost = 3;
         [SerializeField] private float retryDelaySeconds = 1.0f;
         [SerializeField] private float grpcConnectTimeoutSeconds = 3.0f;
+        [SerializeField] private float presetPoseTransitionSpeedScale = 0.6f;
         [SerializeField] private float postRestartWaitSeconds = 2.5f;
         [SerializeField] private float healthCheckIntervalSeconds = 2.0f;
         [SerializeField] private float reconnectCooldownSeconds = 4.0f;
@@ -470,6 +472,8 @@ namespace Reachy.ControlApp
             windowedHeight = Mathf.Clamp(windowedHeight, 240, 4320);
             simulationCameraPort = Mathf.Clamp(simulationCameraPort, 1, 65535);
             robotCameraPort = Mathf.Clamp(robotCameraPort, 1, 65535);
+            presetPoseTransitionSpeedScale = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
+            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
             cameraRefreshIntervalSeconds = Mathf.Max(0.05f, cameraRefreshIntervalSeconds);
             cameraRpcTimeoutSeconds = Mathf.Max(0.2f, cameraRpcTimeoutSeconds);
             localAiAgentPollIntervalSeconds = Mathf.Max(0.1f, localAiAgentPollIntervalSeconds);
@@ -5085,6 +5089,24 @@ namespace Reachy.ControlApp
             {
                 grpcConnectTimeoutSeconds = Mathf.Max(0.2f, parsedConnectTimeout);
             }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Pose speed %", GUILayout.Width(100f));
+            string poseSpeedPercentText = GUILayout.TextField(
+                (presetPoseTransitionSpeedScale * 100f).ToString("F0", CultureInfo.InvariantCulture),
+                GUILayout.Width(70f));
+            if (float.TryParse(
+                poseSpeedPercentText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out float parsedPoseSpeedPercent))
+            {
+                presetPoseTransitionSpeedScale = Mathf.Clamp(parsedPoseSpeedPercent / 100f, 0.05f, 2.0f);
+            }
+
+            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+            GUILayout.Label("(preset transitions)", GUILayout.Width(130f));
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();

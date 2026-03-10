@@ -21,6 +21,7 @@ namespace Reachy
         public float targetPosition;
         public float presentPosition;
         public float offset;
+        public float speedLimit = 100f;
         public bool isDirect;
         public bool isCompliant;
     }
@@ -128,6 +129,10 @@ namespace Reachy
             {
                 Motor m = motors[i];
                 m.uid = i;
+                if (m.speedLimit <= 0f)
+                {
+                    m.speedLimit = 100f;
+                }
                 name2motor[m.name] = m;
             }
 
@@ -161,6 +166,7 @@ namespace Reachy
                 if (!m.name.StartsWith("neck"))
                 {
                     JointController joint = m.gameObject.GetComponent<JointController>();
+                    joint.SetSpeedLimit(m.speedLimit);
                     if (m.isCompliant)
                         joint.RotateTo(m.presentPosition);
                     else
@@ -225,6 +231,11 @@ namespace Reachy
         void SetMotorCompliancy(string motorName, bool compliancy)
         {
             name2motor[motorName].isCompliant = compliancy;
+        }
+
+        void SetMotorSpeedLimit(string motorName, float speedLimit)
+        {
+            name2motor[motorName].speedLimit = Mathf.Clamp(speedLimit, 1f, 100f);
         }
 
         void SetFanState(string fanName, bool targetState)
@@ -302,6 +313,28 @@ namespace Reachy
                         break;
                 }
                 SetMotorCompliancy(motorName, kvp.Value);
+            }
+        }
+
+        public void HandleSpeedLimit(Dictionary<JointId, float> commands)
+        {
+            foreach (KeyValuePair<JointId, float> kvp in commands)
+            {
+                string motorName;
+                switch (kvp.Key.IdCase)
+                {
+                    case JointId.IdOneofCase.Name:
+                        motorName = kvp.Key.Name;
+                        break;
+                    case JointId.IdOneofCase.Uid:
+                        motorName = motors[kvp.Key.Uid].name;
+                        break;
+                    default:
+                        motorName = kvp.Key.Name;
+                        break;
+                }
+
+                SetMotorSpeedLimit(motorName, kvp.Value);
             }
         }
 

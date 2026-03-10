@@ -94,20 +94,31 @@ class JointServiceServer : MonoBehaviour
             {
                 Dictionary<JointId, float> commands = new Dictionary<JointId, float>();
                 Dictionary<JointId, bool> compliancy = new Dictionary<JointId, bool>();
+                Dictionary<JointId, float> speedLimits = new Dictionary<JointId, float>();
                 for (int i = 0; i < jointsCommand.Commands.Count; i++)
                 {
-                    if (jointsCommand.Commands[i].GoalPosition != null)
+                    JointCommand jointCommand = jointsCommand.Commands[i];
+                    if (jointCommand == null || jointCommand.Id == null)
                     {
-                        float command = Mathf.Rad2Deg * (float)jointsCommand.Commands[i].GoalPosition;
-                        commands.Add(jointsCommand.Commands[i].Id, command);
+                        continue;
                     }
 
-                    if (jointsCommand.Commands[i].Compliant != null)
+                    float speedLimit = jointCommand.SpeedLimit != null ? (float)jointCommand.SpeedLimit : 100.0f;
+                    speedLimits.Add(jointCommand.Id, speedLimit);
+
+                    if (jointCommand.GoalPosition != null)
                     {
-                        bool isCompliant = (bool)jointsCommand.Commands[i].Compliant;
-                        compliancy.Add(jointsCommand.Commands[i].Id, isCompliant);
+                        float command = Mathf.Rad2Deg * (float)jointCommand.GoalPosition;
+                        commands.Add(jointCommand.Id, command);
+                    }
+
+                    if (jointCommand.Compliant != null)
+                    {
+                        bool isCompliant = (bool)jointCommand.Compliant;
+                        compliancy.Add(jointCommand.Id, isCompliant);
                     }
                 }
+                reachy.HandleSpeedLimit(speedLimits);
                 reachy.HandleCommand(commands);
                 reachy.HandleCompliancy(compliancy);
                 return Task.FromResult(new JointsCommandAck { Success = true });

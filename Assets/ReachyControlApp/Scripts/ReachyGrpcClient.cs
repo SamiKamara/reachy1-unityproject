@@ -19,8 +19,12 @@ namespace Reachy.ControlApp
         private const double MotionPreparationRpcTimeoutSeconds = 1.5;
         private const double RestartRpcTimeoutSeconds = 2.0;
         private const int MotionPreparationSettleDelayMs = 100;
+        private const float DefaultPoseTransitionSpeedScale = 0.6f;
+        private const float MinPoseTransitionSpeedScale = 0.05f;
+        private const float MaxPoseTransitionSpeedScale = 2.0f;
         private const string NeutralArmsPoseName = "Neutral Arms";
         private const string TPoseName = "T-Pose";
+        private const string TrayHoldingPoseName = "Tray Holding";
         private const string HelloPoseName = "Hello Pose A";
         private const string HelloPoseWaveName = "Hello Pose B";
         private const string HelloPoseRightName = "Hello Pose C";
@@ -34,6 +38,7 @@ namespace Reachy.ControlApp
         private readonly object _cameraLock = new object();
         private string _cameraHost = string.Empty;
         private int _cameraPort;
+        private float _poseTransitionSpeedScale = DefaultPoseTransitionSpeedScale;
         private readonly List<string> _jointNames = new List<string>();
         private readonly List<string> _presetPoseNames = new List<string>();
         private readonly List<PosePreset> _presetPoses = BuildPresetPoseLibrary();
@@ -44,6 +49,11 @@ namespace Reachy.ControlApp
 
         public IReadOnlyList<string> JointNames => _jointNames;
         public IReadOnlyList<string> PresetPoseNames => _presetPoseNames;
+        public float PoseTransitionSpeedScale
+        {
+            get => _poseTransitionSpeedScale;
+            set => _poseTransitionSpeedScale = ClampPoseTransitionSpeedScale(value);
+        }
 
         public struct CameraImageFetchResult
         {
@@ -358,19 +368,21 @@ namespace Reachy.ControlApp
             }
 
             var command = new JointsCommand();
+            float poseSpeedPercent = ClampPoseTransitionSpeedScale(PoseTransitionSpeedScale) * 100.0f;
             for (int i = 0; i < preset.Goals.Count; i++)
             {
                 PoseJointGoal goal = preset.Goals[i];
                 command.Commands.Add(new JointCommand
                 {
                     Id = new JointId { Name = goal.JointName },
-                    GoalPosition = DegreesToRadians(goal.GoalDegrees)
+                    GoalPosition = DegreesToRadians(goal.GoalDegrees),
+                    SpeedLimit = poseSpeedPercent
                 });
             }
 
             bool ok = SendMotionCommand(command, out string sendMessage);
             message = ok
-                ? $"Preset '{preset.Name}' sent ({preset.Goals.Count} joints). {sendMessage}"
+                ? $"Preset '{preset.Name}' sent ({preset.Goals.Count} joints, speed {poseSpeedPercent:F0}%). {sendMessage}"
                 : $"Preset '{preset.Name}' failed. {sendMessage}";
             return ok;
         }
@@ -480,14 +492,18 @@ namespace Reachy.ControlApp
             string preparationMessage = PrepareJointsForMotion(targetCommand);
             bool ok = SendJointCommandRaw(targetCommand, out string sendMessage);
 
-            if (string.IsNullOrWhiteSpace(preparationMessage))
+            var details = new List<string>(2);
+            if (!string.IsNullOrWhiteSpace(preparationMessage))
             {
-                message = sendMessage;
+                details.Add(preparationMessage);
             }
-            else
+
+            if (!string.IsNullOrWhiteSpace(sendMessage))
             {
-                message = $"{preparationMessage} {sendMessage}".Trim();
+                details.Add(sendMessage);
             }
+
+            message = details.Count > 0 ? string.Join(" ", details) : string.Empty;
 
             return ok;
         }
@@ -804,6 +820,26 @@ namespace Reachy.ControlApp
             return $"uid:{jointUid}";
         }
 
+        private static float ClampPoseTransitionSpeedScale(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return DefaultPoseTransitionSpeedScale;
+            }
+
+            if (value < MinPoseTransitionSpeedScale)
+            {
+                return MinPoseTransitionSpeedScale;
+            }
+
+            if (value > MaxPoseTransitionSpeedScale)
+            {
+                return MaxPoseTransitionSpeedScale;
+            }
+
+            return value;
+        }
+
         private bool EnsureConnected(out string message)
         {
             if (!IsConnected || _jointClient == null)
@@ -991,6 +1027,28 @@ namespace Reachy.ControlApp
                         new PoseJointGoal("l_elbow_pitch", 0.0f),
                         new PoseJointGoal("l_forearm_yaw", 0.0f),
                         new PoseJointGoal("l_wrist_pitch", 0.0f),
+                        new PoseJointGoal("l_wrist_roll", 0.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    TrayHoldingPoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -40.0f),
+                        new PoseJointGoal("r_shoulder_roll", -15.0f),
+                        new PoseJointGoal("r_arm_yaw", -5.0f),
+                        new PoseJointGoal("r_elbow_pitch", -95.0f),
+                        new PoseJointGoal("r_forearm_yaw", -75.0f),
+                        new PoseJointGoal("r_wrist_pitch", 20.0f),
+                        new PoseJointGoal("r_wrist_roll", 0.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -40.0f),
+                        new PoseJointGoal("l_shoulder_roll", 15.0f),
+                        new PoseJointGoal("l_arm_yaw", 5.0f),
+                        new PoseJointGoal("l_elbow_pitch", -95.0f),
+                        new PoseJointGoal("l_forearm_yaw", 75.0f),
+                        new PoseJointGoal("l_wrist_pitch", 20.0f),
                         new PoseJointGoal("l_wrist_roll", 0.0f),
                         new PoseJointGoal("l_gripper", 0.0f),
                     }
