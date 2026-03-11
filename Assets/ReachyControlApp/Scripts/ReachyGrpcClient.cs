@@ -8,6 +8,7 @@ using Grpc.Core;
 
 using Reachy.Sdk.Camera;
 using Reachy.Sdk.Joint;
+using Reachy.Sdk.Mobility;
 using Reachy.Sdk.Restart;
 
 namespace Reachy.ControlApp
@@ -17,11 +18,13 @@ namespace Reachy.ControlApp
         private const double DefaultRpcTimeoutSeconds = 3.0;
         private const double HealthCheckRpcTimeoutSeconds = 1.5;
         private const double MotionPreparationRpcTimeoutSeconds = 1.5;
+        private const double MobilityRpcTimeoutSeconds = 1.5;
         private const double RestartRpcTimeoutSeconds = 2.0;
         private const int MotionPreparationSettleDelayMs = 100;
         private const float DefaultPoseTransitionSpeedScale = 0.6f;
         private const float MinPoseTransitionSpeedScale = 0.05f;
         private const float MaxPoseTransitionSpeedScale = 2.0f;
+        private const float DefaultManualJointSpeedLimitPercent = 50.0f;
         private const string NeutralArmsPoseName = "Neutral Arms";
         private const string TPoseName = "T-Pose";
         private const string TrayHoldingPoseName = "Tray Holding";
@@ -30,14 +33,20 @@ namespace Reachy.ControlApp
         private const string HelloPoseRightName = "Hello Pose C";
         private const string HelloPoseRightWaveName = "Hello Pose D";
         private const float Deg2Rad = (float)(Math.PI / 180.0);
+        private const float Rad2Deg = (float)(180.0 / Math.PI);
 
         private Channel _jointChannel;
         private JointService.JointServiceClient _jointClient;
+        private MobilityService.MobilityServiceClient _mobilityClient;
+        private MobileBasePresenceService.MobileBasePresenceServiceClient _mobileBasePresenceClient;
         private Channel _cameraChannel;
         private CameraService.CameraServiceClient _cameraClient;
         private readonly object _cameraLock = new object();
         private string _cameraHost = string.Empty;
         private int _cameraPort;
+        private bool? _cachedMobileBasePresence;
+        private bool _mobilityConfiguredForSpeedMode;
+        private bool _mobilityServiceUnavailable;
         private float _poseTransitionSpeedScale = DefaultPoseTransitionSpeedScale;
         private readonly List<string> _jointNames = new List<string>();
         private readonly List<string> _presetPoseNames = new List<string>();
@@ -184,6 +193,11 @@ namespace Reachy.ControlApp
             ConnectedHost = string.Empty;
             ConnectedPort = 0;
             _jointNames.Clear();
+            _cachedMobileBasePresence = null;
+            _mobilityConfiguredForSpeedMode = false;
+            _mobilityServiceUnavailable = false;
+            _mobilityClient = null;
+            _mobileBasePresenceClient = null;
 
             if (_jointChannel != null)
             {
@@ -343,6 +357,284 @@ namespace Reachy.ControlApp
             return SendMotionCommand(command, out message);
         }
 
+        public bool TryGetJointPositions(
+            IReadOnlyList<string> jointNames,
+            out Dictionary<string, float> positionsDegrees,
+            out string message)
+        {
+            positionsDegrees = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            if (jointNames == null || jointNames.Count == 0)
+            {
+                message = "No joint names requested.";
+                return false;
+            }
+
+            var request = new JointsStateRequest();
+            request.RequestedFields.Add(JointField.PresentPosition);
+
+            var uniqueNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < jointNames.Count; i++)
+            {
+                string jointName = jointNames[i];
+                if (string.IsNullOrWhiteSpace(jointName) || !uniqueNames.Add(jointName))
+                {
+                    continue;
+                }
+
+                request.Ids.Add(new JointId { Name = jointName });
+            }
+
+            if (request.Ids.Count == 0)
+            {
+                message = "No valid joint names requested.";
+                return false;
+            }
+
+            try
+            {
+                JointsState response = _jointClient.GetJointsState(
+                    request,
+                    deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds));
+
+                if (response == null || response.States == null || response.Ids == null)
+                {
+                    message = "Joint state response was empty.";
+                    return false;
+                }
+
+                int max = Math.Min(response.Ids.Count, response.States.Count);
+                for (int i = 0; i < max; i++)
+                {
+                    JointId id = response.Ids[i];
+                    JointState state = response.States[i];
+                    if (id == null || string.IsNullOrWhiteSpace(id.Name) || state == null || !state.PresentPosition.HasValue)
+                    {
+                        continue;
+                    }
+
+                    positionsDegrees[id.Name] = RadiansToDegrees((float)state.PresentPosition.Value);
+                }
+
+                message = positionsDegrees.Count > 0
+                    ? $"Fetched {positionsDegrees.Count} joint position(s)."
+                    : "Joint state response contained no present positions.";
+                return positionsDegrees.Count > 0;
+            }
+            catch (Exception ex)
+            {
+                HandleRpcFailure(ex);
+                message = $"Joint state fetch failed: {ex.Message}";
+                return false;
+            }
+        }
+
+        public bool SendJointGoals(IReadOnlyDictionary<string, float> jointGoalsDegrees, float speedLimitPercent, out string message)
+        {
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            if (jointGoalsDegrees == null || jointGoalsDegrees.Count == 0)
+            {
+                message = "Joint goal set is empty.";
+                return false;
+            }
+
+            float normalizedSpeedLimit = ClampManualJointSpeedLimitPercent(speedLimitPercent);
+            var command = new JointsCommand();
+            int validGoalCount = 0;
+            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
+            {
+                if (string.IsNullOrWhiteSpace(goal.Key))
+                {
+                    continue;
+                }
+
+                command.Commands.Add(new JointCommand
+                {
+                    Id = new JointId { Name = goal.Key },
+                    GoalPosition = DegreesToRadians(goal.Value),
+                    SpeedLimit = normalizedSpeedLimit
+                });
+                validGoalCount++;
+            }
+
+            if (validGoalCount <= 0)
+            {
+                message = "Joint goal set contains no valid joint names.";
+                return false;
+            }
+
+            bool ok = SendMotionCommand(command, out string sendMessage);
+            message = ok
+                ? $"Sent {validGoalCount} joint goal(s) at {normalizedSpeedLimit:F0}% speed. {sendMessage}"
+                : $"Failed to send {validGoalCount} joint goal(s). {sendMessage}";
+            return ok;
+        }
+
+        public bool TryGetMobileBasePresence(out bool present, out string message)
+        {
+            present = false;
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            if (_mobilityServiceUnavailable)
+            {
+                message = "Mobility service is unavailable on the connected endpoint.";
+                return false;
+            }
+
+            EnsureMobilityClients();
+            if (_mobileBasePresenceClient == null)
+            {
+                message = "Mobile base presence client is unavailable.";
+                return false;
+            }
+
+            if (_cachedMobileBasePresence.HasValue)
+            {
+                present = _cachedMobileBasePresence.Value;
+                message = present
+                    ? "Connected endpoint reports a mobile base."
+                    : "Connected endpoint reports no mobile base.";
+                return true;
+            }
+
+            try
+            {
+                MobileBasePresence response = _mobileBasePresenceClient.GetMobileBasePresence(
+                    new Empty(),
+                    deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
+                present = response != null && response.Presence == true;
+                _cachedMobileBasePresence = present;
+                message = present
+                    ? "Connected endpoint reports a mobile base."
+                    : "Connected endpoint reports no mobile base.";
+                return true;
+            }
+            catch (RpcException rpcEx)
+            {
+                if (rpcEx.StatusCode == StatusCode.Unimplemented)
+                {
+                    _mobilityServiceUnavailable = true;
+                }
+
+                message = $"Mobile base presence RPC {rpcEx.StatusCode}: {rpcEx.Status.Detail}";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                message = $"Mobile base presence failed: {ex.Message}";
+                return false;
+            }
+        }
+
+        public bool SendBaseVelocity(float xVel, float yVel, float rotVel, float durationSeconds, out string message)
+        {
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            EnsureMobilityClients();
+            if (_mobilityClient == null)
+            {
+                message = "Mobility client is unavailable.";
+                return false;
+            }
+
+            if (!TryGetMobileBasePresence(out bool present, out string presenceMessage))
+            {
+                message = presenceMessage;
+                return false;
+            }
+
+            if (!present)
+            {
+                message = presenceMessage;
+                return false;
+            }
+
+            float normalizedDuration = NormalizeBaseVelocityDuration(durationSeconds);
+
+            try
+            {
+                if (!_mobilityConfiguredForSpeedMode)
+                {
+                    ControlModeCommandAck controlAck = _mobilityClient.SetControlMode(
+                        new ControlModeCommand { Mode = ControlModePossiblities.Pid },
+                        deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
+                    if (controlAck == null || controlAck.Success != true)
+                    {
+                        message = "Mobile base rejected PID control mode.";
+                        return false;
+                    }
+
+                    ZuuuModeCommandAck modeAck = _mobilityClient.SetZuuuMode(
+                        new ZuuuModeCommand { Mode = ZuuuModePossiblities.Speed },
+                        deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
+                    if (modeAck == null || modeAck.Success != true)
+                    {
+                        message = "Mobile base rejected SPEED mode.";
+                        return false;
+                    }
+
+                    _mobilityConfiguredForSpeedMode = true;
+                }
+
+                SetSpeedAck ack = _mobilityClient.SendSetSpeed(
+                    new SetSpeedVector
+                    {
+                        XVel = xVel,
+                        YVel = yVel,
+                        RotVel = rotVel,
+                        Duration = normalizedDuration
+                    },
+                    deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
+
+                if (ack != null && ack.Success == true)
+                {
+                    message =
+                        $"Base velocity sent (x={xVel:F2} m/s, y={yVel:F2} m/s, rot={rotVel:F2} rad/s, duration={normalizedDuration:F2}s).";
+                    return true;
+                }
+
+                message = "Base velocity command sent but was not acknowledged as successful.";
+                return false;
+            }
+            catch (RpcException rpcEx)
+            {
+                if (rpcEx.StatusCode == StatusCode.Unimplemented)
+                {
+                    _mobilityServiceUnavailable = true;
+                }
+
+                if (rpcEx.StatusCode == StatusCode.Unavailable ||
+                    rpcEx.StatusCode == StatusCode.Cancelled ||
+                    rpcEx.StatusCode == StatusCode.DeadlineExceeded)
+                {
+                    _mobilityConfiguredForSpeedMode = false;
+                }
+
+                message = $"Base command RPC {rpcEx.StatusCode}: {rpcEx.Status.Detail}";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _mobilityConfiguredForSpeedMode = false;
+                message = $"Base command failed: {ex.Message}";
+                return false;
+            }
+        }
+
         public bool SendNeutralArmsPreset(out string message)
         {
             return SendPresetPose(NeutralArmsPoseName, out message);
@@ -439,7 +731,7 @@ namespace Reachy.ControlApp
                     deadline: DateTime.UtcNow.AddSeconds(RestartRpcTimeoutSeconds)
                 );
 
-                bool success = ack != null && ack.Success;
+                bool success = ack != null && ack.Success == true;
                 message = success
                     ? "Restart acknowledged by remote service."
                     : "Restart service responded but did not acknowledge success.";
@@ -522,7 +814,7 @@ namespace Reachy.ControlApp
                     deadline: DateTime.UtcNow.AddSeconds(DefaultRpcTimeoutSeconds)
                 );
 
-                if (ack != null && ack.Success)
+                if (ack != null && ack.Success == true)
                 {
                     message = "Command acknowledged.";
                     return true;
@@ -852,6 +1144,26 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        private void EnsureMobilityClients()
+        {
+            if (_jointChannel == null)
+            {
+                _mobilityClient = null;
+                _mobileBasePresenceClient = null;
+                return;
+            }
+
+            if (_mobilityClient == null)
+            {
+                _mobilityClient = new MobilityService.MobilityServiceClient(_jointChannel);
+            }
+
+            if (_mobileBasePresenceClient == null)
+            {
+                _mobileBasePresenceClient = new MobileBasePresenceService.MobileBasePresenceServiceClient(_jointChannel);
+            }
+        }
+
         private void DisconnectCamera()
         {
             lock (_cameraLock)
@@ -932,6 +1244,7 @@ namespace Reachy.ControlApp
             {
                 _jointChannel = new Channel($"{host}:{port}", ChannelCredentials.Insecure);
                 _jointClient = new JointService.JointServiceClient(_jointChannel);
+                EnsureMobilityClients();
 
                 JointsId joints = _jointClient.GetAllJointsId(
                     new Empty(),
@@ -981,6 +1294,51 @@ namespace Reachy.ControlApp
         private static float DegreesToRadians(float degrees)
         {
             return degrees * Deg2Rad;
+        }
+
+        private static float RadiansToDegrees(float radians)
+        {
+            return radians * Rad2Deg;
+        }
+
+        private static float ClampManualJointSpeedLimitPercent(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return DefaultManualJointSpeedLimitPercent;
+            }
+
+            if (value < 1.0f)
+            {
+                return 1.0f;
+            }
+
+            if (value > 100.0f)
+            {
+                return 100.0f;
+            }
+
+            return value;
+        }
+
+        private static float NormalizeBaseVelocityDuration(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return 0.12f;
+            }
+
+            if (value < 0.05f)
+            {
+                return 0.05f;
+            }
+
+            if (value > 0.5f)
+            {
+                return 0.5f;
+            }
+
+            return value;
         }
 
         private static List<PosePreset> BuildPresetPoseLibrary()

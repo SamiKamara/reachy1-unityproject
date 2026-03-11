@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -44,6 +45,14 @@ namespace Reachy.ControlApp
         private const float DesignAiPanelMaxWidth = 620f;
         private const float DesignAiCenterOpenMinWidth = 320f;
         private const float DesignAiMiddleSpaceFactor = 0.64f;
+        private const float DesignManualPanelWidthRatio = 0.29f;
+        private const float DesignManualPanelMinWidth = 260f;
+        private const float DesignManualPanelMaxWidth = 460f;
+        private const float DesignManualCenterOpenMinWidth = 240f;
+        private const float DesignManualCameraMinWidth = 180f;
+        private const float DesignManualCameraMinHeight = 140f;
+        private const float DesignManualStatusMinHeight = 142f;
+        private const float DesignManualVisualizerMinHeight = 164f;
         private const float DesignLeftPanelWidth = 500f;
         private const float DesignRightPanelWidth = 430f;
         private const float DesignExpandedPanelHeight = 640f;
@@ -53,6 +62,7 @@ namespace Reachy.ControlApp
         private const float DesignLocalAgentCollapsedHeight = 64f;
         private const float DesignCameraPanelWidth = 560f;
         private const float DesignCameraPanelHeight = 265f;
+        private const float DesignManualDriveVisualizerHeight = 272f;
         private const int VoiceShowMovementPoseCount = 3;
         private const float VoiceShowMovementIntervalSeconds = 4f;
         private const float VoiceHelloReturnDelaySeconds = 4f;
@@ -193,6 +203,329 @@ namespace Reachy.ControlApp
             "introduce yourself",
             "tell me about yourself"
         };
+        private const string ManualControllerRightStickXAxis = "Gamepad Right Stick X";
+        private const string ManualControllerRightStickYAxis = "Gamepad Right Stick Y";
+        private const string ManualControllerDPadXAxis = "Gamepad DPad X";
+        private const string ManualControllerDPadYAxis = "Gamepad DPad Y";
+        private const float ManualControllerDeadzone = 0.18f;
+        private const float ManualControllerTriggerDeadzone = 0.12f;
+        private const float ManualControllerBaseSendIntervalSeconds = 0.1f;
+        private const float ManualControllerJointSendIntervalSeconds = 0.1f;
+        private const int ManualControllerMaxJoystickSlots = 8;
+        private const int ManualControllerButtonsPerJoystick = 20;
+        private const string ReachySimulationRootObjectName = "Reachy";
+        private struct ManualControllerArmTargetPose
+        {
+            public ManualControllerArmTargetPose(
+                string label,
+                float shoulderPitch,
+                float shoulderRollMagnitude,
+                float armYawMagnitude,
+                float elbowPitch)
+            {
+                Label = label ?? "Pose";
+                ShoulderPitch = shoulderPitch;
+                ShoulderRollMagnitude = Mathf.Abs(shoulderRollMagnitude);
+                ArmYawMagnitude = Mathf.Abs(armYawMagnitude);
+                ElbowPitch = elbowPitch;
+            }
+
+            public string Label;
+            public float ShoulderPitch;
+            public float ShoulderRollMagnitude;
+            public float ArmYawMagnitude;
+            public float ElbowPitch;
+        }
+
+        private static readonly string[] ManualControllerTrackedJointNames =
+        {
+            "l_shoulder_pitch",
+            "l_shoulder_roll",
+            "l_arm_yaw",
+            "l_elbow_pitch",
+            "r_shoulder_pitch",
+            "r_shoulder_roll",
+            "r_arm_yaw",
+            "r_elbow_pitch",
+            "neck_roll",
+            "neck_pitch",
+            "neck_yaw",
+            "l_wrist_roll",
+            "r_wrist_roll",
+            "l_gripper",
+            "r_gripper"
+        };
+        private static readonly ManualControllerArmTargetPose[] ManualControllerArmTargetPoses =
+        {
+            new ManualControllerArmTargetPose("Bent Side", -20f, 38f, 20f, -105f),
+            new ManualControllerArmTargetPose("Lifted Ready", -52f, 28f, 12f, -92f),
+            new ManualControllerArmTargetPose("Wide Reach", 6f, 56f, 32f, -74f)
+        };
+        private static readonly KeyCode[,] ManualControllerJoystickButtons = BuildManualControllerJoystickButtons();
+
+        private struct ManualControllerSnapshot
+        {
+            public bool Connected;
+            public int SlotIndex;
+            public string DisplayName;
+            public float LeftStickX;
+            public float LeftStickY;
+            public float RightStickX;
+            public float RightStickY;
+            public float DPadX;
+            public float DPadY;
+            public bool A;
+            public bool B;
+            public bool X;
+            public bool Y;
+            public bool LeftShoulder;
+            public bool RightShoulder;
+            public float LeftTrigger;
+            public float RightTrigger;
+            public bool LeftStickButton;
+            public bool RightStickButton;
+            public bool Back;
+            public bool Start;
+        }
+
+        private enum ManualBaseVectorIconKind
+        {
+            Forward = 0,
+            Backward = 1,
+            Left = 2,
+            Right = 3,
+            RotateLeft = 4,
+            RotateRight = 5
+        }
+
+        private static class WindowsXInput
+        {
+            private const int ErrorSuccess = 0;
+            private const ushort ButtonDPadUp = 0x0001;
+            private const ushort ButtonDPadDown = 0x0002;
+            private const ushort ButtonDPadLeft = 0x0004;
+            private const ushort ButtonDPadRight = 0x0008;
+            private const ushort ButtonStart = 0x0010;
+            private const ushort ButtonBack = 0x0020;
+            private const ushort ButtonLeftThumb = 0x0040;
+            private const ushort ButtonRightThumb = 0x0080;
+            private const ushort ButtonLeftShoulder = 0x0100;
+            private const ushort ButtonRightShoulder = 0x0200;
+            private const ushort ButtonA = 0x1000;
+            private const ushort ButtonB = 0x2000;
+            private const ushort ButtonX = 0x4000;
+            private const ushort ButtonY = 0x8000;
+
+            private enum ApiKind
+            {
+                Unknown = 0,
+                XInput14 = 1,
+                XInput13 = 2,
+                XInput91 = 3,
+                Unavailable = 4
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct NativeGamepad
+            {
+                public ushort Buttons;
+                public byte LeftTrigger;
+                public byte RightTrigger;
+                public short LeftThumbX;
+                public short LeftThumbY;
+                public short RightThumbX;
+                public short RightThumbY;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct NativeState
+            {
+                public uint PacketNumber;
+                public NativeGamepad Gamepad;
+            }
+
+            private delegate int XInputGetStateProc(int userIndex, out NativeState state);
+
+            private static ApiKind _selectedApi = ApiKind.Unknown;
+
+            [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState", CallingConvention = CallingConvention.StdCall)]
+            private static extern int XInputGetState14(int userIndex, out NativeState state);
+
+            [DllImport("xinput1_3.dll", EntryPoint = "XInputGetState", CallingConvention = CallingConvention.StdCall)]
+            private static extern int XInputGetState13(int userIndex, out NativeState state);
+
+            [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState", CallingConvention = CallingConvention.StdCall)]
+            private static extern int XInputGetState91(int userIndex, out NativeState state);
+
+            public static bool TryGetSnapshot(int userIndex, out ManualControllerSnapshot snapshot)
+            {
+                snapshot = default(ManualControllerSnapshot);
+                EnsureApiSelected();
+                if (_selectedApi == ApiKind.Unavailable)
+                {
+                    return false;
+                }
+
+                int result = CallSelectedApi(userIndex, out NativeState state);
+                if (result != ErrorSuccess)
+                {
+                    return false;
+                }
+
+                ushort buttons = state.Gamepad.Buttons;
+                snapshot.Connected = true;
+                snapshot.SlotIndex = userIndex + 1;
+                snapshot.DisplayName = $"Xbox Controller (XInput slot {snapshot.SlotIndex.ToString(CultureInfo.InvariantCulture)})";
+                snapshot.LeftStickX = NormalizeStickAxis(state.Gamepad.LeftThumbX);
+                snapshot.LeftStickY = NormalizeStickAxis(state.Gamepad.LeftThumbY);
+                snapshot.RightStickX = NormalizeStickAxis(state.Gamepad.RightThumbX);
+                snapshot.RightStickY = NormalizeStickAxis(state.Gamepad.RightThumbY);
+                snapshot.DPadX = GetButtonValue(buttons, ButtonDPadLeft, ButtonDPadRight);
+                snapshot.DPadY = GetButtonValue(buttons, ButtonDPadDown, ButtonDPadUp);
+                snapshot.A = HasButton(buttons, ButtonA);
+                snapshot.B = HasButton(buttons, ButtonB);
+                snapshot.X = HasButton(buttons, ButtonX);
+                snapshot.Y = HasButton(buttons, ButtonY);
+                snapshot.LeftShoulder = HasButton(buttons, ButtonLeftShoulder);
+                snapshot.RightShoulder = HasButton(buttons, ButtonRightShoulder);
+                snapshot.LeftTrigger = NormalizeTriggerAxis(state.Gamepad.LeftTrigger);
+                snapshot.RightTrigger = NormalizeTriggerAxis(state.Gamepad.RightTrigger);
+                snapshot.LeftStickButton = HasButton(buttons, ButtonLeftThumb);
+                snapshot.RightStickButton = HasButton(buttons, ButtonRightThumb);
+                snapshot.Back = HasButton(buttons, ButtonBack);
+                snapshot.Start = HasButton(buttons, ButtonStart);
+                return true;
+            }
+
+            private static void EnsureApiSelected()
+            {
+                if (_selectedApi != ApiKind.Unknown)
+                {
+                    return;
+                }
+
+                if (CanCallApi(XInputGetState14))
+                {
+                    _selectedApi = ApiKind.XInput14;
+                    return;
+                }
+
+                if (CanCallApi(XInputGetState13))
+                {
+                    _selectedApi = ApiKind.XInput13;
+                    return;
+                }
+
+                if (CanCallApi(XInputGetState91))
+                {
+                    _selectedApi = ApiKind.XInput91;
+                    return;
+                }
+
+                _selectedApi = ApiKind.Unavailable;
+            }
+
+            private static bool CanCallApi(XInputGetStateProc proc)
+            {
+                try
+                {
+                    proc(0, out NativeState ignoredState);
+                    return true;
+                }
+                catch (DllNotFoundException)
+                {
+                    return false;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    return false;
+                }
+                catch (BadImageFormatException)
+                {
+                    return false;
+                }
+            }
+
+            private static int CallSelectedApi(int userIndex, out NativeState state)
+            {
+                try
+                {
+                    switch (_selectedApi)
+                    {
+                        case ApiKind.XInput14:
+                            return XInputGetState14(userIndex, out state);
+                        case ApiKind.XInput13:
+                            return XInputGetState13(userIndex, out state);
+                        case ApiKind.XInput91:
+                            return XInputGetState91(userIndex, out state);
+                        default:
+                            state = default(NativeState);
+                            return -1;
+                    }
+                }
+                catch (DllNotFoundException)
+                {
+                    state = default(NativeState);
+                    _selectedApi = ApiKind.Unavailable;
+                    return -1;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    state = default(NativeState);
+                    _selectedApi = ApiKind.Unavailable;
+                    return -1;
+                }
+                catch (BadImageFormatException)
+                {
+                    state = default(NativeState);
+                    _selectedApi = ApiKind.Unavailable;
+                    return -1;
+                }
+            }
+
+            private static bool HasButton(ushort buttons, ushort flag)
+            {
+                return (buttons & flag) == flag;
+            }
+
+            private static float GetButtonValue(ushort buttons, ushort negativeFlag, ushort positiveFlag)
+            {
+                float value = 0f;
+                if (HasButton(buttons, negativeFlag))
+                {
+                    value -= 1f;
+                }
+
+                if (HasButton(buttons, positiveFlag))
+                {
+                    value += 1f;
+                }
+
+                return Mathf.Clamp(value, -1f, 1f);
+            }
+
+            private static float NormalizeStickAxis(short rawValue)
+            {
+                float value = Mathf.Clamp(rawValue / 32767f, -1f, 1f);
+                if (Mathf.Abs(value) < ManualControllerDeadzone)
+                {
+                    return 0f;
+                }
+
+                return value;
+            }
+
+            private static float NormalizeTriggerAxis(byte rawValue)
+            {
+                float value = Mathf.Clamp01(rawValue / 255f);
+                if (value < ManualControllerTriggerDeadzone)
+                {
+                    return 0f;
+                }
+
+                return value;
+            }
+        }
 
         [Header("Endpoints")]
         [SerializeField] private string simulationHost = "localhost";
@@ -289,6 +622,16 @@ namespace Reachy.ControlApp
         [Header("Single Joint Command")]
         [SerializeField] private string jointName = "r_shoulder_pitch";
         [SerializeField] private string goalDegrees = "0";
+
+        [Header("Manual Controller")]
+        [SerializeField] private bool manualControllerEnabled;
+        [SerializeField] private bool manualControllerShowCameraPreview = true;
+        [SerializeField] private float manualControllerBaseSpeedMetersPerSecond = 0.35f;
+        [SerializeField] private float manualControllerTurnSpeedRadiansPerSecond = 0.9f;
+        [SerializeField] private float manualControllerJointSpeedPercent = 55f;
+        [SerializeField] private float manualControllerArmLiftDegreesPerSecond = 45f;
+        [SerializeField] private float manualControllerHeadDegreesPerSecond = 45f;
+        [SerializeField] private float manualControllerExtraDegreesPerSecond = 70f;
         
         [Header("Window Controls")]
         [SerializeField] private int windowedWidth = 1280;
@@ -307,6 +650,7 @@ namespace Reachy.ControlApp
         private bool _collapsed;
         private RuntimeMenuView _activeMenuView = RuntimeMenuView.General;
         private GUIStyle _titleStyle;
+        private GUIStyle _manualVectorCardLabelStyle;
         private float _nextHealthCheckAt;
         private float _nextAutoReconnectAt;
         private bool _autoReconnectScheduled;
@@ -336,6 +680,20 @@ namespace Reachy.ControlApp
         private Vector2 _animationsAndPosesScroll;
         private Vector2 _aiPrimaryScroll;
         private Vector2 _aiRuntimeScroll;
+        private readonly Dictionary<string, float> _manualControllerTargets =
+            new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        private string _manualControllerStatus = "Controller inactive.";
+        private string _manualControllerDetectedDevice = "No gamepad detected.";
+        private float _nextManualControllerBaseCommandAt;
+        private float _nextManualControllerJointCommandAt;
+        private bool _manualControllerTargetsInitialized;
+        private bool _manualControllerBaseWasActiveLastFrame;
+        private bool _manualControllerAutoEnableArmed = true;
+        private int _manualControllerLeftArmTargetPoseIndex;
+        private int _manualControllerRightArmTargetPoseIndex;
+        private Transform _manualControllerSimulationRoot;
+        private ManualControllerSnapshot _manualControllerSnapshot;
+        private ManualControllerSnapshot _manualControllerPreviousSnapshot;
         private VoiceAgentBridge _voiceAgentBridge;
         private VoiceCommandRouter _voiceCommandRouter;
         private VoiceTranscriptIntentParser _voiceTranscriptParser;
@@ -634,6 +992,7 @@ namespace Reachy.ControlApp
         {
             UpdateCameraPreview();
             UpdateLocalAiAgent();
+            UpdateManualController();
 
             if (_isConnectAttemptInProgress)
             {
@@ -742,7 +1101,7 @@ namespace Reachy.ControlApp
                 }
             }
 
-            if (!showCameraPreview || _client == null)
+            if (!ShouldUpdateCameraPreview() || _client == null)
             {
                 return;
             }
@@ -773,6 +1132,887 @@ namespace Reachy.ControlApp
 
             _cameraFetchTask = Task.Run(() => _client.FetchCameraImage(host, port, cameraId, timeout));
             _nextCameraFetchAt = Time.unscaledTime + Mathf.Max(0.05f, cameraRefreshIntervalSeconds);
+        }
+
+        private bool ShouldUpdateCameraPreview()
+        {
+            if (showCameraPreview)
+            {
+                return true;
+            }
+
+            return manualControllerShowCameraPreview && _activeMenuView == RuntimeMenuView.ManualControl;
+        }
+
+        private void UpdateManualController()
+        {
+            if (_activeMenuView != RuntimeMenuView.ManualControl)
+            {
+                _manualControllerAutoEnableArmed = true;
+                if (!manualControllerEnabled)
+                {
+                    _manualControllerStatus = "Controller inactive.";
+                }
+
+                _manualControllerBaseWasActiveLastFrame = false;
+                _manualControllerSnapshot = default(ManualControllerSnapshot);
+                _manualControllerPreviousSnapshot = default(ManualControllerSnapshot);
+                return;
+            }
+
+            _manualControllerPreviousSnapshot = _manualControllerSnapshot;
+            _manualControllerSnapshot = GetManualControllerSnapshot();
+            string detectedDevice = _manualControllerSnapshot.DisplayName;
+            _manualControllerDetectedDevice = string.IsNullOrWhiteSpace(detectedDevice)
+                ? "No gamepad detected."
+                : detectedDevice;
+
+            if (!manualControllerEnabled)
+            {
+                if (_manualControllerAutoEnableArmed && ShouldAutoEnableManualController(_manualControllerSnapshot))
+                {
+                    manualControllerEnabled = true;
+                    _manualControllerAutoEnableArmed = false;
+                    _manualControllerStatus =
+                        $"Controller detected: {_manualControllerDetectedDevice}. Controller driving enabled automatically.";
+                }
+                else
+                {
+                    _manualControllerBaseWasActiveLastFrame = false;
+                    if (_manualControllerSnapshot.Connected)
+                    {
+                        _manualControllerStatus = "Controller detected. Enable controller driving to use the gamepad.";
+                    }
+                    else
+                    {
+                        _manualControllerStatus = "Controller inactive.";
+                    }
+
+                    return;
+                }
+            }
+
+            _manualControllerAutoEnableArmed = false;
+
+            if (_isConnectAttemptInProgress)
+            {
+                _manualControllerStatus = "Controller waiting: connect attempt in progress.";
+                _manualControllerBaseWasActiveLastFrame = false;
+                return;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                _manualControllerStatus = "Controller waiting: connect to Reachy first.";
+                _manualControllerTargetsInitialized = false;
+                _manualControllerBaseWasActiveLastFrame = false;
+                return;
+            }
+
+            if (!_manualControllerSnapshot.Connected)
+            {
+                _manualControllerStatus = "Controller enabled, but no gamepad input source was detected.";
+                _manualControllerBaseWasActiveLastFrame = false;
+                return;
+            }
+
+            EnsureManualControllerTargetsInitialized();
+            HandleManualControllerButtonActions(_manualControllerSnapshot, _manualControllerPreviousSnapshot);
+
+            bool jointsDirty = UpdateManualControllerJointTargets(
+                _manualControllerSnapshot,
+                Mathf.Max(0.0001f, Time.unscaledDeltaTime));
+            UpdateManualControllerBase(_manualControllerSnapshot, Time.unscaledDeltaTime);
+
+            if (jointsDirty && Time.unscaledTime >= _nextManualControllerJointCommandAt)
+            {
+                bool ok = _client.SendJointGoals(
+                    _manualControllerTargets,
+                    manualControllerJointSpeedPercent,
+                    out string controllerMessage);
+                _manualControllerStatus = ok
+                    ? $"Controller active: {controllerMessage}"
+                    : $"Controller joint command failed: {controllerMessage}";
+                _nextManualControllerJointCommandAt = Time.unscaledTime + ManualControllerJointSendIntervalSeconds;
+            }
+        }
+
+        private void EnsureManualControllerTargetsInitialized(bool forceResync = false)
+        {
+            if (_manualControllerTargetsInitialized && !forceResync)
+            {
+                return;
+            }
+
+            _manualControllerTargets.Clear();
+
+            Dictionary<string, float> positionsDegrees = null;
+            string syncMessage = "Joint-state sync is unavailable.";
+            bool fetched = false;
+            if (_client != null)
+            {
+                fetched = _client.TryGetJointPositions(
+                    ManualControllerTrackedJointNames,
+                    out positionsDegrees,
+                    out syncMessage);
+            }
+
+            if (fetched)
+            {
+                foreach (KeyValuePair<string, float> item in positionsDegrees)
+                {
+                    _manualControllerTargets[item.Key] = item.Value;
+                }
+
+                _manualControllerStatus = $"Controller synced: {syncMessage}";
+            }
+            else
+            {
+                _manualControllerStatus = $"Controller using default targets. {syncMessage}";
+            }
+
+            for (int i = 0; i < ManualControllerTrackedJointNames.Length; i++)
+            {
+                string joint = ManualControllerTrackedJointNames[i];
+                if (!_manualControllerTargets.ContainsKey(joint))
+                {
+                    _manualControllerTargets[joint] = GetManualControllerDefaultTarget(joint);
+                }
+            }
+
+            _manualControllerTargetsInitialized = true;
+        }
+
+        private void ResetManualControllerTargetsToDefaults()
+        {
+            _manualControllerTargets.Clear();
+            for (int i = 0; i < ManualControllerTrackedJointNames.Length; i++)
+            {
+                string joint = ManualControllerTrackedJointNames[i];
+                _manualControllerTargets[joint] = GetManualControllerDefaultTarget(joint);
+            }
+
+            _manualControllerTargetsInitialized = true;
+        }
+
+        private void HandleManualControllerButtonActions(
+            ManualControllerSnapshot currentSnapshot,
+            ManualControllerSnapshot previousSnapshot)
+        {
+            bool leftTargetToggled = false;
+            bool rightTargetToggled = false;
+
+            if (currentSnapshot.Back && !previousSnapshot.Back)
+            {
+                cameraUseRightEye = !cameraUseRightEye;
+                _nextCameraFetchAt = 0f;
+                _manualControllerStatus = cameraUseRightEye
+                    ? "Controller: switched to right eye camera."
+                    : "Controller: switched to left eye camera.";
+            }
+
+            if (currentSnapshot.Start && !previousSnapshot.Start)
+            {
+                bool ok = _client.SendNeutralArmsPreset(out string message);
+                if (ok)
+                {
+                    ResetManualControllerTargetsToDefaults();
+                }
+
+                _manualControllerStatus = ok
+                    ? $"Controller: neutral arms preset sent. {message}"
+                    : $"Controller neutral preset failed: {message}";
+            }
+
+            if (currentSnapshot.LeftStickButton && !previousSnapshot.LeftStickButton)
+            {
+                _manualControllerLeftArmTargetPoseIndex =
+                    NormalizeManualControllerArmTargetPoseIndex(_manualControllerLeftArmTargetPoseIndex + 1);
+                leftTargetToggled = true;
+            }
+
+            if (currentSnapshot.RightStickButton && !previousSnapshot.RightStickButton)
+            {
+                _manualControllerRightArmTargetPoseIndex =
+                    NormalizeManualControllerArmTargetPoseIndex(_manualControllerRightArmTargetPoseIndex + 1);
+                rightTargetToggled = true;
+            }
+
+            if (leftTargetToggled || rightTargetToggled)
+            {
+                string leftLabel = GetManualControllerArmTargetPoseLabel(_manualControllerLeftArmTargetPoseIndex);
+                string rightLabel = GetManualControllerArmTargetPoseLabel(_manualControllerRightArmTargetPoseIndex);
+                if (leftTargetToggled && rightTargetToggled)
+                {
+                    _manualControllerStatus =
+                        $"Controller: left arm target = {leftLabel}; right arm target = {rightLabel}.";
+                }
+                else if (leftTargetToggled)
+                {
+                    _manualControllerStatus = $"Controller: left arm target = {leftLabel}.";
+                }
+                else
+                {
+                    _manualControllerStatus = $"Controller: right arm target = {rightLabel}.";
+                }
+            }
+        }
+
+        private bool UpdateManualControllerJointTargets(ManualControllerSnapshot controller, float deltaTime)
+        {
+            bool changed = false;
+            float armStep = Mathf.Max(1f, manualControllerArmLiftDegreesPerSecond) * deltaTime;
+            float headStep = Mathf.Max(1f, manualControllerHeadDegreesPerSecond) * deltaTime;
+            float extraStep = Mathf.Max(1f, manualControllerExtraDegreesPerSecond) * deltaTime;
+
+            if (controller.LeftTrigger > 0f)
+            {
+                changed |= ApplyManualControllerArmTargetPose(
+                    leftArm: true,
+                    maxDeltaDegrees: Mathf.Max(armStep * 0.6f, armStep * controller.LeftTrigger));
+            }
+            else if (controller.LeftShoulder)
+            {
+                changed |= ApplyManualControllerArmNeutralPose(leftArm: true, maxDeltaDegrees: armStep);
+            }
+
+            if (controller.RightTrigger > 0f)
+            {
+                changed |= ApplyManualControllerArmTargetPose(
+                    leftArm: false,
+                    maxDeltaDegrees: Mathf.Max(armStep * 0.6f, armStep * controller.RightTrigger));
+            }
+            else if (controller.RightShoulder)
+            {
+                changed |= ApplyManualControllerArmNeutralPose(leftArm: false, maxDeltaDegrees: armStep);
+            }
+
+            float headHorizontal = CombineManualControllerAxisAndKeys(
+                controller.DPadX,
+                KeyCode.LeftArrow,
+                KeyCode.RightArrow);
+            float headVertical = CombineManualControllerAxisAndKeys(
+                controller.DPadY,
+                KeyCode.DownArrow,
+                KeyCode.UpArrow);
+
+            if (Mathf.Abs(headHorizontal) > 0f)
+            {
+                changed |= ApplyManualControllerDelta("neck_roll", -headHorizontal * headStep);
+            }
+
+            if (Mathf.Abs(headVertical) > 0f)
+            {
+                changed |= ApplyManualControllerDelta("neck_pitch", -headVertical * headStep);
+            }
+
+            if (controller.A)
+            {
+                changed |= ApplyManualControllerDelta("l_gripper", extraStep);
+                changed |= ApplyManualControllerDelta("r_gripper", extraStep);
+            }
+
+            if (controller.B)
+            {
+                changed |= ApplyManualControllerDelta("l_gripper", -extraStep);
+                changed |= ApplyManualControllerDelta("r_gripper", -extraStep);
+            }
+
+            if (controller.X)
+            {
+                changed |= ApplyManualControllerDelta("neck_yaw", -extraStep);
+            }
+
+            if (controller.Y)
+            {
+                changed |= ApplyManualControllerDelta("neck_yaw", extraStep);
+            }
+
+            return changed;
+        }
+
+        private void UpdateManualControllerBase(ManualControllerSnapshot controller, float deltaTime)
+        {
+            float lateralInput = controller.LeftStickX;
+            float forwardInput = controller.LeftStickY;
+            float turnInput = controller.RightStickX;
+
+            bool hasBaseInput =
+                Mathf.Abs(lateralInput) > 0f ||
+                Mathf.Abs(forwardInput) > 0f ||
+                Mathf.Abs(turnInput) > 0f;
+
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (activeMode == ReachyControlMode.Simulation)
+            {
+                if (hasBaseInput)
+                {
+                    MoveSimulationBaseLocally(lateralInput, forwardInput, turnInput, deltaTime);
+                }
+
+                _manualControllerBaseWasActiveLastFrame = hasBaseInput;
+                return;
+            }
+
+            if (!hasBaseInput)
+            {
+                if (_manualControllerBaseWasActiveLastFrame && Time.unscaledTime >= _nextManualControllerBaseCommandAt)
+                {
+                    bool stopOk = _client.SendBaseVelocity(0f, 0f, 0f, ManualControllerBaseSendIntervalSeconds, out string stopMessage);
+                    _manualControllerStatus = stopOk
+                        ? "Controller: mobile base stopped."
+                        : $"Controller base stop failed: {stopMessage}";
+                    _nextManualControllerBaseCommandAt = Time.unscaledTime + ManualControllerBaseSendIntervalSeconds;
+                }
+
+                _manualControllerBaseWasActiveLastFrame = false;
+                return;
+            }
+
+            if (Time.unscaledTime < _nextManualControllerBaseCommandAt)
+            {
+                _manualControllerBaseWasActiveLastFrame = true;
+                return;
+            }
+
+            float baseSpeed = Mathf.Clamp(manualControllerBaseSpeedMetersPerSecond, 0.05f, 1.5f);
+            float turnSpeed = Mathf.Clamp(manualControllerTurnSpeedRadiansPerSecond, 0.1f, 3f);
+            float xVel = forwardInput * baseSpeed;
+            float yVel = lateralInput * baseSpeed;
+            float rotVel = turnInput * turnSpeed;
+
+            bool ok = _client.SendBaseVelocity(
+                xVel,
+                yVel,
+                rotVel,
+                ManualControllerBaseSendIntervalSeconds,
+                out string baseMessage);
+            _manualControllerStatus = ok
+                ? $"Controller base active: {baseMessage}"
+                : $"Controller base command failed: {baseMessage}";
+
+            _nextManualControllerBaseCommandAt = Time.unscaledTime + ManualControllerBaseSendIntervalSeconds;
+            _manualControllerBaseWasActiveLastFrame = true;
+        }
+
+        private void MoveSimulationBaseLocally(float lateralInput, float forwardInput, float turnInput, float deltaTime)
+        {
+            Transform simulationRoot = GetManualControllerSimulationRoot();
+            if (simulationRoot == null)
+            {
+                _manualControllerStatus = $"Controller could not find '{ReachySimulationRootObjectName}' for simulation base movement.";
+                return;
+            }
+
+            float baseSpeed = Mathf.Clamp(manualControllerBaseSpeedMetersPerSecond, 0.05f, 1.5f);
+            float turnSpeed = Mathf.Clamp(manualControllerTurnSpeedRadiansPerSecond, 0.1f, 3f);
+            Vector3 localTranslation = new Vector3(
+                lateralInput * baseSpeed * deltaTime,
+                0f,
+                forwardInput * baseSpeed * deltaTime);
+            float yawDegrees = turnInput * turnSpeed * Mathf.Rad2Deg * deltaTime;
+
+            simulationRoot.Translate(localTranslation, Space.Self);
+            simulationRoot.Rotate(Vector3.up, yawDegrees, Space.Self);
+            _manualControllerStatus = "Controller active: moving simulation base locally.";
+        }
+
+        private Transform GetManualControllerSimulationRoot()
+        {
+            if (_manualControllerSimulationRoot != null)
+            {
+                return _manualControllerSimulationRoot;
+            }
+
+            GameObject reachyRoot = GameObject.Find(ReachySimulationRootObjectName);
+            if (reachyRoot != null)
+            {
+                _manualControllerSimulationRoot = reachyRoot.transform;
+            }
+
+            return _manualControllerSimulationRoot;
+        }
+
+        private bool ApplyManualControllerDelta(string jointName, float deltaDegrees)
+        {
+            if (string.IsNullOrWhiteSpace(jointName) || Mathf.Approximately(deltaDegrees, 0f))
+            {
+                return false;
+            }
+
+            if (!_manualControllerTargets.TryGetValue(jointName, out float currentValue))
+            {
+                currentValue = GetManualControllerDefaultTarget(jointName);
+            }
+
+            GetManualControllerJointRange(jointName, out float minDegrees, out float maxDegrees);
+            float nextValue = Mathf.Clamp(currentValue + deltaDegrees, minDegrees, maxDegrees);
+            if (Mathf.Abs(nextValue - currentValue) < 0.001f)
+            {
+                return false;
+            }
+
+            _manualControllerTargets[jointName] = nextValue;
+            return true;
+        }
+
+        private bool ApplyManualControllerArmTargetPose(bool leftArm, float maxDeltaDegrees)
+        {
+            GetManualControllerArmTargetPoseTargets(
+                leftArm,
+                leftArm ? _manualControllerLeftArmTargetPoseIndex : _manualControllerRightArmTargetPoseIndex,
+                out float shoulderPitchTarget,
+                out float shoulderRollTarget,
+                out float armYawTarget,
+                out float elbowPitchTarget);
+
+            string sidePrefix = leftArm ? "l" : "r";
+            bool changed = false;
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_shoulder_pitch",
+                shoulderPitchTarget,
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_shoulder_roll",
+                shoulderRollTarget,
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_arm_yaw",
+                armYawTarget,
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_elbow_pitch",
+                elbowPitchTarget,
+                maxDeltaDegrees);
+            return changed;
+        }
+
+        private bool ApplyManualControllerArmNeutralPose(bool leftArm, float maxDeltaDegrees)
+        {
+            string sidePrefix = leftArm ? "l" : "r";
+            bool changed = false;
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_shoulder_pitch",
+                GetManualControllerDefaultTarget($"{sidePrefix}_shoulder_pitch"),
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_shoulder_roll",
+                GetManualControllerDefaultTarget($"{sidePrefix}_shoulder_roll"),
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_arm_yaw",
+                GetManualControllerDefaultTarget($"{sidePrefix}_arm_yaw"),
+                maxDeltaDegrees);
+            changed |= MoveManualControllerJointToward(
+                $"{sidePrefix}_elbow_pitch",
+                GetManualControllerDefaultTarget($"{sidePrefix}_elbow_pitch"),
+                maxDeltaDegrees);
+            return changed;
+        }
+
+        private bool MoveManualControllerJointToward(string jointName, float targetDegrees, float maxDeltaDegrees)
+        {
+            if (string.IsNullOrWhiteSpace(jointName) || maxDeltaDegrees <= 0f)
+            {
+                return false;
+            }
+
+            if (!_manualControllerTargets.TryGetValue(jointName, out float currentValue))
+            {
+                currentValue = GetManualControllerDefaultTarget(jointName);
+            }
+
+            GetManualControllerJointRange(jointName, out float minDegrees, out float maxDegrees);
+            float clampedTarget = Mathf.Clamp(targetDegrees, minDegrees, maxDegrees);
+            float nextValue = Mathf.MoveTowards(currentValue, clampedTarget, maxDeltaDegrees);
+            if (Mathf.Abs(nextValue - currentValue) < 0.001f)
+            {
+                return false;
+            }
+
+            _manualControllerTargets[jointName] = nextValue;
+            return true;
+        }
+
+        private static void GetManualControllerArmTargetPoseTargets(
+            bool leftArm,
+            int poseIndex,
+            out float shoulderPitch,
+            out float shoulderRoll,
+            out float armYaw,
+            out float elbowPitch)
+        {
+            ManualControllerArmTargetPose pose =
+                ManualControllerArmTargetPoses[NormalizeManualControllerArmTargetPoseIndex(poseIndex)];
+            shoulderPitch = pose.ShoulderPitch;
+            shoulderRoll = leftArm ? pose.ShoulderRollMagnitude : -pose.ShoulderRollMagnitude;
+            armYaw = leftArm ? pose.ArmYawMagnitude : -pose.ArmYawMagnitude;
+            elbowPitch = pose.ElbowPitch;
+        }
+
+        private static float CombineManualControllerAxisAndKeys(float analogValue, KeyCode negativeKey, KeyCode positiveKey)
+        {
+            float combined = analogValue;
+            if (Input.GetKey(negativeKey))
+            {
+                combined -= 1f;
+            }
+
+            if (Input.GetKey(positiveKey))
+            {
+                combined += 1f;
+            }
+
+            return Mathf.Clamp(combined, -1f, 1f);
+        }
+
+        private static float GetAxisRawSafe(string axisName)
+        {
+            if (string.IsNullOrWhiteSpace(axisName))
+            {
+                return 0f;
+            }
+
+            try
+            {
+                float value = Input.GetAxisRaw(axisName);
+                if (Mathf.Abs(value) < ManualControllerDeadzone)
+                {
+                    return 0f;
+                }
+
+                return Mathf.Clamp(value, -1f, 1f);
+            }
+            catch (ArgumentException)
+            {
+                return 0f;
+            }
+        }
+
+        private ManualControllerSnapshot GetManualControllerSnapshot()
+        {
+            if (CanUseWindowsXInput())
+            {
+                for (int userIndex = 0; userIndex < 4; userIndex++)
+                {
+                    if (WindowsXInput.TryGetSnapshot(userIndex, out ManualControllerSnapshot xInputSnapshot))
+                    {
+                        return xInputSnapshot;
+                    }
+                }
+            }
+
+            return GetLegacyManualControllerSnapshot();
+        }
+
+        private static bool ShouldAutoEnableManualController(ManualControllerSnapshot snapshot)
+        {
+            if (!snapshot.Connected || string.IsNullOrWhiteSpace(snapshot.DisplayName))
+            {
+                return false;
+            }
+
+            return snapshot.DisplayName.IndexOf("xbox", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   snapshot.DisplayName.IndexOf("xinput", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static int NormalizeManualControllerArmTargetPoseIndex(int poseIndex)
+        {
+            int poseCount = ManualControllerArmTargetPoses.Length;
+            if (poseCount <= 0)
+            {
+                return 0;
+            }
+
+            int normalizedIndex = poseIndex % poseCount;
+            if (normalizedIndex < 0)
+            {
+                normalizedIndex += poseCount;
+            }
+
+            return normalizedIndex;
+        }
+
+        private static string GetManualControllerArmTargetPoseLabel(int poseIndex)
+        {
+            if (ManualControllerArmTargetPoses.Length <= 0)
+            {
+                return "None";
+            }
+
+            return ManualControllerArmTargetPoses[NormalizeManualControllerArmTargetPoseIndex(poseIndex)].Label;
+        }
+
+        private static bool CanUseWindowsXInput()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor ||
+                   Application.platform == RuntimePlatform.WindowsPlayer;
+        }
+
+        private static ManualControllerSnapshot GetLegacyManualControllerSnapshot()
+        {
+            ManualControllerSnapshot snapshot = default(ManualControllerSnapshot);
+            string[] joystickNames = Input.GetJoystickNames();
+            if (TryGetFirstNamedJoystick(joystickNames, out string joystickName, out int namedSlotIndex))
+            {
+                snapshot.Connected = true;
+                snapshot.SlotIndex = namedSlotIndex;
+                snapshot.DisplayName = BuildLegacyGamepadDisplayName(joystickName, namedSlotIndex);
+            }
+
+            snapshot.LeftStickX = GetAxisRawSafe("Horizontal");
+            snapshot.LeftStickY = GetAxisRawSafe("Vertical");
+            snapshot.RightStickX = GetAxisRawSafe(ManualControllerRightStickXAxis);
+            snapshot.RightStickY = GetAxisRawSafe(ManualControllerRightStickYAxis);
+            snapshot.DPadX = GetAxisRawSafe(ManualControllerDPadXAxis);
+            snapshot.DPadY = GetAxisRawSafe(ManualControllerDPadYAxis);
+            snapshot.A = IsAnyJoystickButtonPressed(0);
+            snapshot.B = IsAnyJoystickButtonPressed(1);
+            snapshot.X = IsAnyJoystickButtonPressed(2);
+            snapshot.Y = IsAnyJoystickButtonPressed(3);
+            snapshot.LeftShoulder = IsAnyJoystickButtonPressed(4);
+            snapshot.RightShoulder = IsAnyJoystickButtonPressed(5);
+            snapshot.Back = IsAnyJoystickButtonPressed(6);
+            snapshot.Start = IsAnyJoystickButtonPressed(7);
+            snapshot.LeftStickButton = IsAnyJoystickButtonPressed(8);
+            snapshot.RightStickButton = IsAnyJoystickButtonPressed(9);
+
+            bool hasDedicatedAxisActivity =
+                Mathf.Abs(snapshot.RightStickX) > 0f ||
+                Mathf.Abs(snapshot.RightStickY) > 0f ||
+                Mathf.Abs(snapshot.DPadX) > 0f ||
+                Mathf.Abs(snapshot.DPadY) > 0f;
+            bool hasLeftStickAxisActivity =
+                Mathf.Abs(snapshot.LeftStickX) > 0f ||
+                Mathf.Abs(snapshot.LeftStickY) > 0f;
+            bool hasKeyboardDirectionalInput = HasAnyManualKeyboardDirectionalInput();
+            bool hasLegacyAxisActivity = hasDedicatedAxisActivity || (hasLeftStickAxisActivity && !hasKeyboardDirectionalInput);
+
+            if (TryGetAnyJoystickButtonActivitySlot(out int activeButtonSlotIndex))
+            {
+                if (snapshot.SlotIndex <= 0)
+                {
+                    snapshot.SlotIndex = activeButtonSlotIndex;
+                }
+            }
+
+            if (!snapshot.Connected && (snapshot.A ||
+                                        snapshot.B ||
+                                        snapshot.X ||
+                                        snapshot.Y ||
+                                        snapshot.LeftShoulder ||
+                                        snapshot.RightShoulder ||
+                                        snapshot.LeftStickButton ||
+                                        snapshot.RightStickButton ||
+                                        snapshot.Back ||
+                                        snapshot.Start ||
+                                        hasLegacyAxisActivity))
+            {
+                snapshot.Connected = true;
+                snapshot.DisplayName = BuildLegacyGamepadDisplayName(string.Empty, snapshot.SlotIndex);
+            }
+
+            return snapshot;
+        }
+
+        private static bool TryGetFirstNamedJoystick(string[] joystickNames, out string joystickName, out int slotIndex)
+        {
+            joystickName = string.Empty;
+            slotIndex = 0;
+            if (joystickNames == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < joystickNames.Length; i++)
+            {
+                if (!string.IsNullOrWhiteSpace(joystickNames[i]))
+                {
+                    joystickName = joystickNames[i].Trim();
+                    slotIndex = i + 1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string BuildLegacyGamepadDisplayName(string joystickName, int slotIndex)
+        {
+            string slotLabel = slotIndex > 0
+                ? $" slot {slotIndex.ToString(CultureInfo.InvariantCulture)}"
+                : string.Empty;
+            if (!string.IsNullOrWhiteSpace(joystickName))
+            {
+                return $"{joystickName.Trim()} (Unity legacy{slotLabel})";
+            }
+
+            return string.IsNullOrWhiteSpace(slotLabel)
+                ? "Gamepad (Unity legacy input)"
+                : $"Gamepad (Unity legacy{slotLabel})";
+        }
+
+        private static bool HasAnyManualKeyboardDirectionalInput()
+        {
+            return Input.GetKey(KeyCode.W) ||
+                   Input.GetKey(KeyCode.A) ||
+                   Input.GetKey(KeyCode.S) ||
+                   Input.GetKey(KeyCode.D) ||
+                   Input.GetKey(KeyCode.UpArrow) ||
+                   Input.GetKey(KeyCode.DownArrow) ||
+                   Input.GetKey(KeyCode.LeftArrow) ||
+                   Input.GetKey(KeyCode.RightArrow);
+        }
+
+        private static bool IsAnyJoystickButtonPressed(int buttonIndex)
+        {
+            return TryGetJoystickButtonSlot(buttonIndex, out int ignoredSlotIndex);
+        }
+
+        private static bool TryGetAnyJoystickButtonActivitySlot(out int slotIndex)
+        {
+            slotIndex = 0;
+            for (int joystickIndex = 0; joystickIndex < ManualControllerMaxJoystickSlots; joystickIndex++)
+            {
+                for (int buttonIndex = 0; buttonIndex < ManualControllerButtonsPerJoystick; buttonIndex++)
+                {
+                    KeyCode keyCode = ManualControllerJoystickButtons[joystickIndex, buttonIndex];
+                    if (keyCode != KeyCode.None && Input.GetKey(keyCode))
+                    {
+                        slotIndex = joystickIndex + 1;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryGetJoystickButtonSlot(int buttonIndex, out int slotIndex)
+        {
+            slotIndex = 0;
+            if (buttonIndex < 0 || buttonIndex >= ManualControllerButtonsPerJoystick)
+            {
+                return false;
+            }
+
+            for (int joystickIndex = 0; joystickIndex < ManualControllerMaxJoystickSlots; joystickIndex++)
+            {
+                KeyCode keyCode = ManualControllerJoystickButtons[joystickIndex, buttonIndex];
+                if (keyCode != KeyCode.None && Input.GetKey(keyCode))
+                {
+                    slotIndex = joystickIndex + 1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static KeyCode[,] BuildManualControllerJoystickButtons()
+        {
+            KeyCode[,] buttons = new KeyCode[ManualControllerMaxJoystickSlots, ManualControllerButtonsPerJoystick];
+            for (int joystickIndex = 0; joystickIndex < ManualControllerMaxJoystickSlots; joystickIndex++)
+            {
+                for (int buttonIndex = 0; buttonIndex < ManualControllerButtonsPerJoystick; buttonIndex++)
+                {
+                    string keyName = string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Joystick{0}Button{1}",
+                        joystickIndex + 1,
+                        buttonIndex);
+                    try
+                    {
+                        buttons[joystickIndex, buttonIndex] = (KeyCode)Enum.Parse(typeof(KeyCode), keyName);
+                    }
+                    catch (ArgumentException)
+                    {
+                        buttons[joystickIndex, buttonIndex] = KeyCode.None;
+                    }
+                }
+            }
+
+            return buttons;
+        }
+
+        private static float GetManualControllerDefaultTarget(string jointName)
+        {
+            switch (jointName)
+            {
+                case "l_shoulder_pitch":
+                case "l_shoulder_roll":
+                case "l_arm_yaw":
+                case "l_elbow_pitch":
+                case "r_shoulder_pitch":
+                case "r_shoulder_roll":
+                case "r_arm_yaw":
+                case "r_elbow_pitch":
+                case "neck_roll":
+                case "neck_pitch":
+                case "neck_yaw":
+                case "l_wrist_roll":
+                case "r_wrist_roll":
+                case "l_gripper":
+                case "r_gripper":
+                default:
+                    return 0f;
+            }
+        }
+
+        private static void GetManualControllerJointRange(string jointName, out float minDegrees, out float maxDegrees)
+        {
+            switch (jointName)
+            {
+                case "l_shoulder_pitch":
+                case "r_shoulder_pitch":
+                    minDegrees = -95f;
+                    maxDegrees = 20f;
+                    break;
+                case "l_shoulder_roll":
+                    minDegrees = -20f;
+                    maxDegrees = 90f;
+                    break;
+                case "r_shoulder_roll":
+                    minDegrees = -90f;
+                    maxDegrees = 20f;
+                    break;
+                case "l_arm_yaw":
+                case "r_arm_yaw":
+                    minDegrees = -60f;
+                    maxDegrees = 60f;
+                    break;
+                case "l_elbow_pitch":
+                case "r_elbow_pitch":
+                    minDegrees = -130f;
+                    maxDegrees = 5f;
+                    break;
+                case "neck_roll":
+                    minDegrees = -60f;
+                    maxDegrees = 60f;
+                    break;
+                case "neck_pitch":
+                    minDegrees = -35f;
+                    maxDegrees = 35f;
+                    break;
+                case "neck_yaw":
+                    minDegrees = -20f;
+                    maxDegrees = 20f;
+                    break;
+                case "l_wrist_roll":
+                case "r_wrist_roll":
+                    minDegrees = -90f;
+                    maxDegrees = 90f;
+                    break;
+                case "l_gripper":
+                case "r_gripper":
+                    minDegrees = -30f;
+                    maxDegrees = 30f;
+                    break;
+                default:
+                    minDegrees = -180f;
+                    maxDegrees = 180f;
+                    break;
+            }
         }
 
         private void UpdateLocalAiAgent()
@@ -4065,6 +5305,17 @@ namespace Reachy.ControlApp
                 _titleStyle = new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = 14 };
             }
 
+            if (_manualVectorCardLabelStyle == null)
+            {
+                _manualVectorCardLabelStyle = new GUIStyle(GUI.skin.label)
+                {
+                    alignment = TextAnchor.UpperCenter,
+                    fontSize = 10,
+                    wordWrap = false,
+                    clipping = TextClipping.Overflow
+                };
+            }
+
             float topPanelsWidth = _collapsed
                 ? DesignLeftPanelWidth
                 : DesignLeftPanelWidth + DesignPanelGap + DesignRightPanelWidth;
@@ -4419,10 +5670,10 @@ namespace Reachy.ControlApp
             float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
             float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
             float desiredPanelWidth = Mathf.Clamp(
-                usableWidth * DesignAiPanelWidthRatio,
-                DesignAiPanelMinWidth,
-                DesignAiPanelMaxWidth);
-            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignAiCenterOpenMinWidth) * 0.5f);
+                usableWidth * DesignManualPanelWidthRatio,
+                DesignManualPanelMinWidth,
+                DesignManualPanelMaxWidth);
+            float maxPanelWidthByOpenSpace = Mathf.Max(180f, (usableWidth - DesignManualCenterOpenMinWidth) * 0.5f);
             float leftPanelWidth = Mathf.Min(desiredPanelWidth, maxPanelWidthByOpenSpace);
             float rightPanelWidth = leftPanelWidth;
 
@@ -4453,9 +5704,23 @@ namespace Reachy.ControlApp
 
             float leftPanelX = logicalMargin;
             float rightPanelX = logicalScreenWidth - logicalMargin - rightPanelWidth;
+            float centerPanelX = leftPanelX + leftPanelWidth;
+            float centerPanelWidth = Mathf.Max(0f, rightPanelX - centerPanelX);
 
             DrawManualControlPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
-            DrawManualControlStatusPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+            DrawManualControlRightPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+
+            if (manualControllerShowCameraPreview && centerPanelWidth >= DesignManualCameraMinWidth)
+            {
+                float cameraPanelWidth = Mathf.Min(centerPanelWidth, DesignCameraPanelWidth);
+                float cameraPanelHeight = Mathf.Clamp(
+                    usableHeight * 0.36f,
+                    DesignManualCameraMinHeight,
+                    DesignCameraPanelHeight);
+                float cameraPanelX = centerPanelX + Mathf.Max(0f, (centerPanelWidth - cameraPanelWidth) * 0.5f);
+                float cameraPanelY = topY + usableHeight - cameraPanelHeight;
+                DrawCameraPreviewPanel(new Rect(cameraPanelX, cameraPanelY, cameraPanelWidth, cameraPanelHeight));
+            }
         }
 
         private void DrawManualControlPanel(Rect area)
@@ -4470,17 +5735,538 @@ namespace Reachy.ControlApp
                 true,
                 GUILayout.Height(bodyHeight));
 
+            DrawManualGamepadSection();
+            GUILayout.Space(10f);
             DrawJointSection();
 
             GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
+        private void DrawManualGamepadSection()
+        {
+            GUILayout.Label("Xbox Controller", _titleStyle);
+            manualControllerEnabled = GUILayout.Toggle(
+                manualControllerEnabled,
+                "Enable controller driving while the Manual Control tab is open");
+            manualControllerShowCameraPreview = GUILayout.Toggle(
+                manualControllerShowCameraPreview,
+                "Show camera preview in the center of Manual Control");
+
+            manualControllerBaseSpeedMetersPerSecond = DrawControllerSliderRow(
+                "Base speed",
+                manualControllerBaseSpeedMetersPerSecond,
+                0.1f,
+                1.5f,
+                "F2",
+                "m/s");
+            manualControllerTurnSpeedRadiansPerSecond = DrawControllerSliderRow(
+                "Turn speed",
+                manualControllerTurnSpeedRadiansPerSecond,
+                0.2f,
+                3.0f,
+                "F2",
+                "rad/s");
+            manualControllerJointSpeedPercent = DrawControllerSliderRow(
+                "Joint speed",
+                manualControllerJointSpeedPercent,
+                10f,
+                100f,
+                "F0",
+                "%");
+            manualControllerArmLiftDegreesPerSecond = DrawControllerSliderRow(
+                "Arm lift",
+                manualControllerArmLiftDegreesPerSecond,
+                10f,
+                120f,
+                "F0",
+                "deg/s");
+            manualControllerHeadDegreesPerSecond = DrawControllerSliderRow(
+                "Head move",
+                manualControllerHeadDegreesPerSecond,
+                10f,
+                120f,
+                "F0",
+                "deg/s");
+            manualControllerExtraDegreesPerSecond = DrawControllerSliderRow(
+                "Extra joints",
+                manualControllerExtraDegreesPerSecond,
+                10f,
+                140f,
+                "F0",
+                "deg/s");
+
+            GUILayout.Label($"Detected pad: {_manualControllerDetectedDevice}");
+            GUILayout.Label($"Controller state: {_manualControllerStatus}");
+            GUILayout.Label("Detection: Windows XInput first, Unity legacy input fallback.");
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Sync targets", GUILayout.Height(22f)))
+            {
+                if (_client == null)
+                {
+                    _manualControllerStatus = "Manual panel: controller client is unavailable.";
+                }
+                else
+                {
+                    EnsureManualControllerTargetsInitialized(forceResync: true);
+                }
+            }
+
+            if (GUILayout.Button("Neutral Arms", GUILayout.Height(22f)))
+            {
+                if (_client == null)
+                {
+                    _manualControllerStatus = "Manual panel: controller client is unavailable.";
+                }
+                else
+                {
+                    bool ok = _client.SendNeutralArmsPreset(out string message);
+                    if (ok)
+                    {
+                        ResetManualControllerTargetsToDefaults();
+                    }
+
+                    _manualControllerStatus = ok
+                        ? $"Manual panel: neutral arms preset sent. {message}"
+                        : $"Manual panel neutral preset failed: {message}";
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Mapping");
+            GUILayout.Label("Left stick: drive simulation base locally, or send mobile-base velocity on a real robot.");
+            GUILayout.Label("Right stick X: rotate the base.");
+            GUILayout.Label("L3 / Left stick press: cycle the left arm target pose.");
+            GUILayout.Label("R3 / Right stick press: cycle the right arm target pose.");
+            GUILayout.Label("L2 / LT: move the left arm toward its bent target pose. L1 / LB: move the left arm back toward neutral.");
+            GUILayout.Label("R2 / RT: move the right arm toward its bent target pose. R1 / RB: move the right arm back toward neutral.");
+            GUILayout.Label("Right panel: live vector visualizer for base translation and rotation.");
+            GUILayout.Label("Camera preview: bottom middle, leaving the upper middle area open.");
+            GUILayout.Label("D-pad / keyboard arrows: move Reachy's head left-right and up-down.");
+            GUILayout.Label("A / B: open and close both grippers.");
+            GUILayout.Label("X / Y: tilt the head left and right.");
+            GUILayout.Label("Back: switch left/right eye camera. Start: send Neutral Arms.");
+        }
+
+        private void DrawManualControlRightPanel(Rect area)
+        {
+            float panelGap = Mathf.Max(8f, DesignPanelGap);
+            float availableHeight = Mathf.Max(80f, area.height - panelGap);
+            float statusMinHeight = Mathf.Min(
+                DesignManualStatusMinHeight,
+                Mathf.Max(96f, availableHeight * 0.32f));
+            float visualizerMinHeight = Mathf.Min(
+                DesignManualVisualizerMinHeight,
+                Mathf.Max(104f, availableHeight * 0.44f));
+            float visualizerHeight = Mathf.Clamp(
+                area.height * 0.56f,
+                visualizerMinHeight,
+                DesignManualDriveVisualizerHeight);
+            float maxVisualizerHeight = Mathf.Max(
+                visualizerMinHeight,
+                availableHeight - statusMinHeight);
+            visualizerHeight = Mathf.Min(visualizerHeight, maxVisualizerHeight);
+
+            float statusHeight = availableHeight - visualizerHeight;
+            if (statusHeight < statusMinHeight)
+            {
+                statusHeight = statusMinHeight;
+                visualizerHeight = Mathf.Max(72f, availableHeight - statusHeight);
+            }
+
+            DrawManualBaseVisualizerPanel(new Rect(area.x, area.y, area.width, visualizerHeight));
+            DrawManualControlStatusPanel(new Rect(
+                area.x,
+                area.y + visualizerHeight + panelGap,
+                area.width,
+                statusHeight));
+        }
+
+        private void DrawManualBaseVisualizerPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            DrawManualBaseVisualizerContent(area.height);
+            GUILayout.EndArea();
+        }
+
+        private void DrawManualBaseVisualizerContent(float viewHeight)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Base Drive Visualizer", _titleStyle);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label(_manualControllerSnapshot.Connected ? "Live" : "Idle", GUILayout.Width(34f));
+            GUILayout.EndHorizontal();
+
+            float lateralInput = _manualControllerSnapshot.Connected
+                ? Mathf.Clamp(_manualControllerSnapshot.LeftStickX, -1f, 1f)
+                : 0f;
+            float forwardInput = _manualControllerSnapshot.Connected
+                ? Mathf.Clamp(_manualControllerSnapshot.LeftStickY, -1f, 1f)
+                : 0f;
+            float turnInput = _manualControllerSnapshot.Connected
+                ? Mathf.Clamp(_manualControllerSnapshot.RightStickX, -1f, 1f)
+                : 0f;
+
+            string stateLabel = _manualControllerSnapshot.Connected
+                ? $"Forward {FormatSignedAxis(forwardInput)} | Strafe {FormatSignedAxis(lateralInput)} | Turn {FormatSignedAxis(turnInput)}"
+                : manualControllerEnabled
+                    ? "Waiting for live base input from the controller."
+                    : "Enable controller driving to see live base vectors.";
+            GUILayout.Label(stateLabel);
+            GUILayout.Label(
+                $"Targets: L {GetManualControllerArmTargetPoseLabel(_manualControllerLeftArmTargetPoseIndex)} | R {GetManualControllerArmTargetPoseLabel(_manualControllerRightArmTargetPoseIndex)}");
+
+            Rect canvasRect = GUILayoutUtility.GetRect(
+                10f,
+                Mathf.Max(72f, viewHeight - 86f),
+                GUILayout.ExpandWidth(true),
+                GUILayout.Height(Mathf.Max(72f, viewHeight - 86f)));
+            DrawManualBaseVisualizerCanvas(canvasRect, lateralInput, forwardInput, turnInput);
+        }
+
+        private void DrawManualBaseVisualizerCanvas(Rect rect, float lateralInput, float forwardInput, float turnInput)
+        {
+            DrawFilledRect(rect, new Color(1f, 1f, 1f, 0.03f));
+            DrawRectOutline(rect, 1f, new Color(1f, 1f, 1f, 0.08f));
+
+            float padding = Mathf.Max(6f, Mathf.Min(rect.width, rect.height) * 0.04f);
+            float iconSize = Mathf.Clamp(Mathf.Min(rect.width, rect.height) * 0.24f, 52f, 84f);
+            float centerSize = Mathf.Clamp(iconSize * 1.25f, 72f, 112f);
+            Rect forwardRect = new Rect(rect.center.x - (iconSize * 0.5f), rect.y + padding, iconSize, iconSize);
+            Rect backwardRect = new Rect(rect.center.x - (iconSize * 0.5f), rect.yMax - padding - iconSize, iconSize, iconSize);
+            Rect leftRect = new Rect(rect.x + padding, rect.center.y - (iconSize * 0.5f), iconSize, iconSize);
+            Rect rightRect = new Rect(rect.xMax - padding - iconSize, rect.center.y - (iconSize * 0.5f), iconSize, iconSize);
+            Rect rotateLeftRect = new Rect(rect.x + padding, rect.y + padding, iconSize, iconSize);
+            Rect rotateRightRect = new Rect(rect.xMax - padding - iconSize, rect.y + padding, iconSize, iconSize);
+            Rect centerRect = new Rect(
+                rect.center.x - (centerSize * 0.5f),
+                rect.center.y - (centerSize * 0.5f) + (iconSize * 0.05f),
+                centerSize,
+                centerSize);
+
+            Color translationAccent = new Color(0.16f, 0.70f, 0.84f, 1f);
+            Color rotationAccent = new Color(0.95f, 0.62f, 0.20f, 1f);
+            Color inactiveStroke = new Color(0.80f, 0.84f, 0.88f, 0.88f);
+
+            DrawManualVectorCard(
+                forwardRect,
+                "Forward",
+                ManualBaseVectorIconKind.Forward,
+                Mathf.Max(0f, forwardInput),
+                translationAccent,
+                inactiveStroke);
+            DrawManualVectorCard(
+                backwardRect,
+                "Back",
+                ManualBaseVectorIconKind.Backward,
+                Mathf.Max(0f, -forwardInput),
+                translationAccent,
+                inactiveStroke);
+            DrawManualVectorCard(
+                leftRect,
+                "Left",
+                ManualBaseVectorIconKind.Left,
+                Mathf.Max(0f, -lateralInput),
+                translationAccent,
+                inactiveStroke);
+            DrawManualVectorCard(
+                rightRect,
+                "Right",
+                ManualBaseVectorIconKind.Right,
+                Mathf.Max(0f, lateralInput),
+                translationAccent,
+                inactiveStroke);
+            DrawManualVectorCard(
+                rotateLeftRect,
+                "Turn L",
+                ManualBaseVectorIconKind.RotateLeft,
+                Mathf.Max(0f, -turnInput),
+                rotationAccent,
+                inactiveStroke);
+            DrawManualVectorCard(
+                rotateRightRect,
+                "Turn R",
+                ManualBaseVectorIconKind.RotateRight,
+                Mathf.Max(0f, turnInput),
+                rotationAccent,
+                inactiveStroke);
+            DrawManualBaseTopView(centerRect, lateralInput, forwardInput, turnInput, inactiveStroke, translationAccent, rotationAccent);
+        }
+
+        private void DrawManualVectorCard(
+            Rect rect,
+            string label,
+            ManualBaseVectorIconKind iconKind,
+            float intensity,
+            Color accentColor,
+            Color inactiveColor)
+        {
+            float normalizedIntensity = Mathf.Clamp01(intensity);
+            GUI.Box(rect, GUIContent.none);
+            Rect innerRect = new Rect(rect.x + 1f, rect.y + 1f, rect.width - 2f, rect.height - 2f);
+            Color fillColor = normalizedIntensity > 0.01f
+                ? new Color(accentColor.r, accentColor.g, accentColor.b, 0.10f + (0.28f * normalizedIntensity))
+                : new Color(1f, 1f, 1f, 0.02f);
+            DrawFilledRect(innerRect, fillColor);
+
+            Rect iconRect = new Rect(rect.x + 10f, rect.y + 8f, rect.width - 20f, rect.height - 32f);
+            Color iconColor = normalizedIntensity > 0.01f
+                ? Color.Lerp(inactiveColor, accentColor, 0.55f + (0.45f * normalizedIntensity))
+                : inactiveColor;
+            DrawManualVectorIcon(iconKind, iconRect, iconColor);
+
+            GUI.Label(
+                new Rect(rect.x + 4f, rect.yMax - 21f, rect.width - 8f, 18f),
+                $"{label} {Mathf.RoundToInt(normalizedIntensity * 100f).ToString(CultureInfo.InvariantCulture)}%",
+                _manualVectorCardLabelStyle);
+        }
+
+        private void DrawManualVectorIcon(ManualBaseVectorIconKind iconKind, Rect rect, Color color)
+        {
+            Vector2 center = rect.center;
+            float thickness = Mathf.Max(2f, Mathf.Min(rect.width, rect.height) * 0.06f);
+            float headSize = Mathf.Max(7f, Mathf.Min(rect.width, rect.height) * 0.18f);
+            float horizontalMargin = Mathf.Max(6f, rect.width * 0.18f);
+            float verticalMargin = Mathf.Max(6f, rect.height * 0.18f);
+
+            switch (iconKind)
+            {
+                case ManualBaseVectorIconKind.Forward:
+                    DrawArrowLine(
+                        new Vector2(center.x, rect.yMax - verticalMargin),
+                        new Vector2(center.x, rect.y + verticalMargin),
+                        thickness,
+                        headSize,
+                        color);
+                    break;
+                case ManualBaseVectorIconKind.Backward:
+                    DrawArrowLine(
+                        new Vector2(center.x, rect.y + verticalMargin),
+                        new Vector2(center.x, rect.yMax - verticalMargin),
+                        thickness,
+                        headSize,
+                        color);
+                    break;
+                case ManualBaseVectorIconKind.Left:
+                    DrawArrowLine(
+                        new Vector2(rect.xMax - horizontalMargin, center.y),
+                        new Vector2(rect.x + horizontalMargin, center.y),
+                        thickness,
+                        headSize,
+                        color);
+                    break;
+                case ManualBaseVectorIconKind.Right:
+                    DrawArrowLine(
+                        new Vector2(rect.x + horizontalMargin, center.y),
+                        new Vector2(rect.xMax - horizontalMargin, center.y),
+                        thickness,
+                        headSize,
+                        color);
+                    break;
+                case ManualBaseVectorIconKind.RotateLeft:
+                    DrawArcArrow(center, Mathf.Min(rect.width, rect.height) * 0.28f, 330f, 210f, thickness, headSize, color);
+                    break;
+                case ManualBaseVectorIconKind.RotateRight:
+                    DrawArcArrow(center, Mathf.Min(rect.width, rect.height) * 0.28f, 210f, 330f, thickness, headSize, color);
+                    break;
+            }
+        }
+
+        private void DrawManualBaseTopView(
+            Rect rect,
+            float lateralInput,
+            float forwardInput,
+            float turnInput,
+            Color baseColor,
+            Color translationAccent,
+            Color rotationAccent)
+        {
+            Vector2 center = rect.center;
+            float baseRadius = Mathf.Min(rect.width, rect.height) * 0.28f;
+            Color softBaseColor = new Color(baseColor.r, baseColor.g, baseColor.b, 0.30f);
+
+            DrawCircleOutline(center, baseRadius + 7f, 1f, softBaseColor);
+            DrawCircleOutline(center, baseRadius, 2f, baseColor);
+            DrawFilledRect(new Rect(center.x - 2f, center.y - 2f, 4f, 4f), baseColor);
+            DrawArrowLine(
+                new Vector2(center.x, center.y + (baseRadius * 0.35f)),
+                new Vector2(center.x, center.y - (baseRadius * 0.95f)),
+                2f,
+                Mathf.Max(8f, baseRadius * 0.32f),
+                baseColor);
+
+            Vector2 translationVector = new Vector2(lateralInput, -forwardInput);
+            float translationMagnitude = Mathf.Clamp01(translationVector.magnitude);
+            if (translationMagnitude > 0.03f)
+            {
+                Vector2 translationTarget = center + (translationVector.normalized * (baseRadius + (20f * translationMagnitude)));
+                DrawArrowLine(
+                    center,
+                    translationTarget,
+                    Mathf.Lerp(2.5f, 4f, translationMagnitude),
+                    10f,
+                    Color.Lerp(baseColor, translationAccent, 0.75f));
+            }
+
+            float rotationMagnitude = Mathf.Clamp01(Mathf.Abs(turnInput));
+            if (rotationMagnitude > 0.03f)
+            {
+                float rotationRadius = baseRadius + 16f;
+                float arcThickness = Mathf.Lerp(2.5f, 4f, rotationMagnitude);
+                if (turnInput >= 0f)
+                {
+                    DrawArcArrow(
+                        center,
+                        rotationRadius,
+                        210f,
+                        Mathf.Lerp(250f, 330f, rotationMagnitude),
+                        arcThickness,
+                        9f,
+                        rotationAccent);
+                }
+                else
+                {
+                    DrawArcArrow(
+                        center,
+                        rotationRadius,
+                        330f,
+                        Mathf.Lerp(290f, 210f, rotationMagnitude),
+                        arcThickness,
+                        9f,
+                        rotationAccent);
+                }
+            }
+        }
+
         private void DrawManualControlStatusPanel(Rect area)
         {
             GUILayout.BeginArea(area, GUI.skin.box);
-            DrawStatusSection();
+            DrawStatusSection(statusTextHeight: 82f, showRunLogPath: false);
             GUILayout.EndArea();
+        }
+
+        private float DrawControllerSliderRow(
+            string label,
+            float value,
+            float minValue,
+            float maxValue,
+            string numberFormat,
+            string unit)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, GUILayout.Width(82f));
+            float nextValue = GUILayout.HorizontalSlider(value, minValue, maxValue);
+            string suffix = string.IsNullOrWhiteSpace(unit) ? string.Empty : $" {unit}";
+            GUILayout.Label($"{nextValue.ToString(numberFormat, CultureInfo.InvariantCulture)}{suffix}", GUILayout.Width(72f));
+            GUILayout.EndHorizontal();
+            return Mathf.Clamp(nextValue, minValue, maxValue);
+        }
+
+        private static string FormatSignedAxis(float value)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "{0:+0.00;-0.00;0.00}", value);
+        }
+
+        private static void DrawFilledRect(Rect rect, Color color)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, Texture2D.whiteTexture, ScaleMode.StretchToFill, true);
+            GUI.color = previousColor;
+        }
+
+        private static void DrawRectOutline(Rect rect, float thickness, Color color)
+        {
+            DrawFilledRect(new Rect(rect.x, rect.y, rect.width, thickness), color);
+            DrawFilledRect(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), color);
+            DrawFilledRect(new Rect(rect.x, rect.y, thickness, rect.height), color);
+            DrawFilledRect(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), color);
+        }
+
+        private static void DrawCircleOutline(Vector2 center, float radius, float thickness, Color color)
+        {
+            DrawArcArrow(center, radius, 0f, 360f, thickness, 0f, color);
+        }
+
+        private static void DrawArcArrow(
+            Vector2 center,
+            float radius,
+            float startDegrees,
+            float endDegrees,
+            float thickness,
+            float headSize,
+            Color color)
+        {
+            int segments = Mathf.Max(10, Mathf.CeilToInt(Mathf.Abs(endDegrees - startDegrees) / 16f));
+            Vector2 previous = GetPointOnScreenCircle(center, radius, startDegrees);
+            Vector2 beforeEnd = previous;
+            for (int i = 1; i <= segments; i++)
+            {
+                float t = i / (float)segments;
+                float angle = Mathf.Lerp(startDegrees, endDegrees, t);
+                Vector2 current = GetPointOnScreenCircle(center, radius, angle);
+                DrawLine(previous, current, thickness, color);
+                beforeEnd = previous;
+                previous = current;
+            }
+
+            if (headSize > 0.01f)
+            {
+                DrawArrowHead(beforeEnd, previous, headSize, color);
+            }
+        }
+
+        private static void DrawArrowLine(Vector2 start, Vector2 end, float thickness, float headSize, Color color)
+        {
+            DrawLine(start, end, thickness, color);
+            DrawArrowHead(start, end, headSize, color);
+        }
+
+        private static void DrawArrowHead(Vector2 start, Vector2 end, float headSize, Color color)
+        {
+            Vector2 direction = end - start;
+            if (direction.sqrMagnitude < 0.0001f)
+            {
+                return;
+            }
+
+            direction.Normalize();
+            Vector2 perpendicular = new Vector2(-direction.y, direction.x);
+            Vector2 headBase = end - (direction * headSize);
+            DrawLine(end, headBase + (perpendicular * (headSize * 0.55f)), Mathf.Max(2f, headSize * 0.18f), color);
+            DrawLine(end, headBase - (perpendicular * (headSize * 0.55f)), Mathf.Max(2f, headSize * 0.18f), color);
+        }
+
+        private static void DrawLine(Vector2 start, Vector2 end, float thickness, Color color)
+        {
+            Vector2 delta = end - start;
+            float length = delta.magnitude;
+            if (length <= 0.001f)
+            {
+                return;
+            }
+
+            float angle = Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg;
+            Matrix4x4 previousMatrix = GUI.matrix;
+            Color previousColor = GUI.color;
+            GUI.color = color;
+            GUIUtility.RotateAroundPivot(angle, start);
+            GUI.DrawTexture(
+                new Rect(start.x, start.y - (thickness * 0.5f), length, thickness),
+                Texture2D.whiteTexture,
+                ScaleMode.StretchToFill,
+                true);
+            GUI.matrix = previousMatrix;
+            GUI.color = previousColor;
+        }
+
+        private static Vector2 GetPointOnScreenCircle(Vector2 center, float radius, float degrees)
+        {
+            float radians = degrees * Mathf.Deg2Rad;
+            return new Vector2(
+                center.x + (Mathf.Cos(radians) * radius),
+                center.y + (Mathf.Sin(radians) * radius));
         }
 
         private void DrawConnectionsView(
@@ -6856,7 +8642,7 @@ namespace Reachy.ControlApp
             }
         }
 
-        private void DrawStatusSection()
+        private void DrawStatusSection(float statusTextHeight = 120f, bool showRunLogPath = true)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label("Status", _titleStyle);
@@ -6892,11 +8678,11 @@ namespace Reachy.ControlApp
             }
             GUILayout.EndHorizontal();
             GUILayout.Label($"UI scale: {_uiScale:F2}x");
-            if (!string.IsNullOrWhiteSpace(_runtimeSessionLogPath))
+            if (showRunLogPath && !string.IsNullOrWhiteSpace(_runtimeSessionLogPath))
             {
                 GUILayout.Label($"Run log: {_runtimeSessionLogPath}");
             }
-            GUILayout.TextArea(_status, GUILayout.Height(120f));
+            GUILayout.TextArea(_status, GUILayout.Height(Mathf.Max(44f, statusTextHeight)));
         }
 
         private void SetStatus(string header, string detail)
