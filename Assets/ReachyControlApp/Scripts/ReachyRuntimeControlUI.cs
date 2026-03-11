@@ -69,6 +69,7 @@ namespace Reachy.ControlApp
         private const string VoiceHelloReturnPoseName = "Neutral Arms";
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
+        private const int DefaultRobotSpeakerTtsPort = 8101;
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private static readonly string[] DefaultSidecarKnownPoses =
@@ -586,6 +587,8 @@ namespace Reachy.ControlApp
         [SerializeField] private bool localAiAgentEnableTtsFeedback = true;
         [SerializeField] private string localAiAgentTtsEndpoint = VoiceAgentBridge.DefaultTtsEndpoint;
         [SerializeField] private float localAiAgentTtsMinIntervalSeconds = 0.35f;
+        [SerializeField] private bool localAiAgentMirrorTtsToRobotSpeaker = true;
+        [SerializeField] private int localAiAgentRobotSpeakerPort = DefaultRobotSpeakerTtsPort;
         [SerializeField] private bool localAiAgentEnablePushToTalk;
         [SerializeField] private string localAiAgentPushToTalkKey = "V";
         [SerializeField] private bool localAiAgentListeningEnabled = true;
@@ -778,6 +781,8 @@ namespace Reachy.ControlApp
             public bool tts_feedback_enabled = true;
             public string tts_endpoint = VoiceAgentBridge.DefaultTtsEndpoint;
             public float tts_min_interval_seconds = 0.35f;
+            public bool mirror_tts_to_robot_speaker = true;
+            public int robot_speaker_port = DefaultRobotSpeakerTtsPort;
             public float heartbeat_timeout_seconds = 4f;
             public float retry_backoff_min_seconds = 0.4f;
             public float retry_backoff_max_seconds = 4f;
@@ -878,6 +883,7 @@ namespace Reachy.ControlApp
             localAiAgentDuplicateCommandWindowSeconds =
                 Mathf.Max(0.05f, localAiAgentDuplicateCommandWindowSeconds);
             localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, localAiAgentTtsMinIntervalSeconds);
+            localAiAgentRobotSpeakerPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
             localAiAgentHeartbeatTimeoutSeconds = Mathf.Max(0.5f, localAiAgentHeartbeatTimeoutSeconds);
             localAiAgentRetryBackoffMinSeconds = Mathf.Max(0.05f, localAiAgentRetryBackoffMinSeconds);
             localAiAgentRetryBackoffMaxSeconds = Mathf.Max(
@@ -2047,6 +2053,7 @@ namespace Reachy.ControlApp
             localAiAgentDuplicateCommandWindowSeconds =
                 Mathf.Max(0.05f, localAiAgentDuplicateCommandWindowSeconds);
             localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, localAiAgentTtsMinIntervalSeconds);
+            localAiAgentRobotSpeakerPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
             localAiAgentHeartbeatTimeoutSeconds = Mathf.Max(0.5f, localAiAgentHeartbeatTimeoutSeconds);
             localAiAgentRetryBackoffMinSeconds = Mathf.Max(0.05f, localAiAgentRetryBackoffMinSeconds);
             localAiAgentRetryBackoffMaxSeconds = Mathf.Max(
@@ -2129,6 +2136,9 @@ namespace Reachy.ControlApp
                 localAiAgentPollIntervalSeconds,
                 timeoutMs: bridgeTimeoutMs);
             _voiceAgentBridge.ConfigureTtsEndpoint(localAiAgentTtsEndpoint);
+            _voiceAgentBridge.ConfigureTtsMirror(
+                BuildRobotSpeakerTtsMirrorEndpoint(),
+                localAiAgentMirrorTtsToRobotSpeaker);
             _voiceAgentBridge.ConfigureListeningEndpoint(localAiAgentListeningEndpoint);
             _voiceAgentBridge.ConfigureHelpEndpoint(localAiAgentHelpEndpoint);
             _voiceAgentBridge.ConfigureRobustness(
@@ -4795,6 +4805,50 @@ namespace Reachy.ControlApp
             return resolved;
         }
 
+        private string BuildRobotSpeakerTtsMirrorEndpoint()
+        {
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
+            {
+                return string.Empty;
+            }
+
+            return BuildRobotSpeakerTtsMirrorEndpointPreview();
+        }
+
+        private string BuildRobotSpeakerTtsMirrorEndpointPreview()
+        {
+            string host = (robotHost ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return string.Empty;
+            }
+
+            int port = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            const string path = "speak";
+
+            try
+            {
+                if (Uri.TryCreate(host, UriKind.Absolute, out Uri absoluteUri))
+                {
+                    var builder = new UriBuilder(absoluteUri)
+                    {
+                        Port = port,
+                        Path = path,
+                        Query = string.Empty,
+                        Fragment = string.Empty
+                    };
+                    return builder.Uri.AbsoluteUri;
+                }
+
+                return new UriBuilder(Uri.UriSchemeHttp, host, port, path).Uri.AbsoluteUri;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         private bool TryLoadVoiceAgentConfigFromDisk(out string message)
         {
             message = string.Empty;
@@ -4821,6 +4875,12 @@ namespace Reachy.ControlApp
                     StringComparison.OrdinalIgnoreCase) >= 0;
                 bool hasPreferredMicField = json.IndexOf(
                     "\"preferred_microphone_device_name\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasMirrorRobotSpeakerField = json.IndexOf(
+                    "\"mirror_tts_to_robot_speaker\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasRobotSpeakerPortField = json.IndexOf(
+                    "\"robot_speaker_port\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
 
                 VoiceAgentConfig config = JsonUtility.FromJson<VoiceAgentConfig>(json);
@@ -4865,6 +4925,12 @@ namespace Reachy.ControlApp
                 {
                     localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, config.tts_min_interval_seconds);
                 }
+                localAiAgentMirrorTtsToRobotSpeaker = hasMirrorRobotSpeakerField
+                    ? config.mirror_tts_to_robot_speaker
+                    : true;
+                localAiAgentRobotSpeakerPort = hasRobotSpeakerPortField
+                    ? Mathf.Clamp(config.robot_speaker_port, 1, 65535)
+                    : DefaultRobotSpeakerTtsPort;
                 if (config.heartbeat_timeout_seconds > 0f)
                 {
                     localAiAgentHeartbeatTimeoutSeconds = Mathf.Max(0.5f, config.heartbeat_timeout_seconds);
@@ -4954,7 +5020,7 @@ namespace Reachy.ControlApp
                 localAiAgentHelpMaxAnswerChars = Mathf.Clamp(config.help_max_answer_chars, 80, 1200);
                 message =
                     $"Loaded voice config ({config.stt_backend}) from {configPath}. " +
-                    $"Endpoint={localAiAgentEndpoint}, Conf={localAiAgentConfidenceThreshold:F2}, MinTxt={localAiAgentMinTranscriptChars}c/{localAiAgentMinTranscriptWords}w, NumSafe={localAiAgentUseSafeNumericParsing}, Range=[{localAiAgentJointMinDegrees:F1},{localAiAgentJointMaxDegrees:F1}], Dedupe={localAiAgentSuppressDuplicateCommands}({localAiAgentDuplicateCommandWindowSeconds:F2}s), SimOnly={localAiAgentSimulationOnlyMode}, TTS={localAiAgentEnableTtsFeedback}, PTT={localAiAgentEnablePushToTalk}({localAiAgentPushToTalkKey}), AutoStartSidecar={localAiAgentAutoStartSidecar}, SyncSidecarCfgOnStart={localAiAgentSyncSidecarConfigOnStart}, HelpModel={localAiAgentEnableLocalHelpModel}({localAiAgentHelpModelBackend}), HB={localAiAgentHeartbeatTimeoutSeconds:F1}s, SafeMotion={localAiAgentBlockMotionWhenBridgeUnhealthy}.";
+                    $"Endpoint={localAiAgentEndpoint}, Conf={localAiAgentConfidenceThreshold:F2}, MinTxt={localAiAgentMinTranscriptChars}c/{localAiAgentMinTranscriptWords}w, NumSafe={localAiAgentUseSafeNumericParsing}, Range=[{localAiAgentJointMinDegrees:F1},{localAiAgentJointMaxDegrees:F1}], Dedupe={localAiAgentSuppressDuplicateCommands}({localAiAgentDuplicateCommandWindowSeconds:F2}s), SimOnly={localAiAgentSimulationOnlyMode}, TTS={localAiAgentEnableTtsFeedback}, RobotSpkMirror={localAiAgentMirrorTtsToRobotSpeaker}(:{localAiAgentRobotSpeakerPort}), PTT={localAiAgentEnablePushToTalk}({localAiAgentPushToTalkKey}), AutoStartSidecar={localAiAgentAutoStartSidecar}, SyncSidecarCfgOnStart={localAiAgentSyncSidecarConfigOnStart}, HelpModel={localAiAgentEnableLocalHelpModel}({localAiAgentHelpModelBackend}), HB={localAiAgentHeartbeatTimeoutSeconds:F1}s, SafeMotion={localAiAgentBlockMotionWhenBridgeUnhealthy}.";
                 return true;
             }
             catch (Exception ex)
@@ -5008,6 +5074,8 @@ namespace Reachy.ControlApp
                     ? VoiceAgentBridge.DefaultTtsEndpoint
                     : localAiAgentTtsEndpoint.Trim();
                 config.tts_min_interval_seconds = Mathf.Max(0.05f, localAiAgentTtsMinIntervalSeconds);
+                config.mirror_tts_to_robot_speaker = localAiAgentMirrorTtsToRobotSpeaker;
+                config.robot_speaker_port = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
                 config.heartbeat_timeout_seconds = Mathf.Max(0.5f, localAiAgentHeartbeatTimeoutSeconds);
                 config.retry_backoff_min_seconds = Mathf.Max(0.05f, localAiAgentRetryBackoffMinSeconds);
                 config.retry_backoff_max_seconds = Mathf.Max(
@@ -6693,6 +6761,33 @@ namespace Reachy.ControlApp
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
+            localAiAgentMirrorTtsToRobotSpeaker = GUILayout.Toggle(
+                localAiAgentMirrorTtsToRobotSpeaker,
+                "Mirror to robot speaker",
+                GUILayout.Width(AiW(170f, aiWidthScale)));
+            GUILayout.Label("Spk port", GUILayout.Width(AiW(56f, aiWidthScale)));
+            string robotSpeakerPortText = GUILayout.TextField(
+                localAiAgentRobotSpeakerPort.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (int.TryParse(
+                robotSpeakerPortText,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedRobotSpeakerPort))
+            {
+                localAiAgentRobotSpeakerPort = Mathf.Clamp(parsedRobotSpeakerPort, 1, 65535);
+            }
+
+            bool previousRobotSpeakerPreviewEnabled = GUI.enabled;
+            GUI.enabled = false;
+            GUILayout.TextField(
+                string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
+                    ? "Real Robot mirror uses current robot host."
+                    : BuildRobotSpeakerTtsMirrorEndpointPreview());
+            GUI.enabled = previousRobotSpeakerPreviewEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
             localAiAgentEnablePushToTalk = GUILayout.Toggle(
                 localAiAgentEnablePushToTalk,
                 "Push-to-talk mode",
@@ -7493,6 +7588,33 @@ namespace Reachy.ControlApp
                 QueueVoiceFeedback("Local TTS feedback test message.", interrupt: false);
             }
             GUI.enabled = previousSpeakButtonEnabled;
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            localAiAgentMirrorTtsToRobotSpeaker = GUILayout.Toggle(
+                localAiAgentMirrorTtsToRobotSpeaker,
+                "Mirror to robot speaker",
+                GUILayout.Width(170f));
+            GUILayout.Label("Spk port", GUILayout.Width(56f));
+            string robotSpeakerPortText = GUILayout.TextField(
+                localAiAgentRobotSpeakerPort.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(64f));
+            if (int.TryParse(
+                robotSpeakerPortText,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out int parsedRobotSpeakerPort))
+            {
+                localAiAgentRobotSpeakerPort = Mathf.Clamp(parsedRobotSpeakerPort, 1, 65535);
+            }
+
+            bool previousRobotSpeakerPreviewEnabled = GUI.enabled;
+            GUI.enabled = false;
+            GUILayout.TextField(
+                string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
+                    ? "Real Robot mirror uses current robot host."
+                    : BuildRobotSpeakerTtsMirrorEndpointPreview());
+            GUI.enabled = previousRobotSpeakerPreviewEnabled;
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();

@@ -103,6 +103,8 @@ namespace Reachy.ControlApp
         private struct TtsResult
         {
             public bool Success;
+            public bool MirrorAttempted;
+            public bool MirrorSuccess;
             public string Message;
             public string Error;
         }
@@ -201,6 +203,8 @@ namespace Reachy.ControlApp
         private bool _degradedMode;
         private string _endpoint = DefaultEndpoint;
         private string _ttsEndpoint = DefaultTtsEndpoint;
+        private string _ttsMirrorEndpoint = string.Empty;
+        private bool _ttsMirrorEnabled;
         private string _helpEndpoint = DefaultHelpEndpoint;
         private string _listeningEndpoint = DefaultListeningEndpoint;
         private float _pollIntervalSeconds = 0.5f;
@@ -400,6 +404,15 @@ namespace Reachy.ControlApp
             }
         }
 
+        public void ConfigureTtsMirror(string ttsMirrorEndpoint, bool enabled)
+        {
+            lock (_gate)
+            {
+                _ttsMirrorEnabled = enabled && !string.IsNullOrWhiteSpace(ttsMirrorEndpoint);
+                _ttsMirrorEndpoint = _ttsMirrorEnabled ? ttsMirrorEndpoint.Trim() : string.Empty;
+            }
+        }
+
         public void EnqueueTtsFeedback(string text, bool interrupt)
         {
             if (string.IsNullOrWhiteSpace(text))
@@ -529,12 +542,14 @@ namespace Reachy.ControlApp
             Task<ListeningToggleResult> localListeningToggleTask = null;
             string endpoint = string.Empty;
             string ttsEndpoint = string.Empty;
+            string ttsMirrorEndpoint = string.Empty;
             string helpEndpoint = string.Empty;
             string listeningEndpoint = string.Empty;
             int timeout = 0;
             float pollInterval = 0.5f;
             bool shouldStartPoll = false;
             bool shouldStartTts = false;
+            bool shouldMirrorTts = false;
             bool shouldStartHelp = false;
             bool shouldStartListeningToggle = false;
             TtsRequest nextTtsRequest = default(TtsRequest);
@@ -578,6 +593,8 @@ namespace Reachy.ControlApp
                 if (_enabled && _ttsTask == null && _ttsQueue.Count > 0)
                 {
                     ttsEndpoint = _ttsEndpoint;
+                    ttsMirrorEndpoint = _ttsMirrorEndpoint;
+                    shouldMirrorTts = _ttsMirrorEnabled;
                     timeout = _timeoutMs;
                     nextTtsRequest = _ttsQueue.Dequeue();
                     shouldStartTts = true;
@@ -633,7 +650,11 @@ namespace Reachy.ControlApp
             {
                 lock (_gate)
                 {
-                    _ttsTask = Task.Run(() => SendTtsRequest(ttsEndpoint, timeout, nextTtsRequest));
+                    _ttsTask = Task.Run(() => SendTtsRequest(
+                        ttsEndpoint,
+                        shouldMirrorTts ? ttsMirrorEndpoint : string.Empty,
+                        timeout,
+                        nextTtsRequest));
                 }
             }
 
@@ -835,11 +856,19 @@ namespace Reachy.ControlApp
                 if (result.Success)
                 {
                     _successfulTtsCount++;
-                    _lastTtsError = string.Empty;
                     _lastTtsMessage = string.IsNullOrWhiteSpace(result.Message)
                         ? "TTS request sent."
                         : result.Message;
-                    AddLogLocked("tts", "debug", _lastTtsMessage);
+                    if (result.MirrorAttempted && !result.MirrorSuccess)
+                    {
+                        _lastTtsError = result.Error;
+                        AddLogLocked("tts", "warn", _lastTtsMessage);
+                    }
+                    else
+                    {
+                        _lastTtsError = string.Empty;
+                        AddLogLocked("tts", "debug", _lastTtsMessage);
+                    }
                 }
                 else
                 {
@@ -996,7 +1025,47 @@ namespace Reachy.ControlApp
             }
         }
 
-        private static TtsResult SendTtsRequest(string endpoint, int timeoutMs, TtsRequest requestPayload)
+        private static TtsResult SendTtsRequest(
+            string endpoint,
+            string mirrorEndpoint,
+            int timeoutMs,
+            TtsRequest requestPayload)
+        {
+            TtsResult primaryResult = SendSingleTtsRequest(endpoint, timeoutMs, requestPayload);
+            if (!primaryResult.Success)
+            {
+                primaryResult.MirrorAttempted = false;
+                primaryResult.MirrorSuccess = false;
+                return primaryResult;
+            }
+
+            if (string.IsNullOrWhiteSpace(mirrorEndpoint))
+            {
+                primaryResult.MirrorAttempted = false;
+                primaryResult.MirrorSuccess = true;
+                return primaryResult;
+            }
+
+            TtsResult mirrorResult = SendSingleTtsRequest(mirrorEndpoint, timeoutMs, requestPayload);
+            primaryResult.MirrorAttempted = true;
+            primaryResult.MirrorSuccess = mirrorResult.Success;
+            if (mirrorResult.Success)
+            {
+                primaryResult.Message = "Local TTS accepted; robot speaker mirror accepted.";
+                primaryResult.Error = string.Empty;
+            }
+            else
+            {
+                primaryResult.Message = string.IsNullOrWhiteSpace(mirrorResult.Error)
+                    ? "Local TTS accepted; robot speaker mirror failed."
+                    : $"Local TTS accepted; robot speaker mirror failed: {mirrorResult.Error}";
+                primaryResult.Error = mirrorResult.Error;
+            }
+
+            return primaryResult;
+        }
+
+        private static TtsResult SendSingleTtsRequest(string endpoint, int timeoutMs, TtsRequest requestPayload)
         {
             try
             {
@@ -1032,6 +1101,8 @@ namespace Reachy.ControlApp
                     return new TtsResult
                     {
                         Success = true,
+                        MirrorAttempted = false,
+                        MirrorSuccess = true,
                         Message = responseMessage,
                         Error = string.Empty
                     };
@@ -1056,6 +1127,8 @@ namespace Reachy.ControlApp
                 return new TtsResult
                 {
                     Success = false,
+                    MirrorAttempted = false,
+                    MirrorSuccess = false,
                     Message = "TTS endpoint is not reachable.",
                     Error = detail
                 };
@@ -1065,6 +1138,8 @@ namespace Reachy.ControlApp
                 return new TtsResult
                 {
                     Success = false,
+                    MirrorAttempted = false,
+                    MirrorSuccess = false,
                     Message = "TTS request failed.",
                     Error = ex.Message
                 };

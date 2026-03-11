@@ -17,6 +17,8 @@
   "tts_feedback_enabled": true,
   "tts_endpoint": "http://127.0.0.1:8099/speak",
   "tts_min_interval_seconds": 0.35,
+  "mirror_tts_to_robot_speaker": true,
+  "robot_speaker_port": 8101,
   "push_to_talk_enabled": false,
   "push_to_talk_key": "V",
   "listening_enabled": true,

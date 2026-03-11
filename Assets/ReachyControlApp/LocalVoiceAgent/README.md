@@ -102,6 +102,28 @@ Test local speak endpoint:
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8099/speak -ContentType 'application/json' -Body '{"text":"Voice sidecar online","interrupt":false}'
 ```
 
+## Reachy robot speaker mirror
+Reachy 2021 documentation lists torso speakers and a ReSpeaker audio path, and the official `hello-world`
+application plays sound directly on the robot computer. This project uses the same general model for mirrored
+robot audio: keep local desktop TTS as-is, and optionally send the same text to a small HTTP speaker service
+running on the Reachy computer.
+
+Run this on the robot computer:
+```bash
+cd ~/reachy1-unityproject/Assets/ReachyControlApp/LocalVoiceAgent
+python3 ./reachy_robot_speaker_server.py --bind-host 0.0.0.0 --bind-port 8101 --tts-backend auto
+```
+
+If `auto` cannot find a backend on the robot:
+- install `espeak`, or
+- install `pyttsx3` in the robot Python environment
+
+Unity now has a `Mirror to robot speaker` toggle in the Local AI panel. When enabled in `Real Robot` mode,
+Unity mirrors TTS to:
+- `http://<robotHost>:8101/speak`
+
+The local desktop/device audio still plays through the existing sidecar at `http://127.0.0.1:8099/speak`.
+
 Toggle sidecar listening state (used by Unity push-to-talk):
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8099/listening -ContentType 'application/json' -Body '{"enabled":false}'
