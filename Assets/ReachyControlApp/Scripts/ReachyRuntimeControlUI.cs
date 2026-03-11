@@ -67,6 +67,8 @@ namespace Reachy.ControlApp
         private const float VoiceShowMovementIntervalSeconds = 4f;
         private const float VoiceHelloReturnDelaySeconds = 4f;
         private const string VoiceHelloReturnPoseName = "Neutral Arms";
+        private const string SpeechLoopingAnimationName = "Speech A";
+        private const float LoopingAnimationMinimumPlaybackSpeedScale = 0.35f;
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
         private const int DefaultRobotSpeakerTtsPort = 8101;
@@ -238,6 +240,76 @@ namespace Reachy.ControlApp
             public float ElbowPitch;
         }
 
+        private sealed class LoopingAnimationJointGoal
+        {
+            public LoopingAnimationJointGoal(string jointName, float degrees)
+            {
+                JointName = jointName ?? string.Empty;
+                Degrees = degrees;
+            }
+
+            public string JointName { get; }
+            public float Degrees { get; }
+        }
+
+        private sealed class LoopingAnimationKeyframe
+        {
+            private readonly Dictionary<string, float> _jointGoalsDegrees =
+                new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+
+            public LoopingAnimationKeyframe(float holdDurationSeconds, params LoopingAnimationJointGoal[] goals)
+            {
+                HoldDurationSeconds = Mathf.Max(0.05f, holdDurationSeconds);
+                if (goals == null)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < goals.Length; i++)
+                {
+                    LoopingAnimationJointGoal goal = goals[i];
+                    if (goal == null || string.IsNullOrWhiteSpace(goal.JointName))
+                    {
+                        continue;
+                    }
+
+                    _jointGoalsDegrees[goal.JointName] = goal.Degrees;
+                }
+            }
+
+            public float HoldDurationSeconds { get; }
+            public IReadOnlyDictionary<string, float> JointGoalsDegrees => _jointGoalsDegrees;
+        }
+
+        private sealed class LoopingAnimationDefinition
+        {
+            public LoopingAnimationDefinition(
+                string name,
+                string description,
+                params LoopingAnimationKeyframe[] keyframes)
+            {
+                Name = string.IsNullOrWhiteSpace(name) ? "Loop" : name.Trim();
+                Description = description ?? string.Empty;
+                Keyframes = new List<LoopingAnimationKeyframe>();
+                if (keyframes == null)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < keyframes.Length; i++)
+                {
+                    if (keyframes[i] != null)
+                    {
+                        Keyframes.Add(keyframes[i]);
+                    }
+                }
+            }
+
+            public string Name { get; }
+            public string Description { get; }
+            public List<LoopingAnimationKeyframe> Keyframes { get; }
+        }
+
         private static readonly string[] ManualControllerTrackedJointNames =
         {
             "l_shoulder_pitch",
@@ -262,6 +334,8 @@ namespace Reachy.ControlApp
             new ManualControllerArmTargetPose("Lifted Ready", -52f, 28f, 12f, -92f),
             new ManualControllerArmTargetPose("Wide Reach", 6f, 56f, 32f, -74f)
         };
+        private static readonly LoopingAnimationDefinition[] LoopingAnimationDefinitions =
+            BuildLoopingAnimationLibrary();
         private static readonly KeyCode[,] ManualControllerJoystickButtons = BuildManualControllerJoystickButtons();
 
         private struct ManualControllerSnapshot
@@ -665,6 +739,8 @@ namespace Reachy.ControlApp
         private ReachyControlMode _connectAttemptMode;
         private float _connectAttemptReconnectDelaySeconds = 0.5f;
         private Coroutine _connectAttemptCoroutine;
+        private Coroutine _loopingAnimationCoroutine;
+        private string _activeLoopingAnimationName = string.Empty;
         private Coroutine _voiceShowMovementCoroutine;
         private Coroutine _voiceHelloReturnCoroutine;
         private float _uiScale = 1f;
@@ -965,6 +1041,7 @@ namespace Reachy.ControlApp
                 _connectAttemptCoroutine = null;
             }
 
+            StopLoopingAnimation(updateStatus: false, reason: "UI destroyed");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "UI destroyed");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "UI destroyed");
 
@@ -990,6 +1067,7 @@ namespace Reachy.ControlApp
 
         private void OnApplicationQuit()
         {
+            StopLoopingAnimation(updateStatus: false, reason: "Application quit");
             CleanupAllSidecarsOnShutdown("application quit");
             ShutdownRuntimeLogSession("OnApplicationQuit");
         }
@@ -1040,6 +1118,7 @@ namespace Reachy.ControlApp
                             "WARN");
                         SetStatus("Connection lost", $"{pingMessage}\nScheduling auto-reconnect.");
                         _client.Disconnect();
+                        StopLoopingAnimation(updateStatus: false, reason: "Connection lost.");
                         ReachyControlMode reconnectMode = _connectedMode ?? mode;
                         _connectedMode = null;
                         if (!_manualDisconnect)
@@ -1222,6 +1301,11 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            if (HasManualControllerMotionIntent(_manualControllerSnapshot))
+            {
+                StopLoopingAnimation(updateStatus: false, reason: "Interrupted by manual control input.");
+            }
+
             EnsureManualControllerTargetsInitialized();
             HandleManualControllerButtonActions(_manualControllerSnapshot, _manualControllerPreviousSnapshot);
 
@@ -1241,6 +1325,25 @@ namespace Reachy.ControlApp
                     : $"Controller joint command failed: {controllerMessage}";
                 _nextManualControllerJointCommandAt = Time.unscaledTime + ManualControllerJointSendIntervalSeconds;
             }
+        }
+
+        private static bool HasManualControllerMotionIntent(ManualControllerSnapshot snapshot)
+        {
+            return snapshot.Start ||
+                   snapshot.LeftShoulder ||
+                   snapshot.RightShoulder ||
+                   snapshot.LeftTrigger > 0f ||
+                   snapshot.RightTrigger > 0f ||
+                   snapshot.A ||
+                   snapshot.B ||
+                   snapshot.X ||
+                   snapshot.Y ||
+                   Mathf.Abs(snapshot.DPadX) > 0f ||
+                   Mathf.Abs(snapshot.DPadY) > 0f ||
+                   Mathf.Abs(snapshot.LeftStickX) > 0f ||
+                   Mathf.Abs(snapshot.LeftStickY) > 0f ||
+                   Mathf.Abs(snapshot.RightStickX) > 0f ||
+                   HasAnyManualKeyboardDirectionalInput();
         }
 
         private void EnsureManualControllerTargetsInitialized(bool forceResync = false)
@@ -2019,6 +2122,111 @@ namespace Reachy.ControlApp
                     maxDegrees = 180f;
                     break;
             }
+        }
+
+        private static LoopingAnimationDefinition[] BuildLoopingAnimationLibrary()
+        {
+            return new[]
+            {
+                new LoopingAnimationDefinition(
+                    SpeechLoopingAnimationName,
+                    "Subtle talking motion with small head turns and alternating explanatory arm gestures.",
+                    new LoopingAnimationKeyframe(
+                        1.00f,
+                        new LoopingAnimationJointGoal("neck_yaw", -5f),
+                        new LoopingAnimationJointGoal("neck_pitch", 3f),
+                        new LoopingAnimationJointGoal("neck_roll", -2f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -18f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -14f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -10f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -86f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -28f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 12f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 2f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -22f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 16f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 12f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -92f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 34f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 14f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -2f)),
+                    new LoopingAnimationKeyframe(
+                        0.90f,
+                        new LoopingAnimationJointGoal("neck_yaw", 6f),
+                        new LoopingAnimationJointGoal("neck_pitch", 4f),
+                        new LoopingAnimationJointGoal("neck_roll", 2f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -30f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -19f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -15f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -72f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -36f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 18f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 10f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -16f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 12f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 8f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -96f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 22f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -4f)),
+                    new LoopingAnimationKeyframe(
+                        0.85f,
+                        new LoopingAnimationJointGoal("neck_yaw", 0f),
+                        new LoopingAnimationJointGoal("neck_pitch", 2f),
+                        new LoopingAnimationJointGoal("neck_roll", 0f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -21f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -16f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -8f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -84f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -20f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 12f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 0f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -21f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 16f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 8f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -84f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 20f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 12f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", 0f)),
+                    new LoopingAnimationKeyframe(
+                        0.95f,
+                        new LoopingAnimationJointGoal("neck_yaw", -7f),
+                        new LoopingAnimationJointGoal("neck_pitch", 4f),
+                        new LoopingAnimationJointGoal("neck_roll", -3f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -16f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -12f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -8f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -98f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -22f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 4f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -31f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 19f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 15f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -74f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 36f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 18f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -10f)),
+                    new LoopingAnimationKeyframe(
+                        0.80f,
+                        new LoopingAnimationJointGoal("neck_yaw", -2f),
+                        new LoopingAnimationJointGoal("neck_pitch", 2f),
+                        new LoopingAnimationJointGoal("neck_roll", -1f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -18f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -14f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -10f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -86f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -28f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 12f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 2f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -22f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 16f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 12f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -92f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 34f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 14f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -2f)))
+            };
         }
 
         private void UpdateLocalAiAgent()
@@ -4107,6 +4315,7 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopLoopingAnimation(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Disconnected by voice command.");
                     ReachyControlMode disconnectedMode = _connectedMode ?? mode;
@@ -4149,6 +4358,7 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopLoopingAnimation(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_pose command.");
                     bool setPoseTargetsRealRobot = IsRealRobotSessionActive();
@@ -4181,6 +4391,7 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopLoopingAnimation(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by move_joint command.");
                     bool moveJointTargetsRealRobot = IsRealRobotSessionActive();
@@ -4216,6 +4427,7 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopLoopingAnimation(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Restarted by hello command.");
                     bool helloTargetsRealRobot = IsRealRobotSessionActive();
@@ -4257,19 +4469,22 @@ namespace Reachy.ControlApp
 
                 case VoiceCommandRouter.VoiceActionKind.StopMotion:
                     bool hadPending = _voiceHasPendingAction;
+                    bool stoppedLoopingAnimation = StopLoopingAnimation(
+                        updateStatus: false,
+                        reason: "Stopped by voice command.");
                     bool stoppedSequence = StopVoiceShowMovementSequence(
                         updateStatus: false,
                         reason: "Stopped by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Stopped by voice command.");
                     _voiceHasPendingAction = false;
                     _voicePendingAction = default(VoiceCommandRouter.RoutedAction);
-                    message = hadPending || stoppedSequence
-                        ? BuildStopAcknowledgementMessage(hadPending, stoppedSequence)
+                    message = hadPending || stoppedSequence || stoppedLoopingAnimation
+                        ? BuildStopAcknowledgementMessage(hadPending, stoppedSequence, stoppedLoopingAnimation)
                         : "Stop command acknowledged. No explicit robot stop API is available yet.";
                     LogMotionEvent(
                         "voice",
                         "stop-motion",
-                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; message={message}",
+                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; message={message}",
                         success: true,
                         targetsRealRobot: IsRealRobotSessionActive());
                     SetStatus("Voice stop", message);
@@ -4299,6 +4514,7 @@ namespace Reachy.ControlApp
                 return false;
             }
 
+            StopLoopingAnimation(updateStatus: false, reason: "Interrupted by show movement command.");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "Restarted by show movement command.");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by show movement command.");
             List<string> selectedPoses = BuildRandomPoseSequence(availablePoses, VoiceShowMovementPoseCount);
@@ -4540,11 +4756,24 @@ namespace Reachy.ControlApp
             return true;
         }
 
-        private static string BuildStopAcknowledgementMessage(bool hadPendingAction, bool stoppedShowMovement)
+        private static string BuildStopAcknowledgementMessage(
+            bool hadPendingAction,
+            bool stoppedShowMovement,
+            bool stoppedLoopingAnimation)
         {
+            if (hadPendingAction && stoppedShowMovement && stoppedLoopingAnimation)
+            {
+                return "Stop command acknowledged. Pending voice action, show movement, and looping animation were cancelled.";
+            }
+
             if (hadPendingAction && stoppedShowMovement)
             {
                 return "Stop command acknowledged. Pending voice action was cancelled and show movement sequence was stopped.";
+            }
+
+            if (hadPendingAction && stoppedLoopingAnimation)
+            {
+                return "Stop command acknowledged. Pending voice action was cancelled and looping animation was stopped.";
             }
 
             if (hadPendingAction)
@@ -4552,9 +4781,19 @@ namespace Reachy.ControlApp
                 return "Stop command acknowledged. Pending voice action was cancelled.";
             }
 
+            if (stoppedShowMovement && stoppedLoopingAnimation)
+            {
+                return "Stop command acknowledged. Show movement sequence and looping animation were stopped.";
+            }
+
             if (stoppedShowMovement)
             {
                 return "Stop command acknowledged. Show movement sequence was stopped.";
+            }
+
+            if (stoppedLoopingAnimation)
+            {
+                return "Stop command acknowledged. Looping animation was stopped.";
             }
 
             return "Stop command acknowledged. No explicit robot stop API is available yet.";
@@ -5716,6 +5955,8 @@ namespace Reachy.ControlApp
 
             DrawPoseSpeedSliderSection();
             GUILayout.Space(10f);
+            DrawLoopingAnimationsSection();
+            GUILayout.Space(10f);
             DrawPresetSection();
 
             GUILayout.EndScrollView();
@@ -6415,7 +6656,7 @@ namespace Reachy.ControlApp
         private void DrawPoseSpeedSliderSection()
         {
             GUILayout.Label("Pose Speed", _titleStyle);
-            GUILayout.Label("Adjust preset pose transition speed.");
+            GUILayout.Label("Adjust preset pose transition speed and looping animation pacing.");
 
             presetPoseTransitionSpeedScale = GUILayout.HorizontalSlider(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
             presetPoseTransitionSpeedScale = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
@@ -6428,6 +6669,249 @@ namespace Reachy.ControlApp
             GUILayout.FlexibleSpace();
             GUILayout.Label("Fast");
             GUILayout.EndHorizontal();
+        }
+
+        private void DrawLoopingAnimationsSection()
+        {
+            GUILayout.Label("Looping Animations", _titleStyle);
+            GUILayout.Label("Repeat a motion until stopped, another pose is applied, or manual control takes over.");
+            GUILayout.Label(
+                _loopingAnimationCoroutine != null
+                    ? $"Active loop: {_activeLoopingAnimationName}"
+                    : "Active loop: none");
+
+            bool previousEnabled = GUI.enabled;
+            for (int i = 0; i < LoopingAnimationDefinitions.Length; i++)
+            {
+                LoopingAnimationDefinition definition = LoopingAnimationDefinitions[i];
+                if (definition == null)
+                {
+                    continue;
+                }
+
+                bool isActive = IsLoopingAnimationActive(definition.Name);
+                GUILayout.BeginVertical(GUI.skin.box);
+                GUILayout.Label(definition.Name, _titleStyle);
+                if (!string.IsNullOrWhiteSpace(definition.Description))
+                {
+                    GUILayout.Label(definition.Description);
+                }
+
+                GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && !isActive;
+                if (GUILayout.Button(isActive ? "Running" : "Start", GUILayout.Height(26f)))
+                {
+                    bool ok = TryStartLoopingAnimation(definition.Name, out string message);
+                    if (!ok)
+                    {
+                        SetStatus("Looping animation failed", message);
+                    }
+                }
+
+                GUI.enabled = previousEnabled;
+                GUILayout.EndVertical();
+            }
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && _loopingAnimationCoroutine != null;
+            if (GUILayout.Button("Stop Looping Animation", GUILayout.Height(28f)))
+            {
+                StopLoopingAnimation(updateStatus: true, reason: "Stopped from Animations & Poses panel.");
+            }
+
+            GUI.enabled = previousEnabled;
+
+            if (_isConnectAttemptInProgress)
+            {
+                GUILayout.Label("Connection attempt in progress. Looping animations are temporarily disabled.");
+            }
+        }
+
+        private bool TryStartLoopingAnimation(string animationName, out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Looping animation start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Looping animation start blocked: robot is not connected.";
+                return false;
+            }
+
+            LoopingAnimationDefinition definition = FindLoopingAnimationDefinition(animationName);
+            if (definition == null)
+            {
+                message = $"Unknown looping animation '{animationName}'.";
+                return false;
+            }
+
+            if (definition.Keyframes == null || definition.Keyframes.Count == 0)
+            {
+                message = $"Looping animation '{definition.Name}' has no keyframes.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(
+                updateStatus: false,
+                reason: $"Interrupted by looping animation '{definition.Name}'.");
+            StopVoiceHelloReturnTimer(
+                updateStatus: false,
+                reason: $"Interrupted by looping animation '{definition.Name}'.");
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by looping animation '{definition.Name}'.");
+
+            _activeLoopingAnimationName = definition.Name;
+            _loopingAnimationCoroutine = StartCoroutine(RunLoopingAnimationCoroutine(definition));
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "loop",
+                "start",
+                $"animation={definition.Name}; keyframes={definition.Keyframes.Count}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message =
+                $"Looping animation '{definition.Name}' started. It will keep running until stopped or interrupted.";
+            SetStatus("Looping animation started", message);
+            return true;
+        }
+
+        private IEnumerator RunLoopingAnimationCoroutine(LoopingAnimationDefinition definition)
+        {
+            if (definition == null || definition.Keyframes == null || definition.Keyframes.Count == 0)
+            {
+                _loopingAnimationCoroutine = null;
+                _activeLoopingAnimationName = string.Empty;
+                yield break;
+            }
+
+            while (true)
+            {
+                for (int i = 0; i < definition.Keyframes.Count; i++)
+                {
+                    if (_client == null || !_client.IsConnected)
+                    {
+                        LogRuntimeEvent(
+                            "looping-animation",
+                            "stopped",
+                            $"Looping animation '{definition.Name}' stopped because the robot is disconnected.",
+                            "WARN");
+                        _loopingAnimationCoroutine = null;
+                        _activeLoopingAnimationName = string.Empty;
+                        yield break;
+                    }
+
+                    LoopingAnimationKeyframe keyframe = definition.Keyframes[i];
+                    if (keyframe == null || keyframe.JointGoalsDegrees == null || keyframe.JointGoalsDegrees.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    bool wasConnected = _client.IsConnected;
+                    bool targetsRealRobot = IsRealRobotSessionActive();
+                    float speedLimitPercent = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f) * 100f;
+                    bool ok = _client.SendJointGoals(
+                        keyframe.JointGoalsDegrees,
+                        speedLimitPercent,
+                        out string motionMessage);
+                    HandlePotentialDisconnectAfterOperation(
+                        $"looping animation '{definition.Name}' keyframe {i + 1}",
+                        wasConnected);
+                    LogMotionEvent(
+                        "loop",
+                        "keyframe",
+                        $"animation={definition.Name}; index={i + 1}/{definition.Keyframes.Count}; result={(ok ? "ok" : "failed")}; detail={motionMessage}",
+                        success: ok,
+                        targetsRealRobot: targetsRealRobot);
+
+                    if (!ok)
+                    {
+                        _loopingAnimationCoroutine = null;
+                        _activeLoopingAnimationName = string.Empty;
+                        if (_client != null && _client.IsConnected)
+                        {
+                            SetStatus(
+                                "Looping animation failed",
+                                $"Looping animation '{definition.Name}' stopped on keyframe {i + 1}. {motionMessage}");
+                        }
+
+                        yield break;
+                    }
+
+                    float waitSeconds =
+                        keyframe.HoldDurationSeconds /
+                        Mathf.Max(LoopingAnimationMinimumPlaybackSpeedScale, GetLoopingAnimationPlaybackSpeedScale());
+                    if (waitSeconds > 0f)
+                    {
+                        yield return new WaitForSecondsRealtime(waitSeconds);
+                    }
+                    else
+                    {
+                        yield return null;
+                    }
+                }
+            }
+        }
+
+        private bool StopLoopingAnimation(bool updateStatus, string reason)
+        {
+            if (_loopingAnimationCoroutine == null)
+            {
+                return false;
+            }
+
+            string stoppedAnimationName = string.IsNullOrWhiteSpace(_activeLoopingAnimationName)
+                ? "Looping animation"
+                : _activeLoopingAnimationName;
+            StopCoroutine(_loopingAnimationCoroutine);
+            _loopingAnimationCoroutine = null;
+            _activeLoopingAnimationName = string.Empty;
+
+            string message = string.IsNullOrWhiteSpace(reason)
+                ? $"Looping animation '{stoppedAnimationName}' stopped."
+                : $"Looping animation '{stoppedAnimationName}' stopped. {reason}";
+            LogRuntimeEvent("looping-animation", "stopped", message, "WARN");
+            if (updateStatus)
+            {
+                SetStatus("Looping animation stopped", message);
+            }
+
+            return true;
+        }
+
+        private bool IsLoopingAnimationActive(string animationName)
+        {
+            return _loopingAnimationCoroutine != null &&
+                   string.Equals(_activeLoopingAnimationName, animationName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private LoopingAnimationDefinition FindLoopingAnimationDefinition(string animationName)
+        {
+            if (string.IsNullOrWhiteSpace(animationName))
+            {
+                return null;
+            }
+
+            for (int i = 0; i < LoopingAnimationDefinitions.Length; i++)
+            {
+                LoopingAnimationDefinition definition = LoopingAnimationDefinitions[i];
+                if (definition != null &&
+                    string.Equals(definition.Name, animationName.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return definition;
+                }
+            }
+
+            return null;
+        }
+
+        private float GetLoopingAnimationPlaybackSpeedScale()
+        {
+            return Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
         }
 
         private void DrawAiView(float topY, float logicalMargin, float logicalScreenWidth, float logicalScreenHeight)
@@ -8082,6 +8566,7 @@ namespace Reachy.ControlApp
                     ReachyControlMode disconnectedMode = _connectedMode ?? mode;
                     _manualDisconnect = true;
                     _autoReconnectScheduled = false;
+                    StopLoopingAnimation(updateStatus: false, reason: "Disconnected by UI button.");
                     _client.Disconnect();
                     _connectedMode = null;
                     LogConnectionEvent(disconnectedMode, "manual-disconnect", "Disconnected by UI button.");
@@ -8225,7 +8710,7 @@ namespace Reachy.ControlApp
             }
 
             _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
-            GUILayout.Label("(preset transitions)", GUILayout.Width(130f));
+            GUILayout.Label("(presets + loops)", GUILayout.Width(130f));
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
@@ -8396,6 +8881,7 @@ namespace Reachy.ControlApp
                 }
                 else
                 {
+                    StopLoopingAnimation(updateStatus: false, reason: "Interrupted by manual single-joint command.");
                     bool targetsRealRobot = IsRealRobotSessionActive();
                     LogMotionEvent(
                         "manual",
@@ -8455,6 +8941,9 @@ namespace Reachy.ControlApp
                     string presetName = presetNames[index];
                     if (GUILayout.Button(presetName, GUILayout.Height(28f)))
                     {
+                        StopLoopingAnimation(
+                            updateStatus: false,
+                            reason: $"Interrupted by preset '{presetName}'.");
                         bool targetsRealRobot = IsRealRobotSessionActive();
                         LogMotionEvent(
                             "manual",
