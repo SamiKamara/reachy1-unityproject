@@ -553,6 +553,7 @@ def load_config(path: Path) -> dict:
         "intent_confidence_threshold": 0.78,
         "tts_backend": "pyttsx3",
         "tts_rate": 175,
+        "tts_timeout_seconds": 30.0,
         "tts_voice_name": "",
         "known_poses": list(DEFAULT_POSES),
         "known_joints": list(DEFAULT_JOINTS),
@@ -600,6 +601,7 @@ def load_config(path: Path) -> dict:
     config["transcript_default_confidence"] = max(0.0, min(1.0, float(config.get("transcript_default_confidence", 0.85))))
     config["intent_confidence_threshold"] = max(0.0, min(1.0, float(config.get("intent_confidence_threshold", 0.78))))
     config["tts_rate"] = max(60, min(320, int(config.get("tts_rate", 175))))
+    config["tts_timeout_seconds"] = max(5.0, min(600.0, float(config.get("tts_timeout_seconds", 30.0))))
     config["log_history_size"] = max(20, min(1000, int(config.get("log_history_size", 200))))
     config["event_queue_size"] = max(10, min(1000, int(config.get("event_queue_size", 120))))
 
@@ -1220,8 +1222,22 @@ class TTS:
             "$synth.Dispose();"
         )
 
+    def _estimate_timeout_seconds(self, text: str) -> float:
+        configured_timeout = max(5.0, min(600.0, float(self.config.get("tts_timeout_seconds", 30.0))))
+        trimmed = (text or "").strip()
+        if not trimmed:
+            return configured_timeout
+
+        words = re.findall(r"\S+", trimmed)
+        word_count = max(1, len(words))
+        rate_wpm = max(60, min(320, int(self.config.get("tts_rate", 175))))
+        words_per_second = max(0.75, rate_wpm / 60.0)
+        punctuation_pauses = sum(trimmed.count(mark) for mark in ".!?;:") * 0.25
+        estimated_timeout = (word_count / words_per_second) + punctuation_pauses + 6.0
+        return max(configured_timeout, min(600.0, estimated_timeout))
+
     def _speak_with_subprocess(self, text: str) -> tuple[bool, str]:
-        timeout_seconds = max(5.0, min(60.0, float(self.config.get("tts_timeout_seconds", 20.0))))
+        timeout_seconds = self._estimate_timeout_seconds(text)
         script = self._build_windows_sapi_script(text)
         cmd = [
             "powershell",

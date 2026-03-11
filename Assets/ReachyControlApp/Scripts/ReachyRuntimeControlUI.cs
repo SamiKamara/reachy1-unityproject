@@ -68,6 +68,14 @@ namespace Reachy.ControlApp
         private const float VoiceHelloReturnDelaySeconds = 4f;
         private const string VoiceHelloReturnPoseName = "Neutral Arms";
         private const string SpeechLoopingAnimationName = "Speech A";
+        private const string ReachyIntroductionActedSequenceName = "Reachy introduction";
+        private const string ReachyIntroductionHelloWavePoseName = "Hello Pose D";
+        private const string ReachyIntroductionDefaultSpeechText =
+            "Hello, I am Reachy, a robot made by Pollen Robotics. My main trick is teleoperation, " +
+            "which means that I can be controlled via a VR headset and used as a pair of hands for remote " +
+            "work and other tasks. However, the students here reprogrammed me to give this presentation, " +
+            "so here I am. Anyway, feel free to ask questions. I will use my very small internal AI, " +
+            "which runs locally on the laptop, and try my best to answer them.";
         private const float LoopingAnimationMinimumPlaybackSpeedScale = 0.35f;
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
@@ -629,6 +637,11 @@ namespace Reachy.ControlApp
         [SerializeField] private bool resolveRobotHostnames = true;
         [SerializeField] private bool precheckRobotEndpointReachability = true;
         [SerializeField] private float precheckTimeoutSeconds = 1.5f;
+
+        [Header("Acted Sequences")]
+        [SerializeField]
+        [TextArea(5, 12)]
+        private string reachyIntroductionSequenceText = ReachyIntroductionDefaultSpeechText;
         
         [Header("Camera Preview")]
         [SerializeField] private bool showCameraPreview = true;
@@ -739,6 +752,9 @@ namespace Reachy.ControlApp
         private ReachyControlMode _connectAttemptMode;
         private float _connectAttemptReconnectDelaySeconds = 0.5f;
         private Coroutine _connectAttemptCoroutine;
+        private Coroutine _actedSequenceCoroutine;
+        private string _activeActedSequenceName = string.Empty;
+        private bool _actedSequenceRequestingTtsSidecar;
         private Coroutine _loopingAnimationCoroutine;
         private string _activeLoopingAnimationName = string.Empty;
         private Coroutine _voiceShowMovementCoroutine;
@@ -757,6 +773,7 @@ namespace Reachy.ControlApp
         private Vector2 _connectionsScroll;
         private Vector2 _manualControlScroll;
         private Vector2 _animationsAndPosesScroll;
+        private Vector2 _animationsAndPosesRightPanelScroll;
         private Vector2 _aiPrimaryScroll;
         private Vector2 _aiRuntimeScroll;
         private readonly Dictionary<string, float> _manualControllerTargets =
@@ -821,6 +838,8 @@ namespace Reachy.ControlApp
         {
             public bool Success;
             public bool Reachable;
+            public bool HealthAvailable;
+            public bool TtsSpeaking;
             public string Message;
             public string Error;
         }
@@ -831,6 +850,7 @@ namespace Reachy.ControlApp
             public bool ok;
             public bool mic_active;
             public bool listening;
+            public bool tts_speaking;
             public int selected_input_device_index = -1;
             public string selected_input_device_name = string.Empty;
             public string last_error = string.Empty;
@@ -905,6 +925,7 @@ namespace Reachy.ControlApp
             public float intent_confidence_threshold = VoiceCommandRouter.DefaultConfidenceThreshold;
             public string tts_backend = "pyttsx3";
             public int tts_rate = 175;
+            public float tts_timeout_seconds = 30f;
             public string tts_voice_name = string.Empty;
             public string[] known_poses = DefaultSidecarKnownPoses;
             public string[] known_joints = DefaultSidecarKnownJoints;
@@ -1041,6 +1062,7 @@ namespace Reachy.ControlApp
                 _connectAttemptCoroutine = null;
             }
 
+            StopActedSequence(updateStatus: false, reason: "UI destroyed", stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "UI destroyed");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "UI destroyed");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "UI destroyed");
@@ -1067,6 +1089,7 @@ namespace Reachy.ControlApp
 
         private void OnApplicationQuit()
         {
+            StopActedSequence(updateStatus: false, reason: "Application quit", stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Application quit");
             CleanupAllSidecarsOnShutdown("application quit");
             ShutdownRuntimeLogSession("OnApplicationQuit");
@@ -1118,6 +1141,7 @@ namespace Reachy.ControlApp
                             "WARN");
                         SetStatus("Connection lost", $"{pingMessage}\nScheduling auto-reconnect.");
                         _client.Disconnect();
+                        StopActedSequence(updateStatus: false, reason: "Connection lost.", stopLoopingAnimation: false);
                         StopLoopingAnimation(updateStatus: false, reason: "Connection lost.");
                         ReachyControlMode reconnectMode = _connectedMode ?? mode;
                         _connectedMode = null;
@@ -1303,6 +1327,10 @@ namespace Reachy.ControlApp
 
             if (HasManualControllerMotionIntent(_manualControllerSnapshot))
             {
+                StopActedSequence(
+                    updateStatus: false,
+                    reason: "Interrupted by manual control input.",
+                    stopLoopingAnimation: false);
                 StopLoopingAnimation(updateStatus: false, reason: "Interrupted by manual control input.");
             }
 
@@ -2311,13 +2339,14 @@ namespace Reachy.ControlApp
             _voiceTranscriptParser.MinTranscriptChars = localAiAgentMinTranscriptChars;
             _voiceTranscriptParser.MinTranscriptWords = localAiAgentMinTranscriptWords;
 
+            bool sidecarShouldBePrepared = enableLocalAiAgent || _actedSequenceRequestingTtsSidecar;
             bool bridgeShouldBeEnabled = enableLocalAiAgent;
             if (localAiAgentAutoStartSidecar)
             {
-                UpdateLocalAiAgentSidecarStartup(enableLocalAiAgent);
+                UpdateLocalAiAgentSidecarStartup(sidecarShouldBePrepared);
                 bridgeShouldBeEnabled = enableLocalAiAgent && _localAiAgentSidecarReady;
             }
-            else if (!enableLocalAiAgent)
+            else if (!sidecarShouldBePrepared)
             {
                 _localAiAgentSidecarReady = false;
                 _localAiAgentSidecarStartupActive = false;
@@ -3682,6 +3711,8 @@ namespace Reachy.ControlApp
                         {
                             Success = true,
                             Reachable = true,
+                            HealthAvailable = false,
+                            TtsSpeaking = false,
                             Message = "Sidecar endpoint is reachable.",
                             Error = string.Empty
                         };
@@ -3693,6 +3724,8 @@ namespace Reachy.ControlApp
                         {
                             Success = true,
                             Reachable = true,
+                            HealthAvailable = true,
+                            TtsSpeaking = false,
                             Message = "Sidecar health endpoint reachable.",
                             Error = string.Empty
                         };
@@ -3711,6 +3744,8 @@ namespace Reachy.ControlApp
                     {
                         Success = true,
                         Reachable = ok,
+                        HealthAvailable = true,
+                        TtsSpeaking = parsed != null && parsed.tts_speaking,
                         Message = ok
                             ? $"Sidecar health is OK.{selectedDeviceSummary}"
                             : "Sidecar health endpoint reported not OK.",
@@ -3742,6 +3777,8 @@ namespace Reachy.ControlApp
                 {
                     Success = false,
                     Reachable = false,
+                    HealthAvailable = parseHealth,
+                    TtsSpeaking = false,
                     Message = "Sidecar endpoint probe failed.",
                     Error = detail
                 };
@@ -3752,6 +3789,8 @@ namespace Reachy.ControlApp
                 {
                     Success = false,
                     Reachable = false,
+                    HealthAvailable = parseHealth,
+                    TtsSpeaking = false,
                     Message = "Sidecar endpoint probe failed.",
                     Error = ex.Message
                 };
@@ -4315,6 +4354,10 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Disconnected by voice command.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Disconnected by voice command.");
@@ -4358,6 +4401,10 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Interrupted by set_pose command.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_pose command.");
@@ -4391,6 +4438,10 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Interrupted by move_joint command.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by move_joint command.");
@@ -4427,6 +4478,10 @@ namespace Reachy.ControlApp
                         return false;
                     }
 
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Interrupted by hello command.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Restarted by hello command.");
@@ -4469,6 +4524,10 @@ namespace Reachy.ControlApp
 
                 case VoiceCommandRouter.VoiceActionKind.StopMotion:
                     bool hadPending = _voiceHasPendingAction;
+                    bool stoppedActedSequence = StopActedSequence(
+                        updateStatus: false,
+                        reason: "Stopped by voice command.",
+                        stopLoopingAnimation: false);
                     bool stoppedLoopingAnimation = StopLoopingAnimation(
                         updateStatus: false,
                         reason: "Stopped by voice command.");
@@ -4478,13 +4537,17 @@ namespace Reachy.ControlApp
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Stopped by voice command.");
                     _voiceHasPendingAction = false;
                     _voicePendingAction = default(VoiceCommandRouter.RoutedAction);
-                    message = hadPending || stoppedSequence || stoppedLoopingAnimation
-                        ? BuildStopAcknowledgementMessage(hadPending, stoppedSequence, stoppedLoopingAnimation)
+                    message = hadPending || stoppedSequence || stoppedActedSequence || stoppedLoopingAnimation
+                        ? BuildStopAcknowledgementMessage(
+                            hadPending,
+                            stoppedSequence,
+                            stoppedActedSequence,
+                            stoppedLoopingAnimation)
                         : "Stop command acknowledged. No explicit robot stop API is available yet.";
                     LogMotionEvent(
                         "voice",
                         "stop-motion",
-                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; message={message}",
+                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedActedSequence={stoppedActedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; message={message}",
                         success: true,
                         targetsRealRobot: IsRealRobotSessionActive());
                     SetStatus("Voice stop", message);
@@ -4514,6 +4577,10 @@ namespace Reachy.ControlApp
                 return false;
             }
 
+            StopActedSequence(
+                updateStatus: false,
+                reason: "Interrupted by show movement command.",
+                stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Interrupted by show movement command.");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "Restarted by show movement command.");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by show movement command.");
@@ -4759,44 +4826,44 @@ namespace Reachy.ControlApp
         private static string BuildStopAcknowledgementMessage(
             bool hadPendingAction,
             bool stoppedShowMovement,
+            bool stoppedActedSequence,
             bool stoppedLoopingAnimation)
         {
-            if (hadPendingAction && stoppedShowMovement && stoppedLoopingAnimation)
-            {
-                return "Stop command acknowledged. Pending voice action, show movement, and looping animation were cancelled.";
-            }
-
-            if (hadPendingAction && stoppedShowMovement)
-            {
-                return "Stop command acknowledged. Pending voice action was cancelled and show movement sequence was stopped.";
-            }
-
-            if (hadPendingAction && stoppedLoopingAnimation)
-            {
-                return "Stop command acknowledged. Pending voice action was cancelled and looping animation was stopped.";
-            }
-
+            var stoppedItems = new List<string>();
             if (hadPendingAction)
             {
-                return "Stop command acknowledged. Pending voice action was cancelled.";
-            }
-
-            if (stoppedShowMovement && stoppedLoopingAnimation)
-            {
-                return "Stop command acknowledged. Show movement sequence and looping animation were stopped.";
+                stoppedItems.Add("pending voice action");
             }
 
             if (stoppedShowMovement)
             {
-                return "Stop command acknowledged. Show movement sequence was stopped.";
+                stoppedItems.Add("show movement sequence");
+            }
+
+            if (stoppedActedSequence)
+            {
+                stoppedItems.Add("acted sequence");
             }
 
             if (stoppedLoopingAnimation)
             {
-                return "Stop command acknowledged. Looping animation was stopped.";
+                stoppedItems.Add("looping animation");
             }
 
-            return "Stop command acknowledged. No explicit robot stop API is available yet.";
+            if (stoppedItems.Count == 0)
+            {
+                return "Stop command acknowledged. No explicit robot stop API is available yet.";
+            }
+
+            if (stoppedItems.Count == 1)
+            {
+                return $"Stop command acknowledged. {stoppedItems[0]} was cancelled or stopped.";
+            }
+
+            string finalItem = stoppedItems[stoppedItems.Count - 1];
+            stoppedItems.RemoveAt(stoppedItems.Count - 1);
+            return
+                $"Stop command acknowledged. {string.Join(", ", stoppedItems)} and {finalItem} were cancelled or stopped.";
         }
 
         private bool IsActionBlockedBySimulationOnlyMode(
@@ -5966,7 +6033,18 @@ namespace Reachy.ControlApp
         private void DrawAnimationsAndPosesStatusPanel(Rect area)
         {
             GUILayout.BeginArea(area, GUI.skin.box);
+            float bodyHeight = Mathf.Max(120f, area.height - 16f);
+            _animationsAndPosesRightPanelScroll = GUILayout.BeginScrollView(
+                _animationsAndPosesRightPanelScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            DrawActedSequencesSection();
+            GUILayout.Space(10f);
             DrawStatusSection();
+
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
@@ -6130,6 +6208,13 @@ namespace Reachy.ControlApp
                 }
                 else
                 {
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Interrupted by manual neutral arms command.",
+                        stopLoopingAnimation: false);
+                    StopLoopingAnimation(
+                        updateStatus: false,
+                        reason: "Interrupted by manual neutral arms command.");
                     bool ok = _client.SendNeutralArmsPreset(out string message);
                     if (ok)
                     {
@@ -6727,6 +6812,66 @@ namespace Reachy.ControlApp
 
         private bool TryStartLoopingAnimation(string animationName, out string message)
         {
+            return TryStartLoopingAnimation(
+                animationName,
+                out message,
+                updateStatus: true,
+                stopActedSequence: true);
+        }
+
+        private void DrawActedSequencesSection()
+        {
+            GUILayout.Label("Acted Sequences", _titleStyle);
+            GUILayout.Label("Scripted beats can chain preset poses, looping animations, and TTS speech.");
+            GUILayout.Label(
+                _actedSequenceCoroutine != null
+                    ? $"Active sequence: {_activeActedSequenceName}"
+                    : "Active sequence: none");
+
+            bool previousEnabled = GUI.enabled;
+            bool isReachyIntroductionActive = IsActedSequenceActive(ReachyIntroductionActedSequenceName);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label(ReachyIntroductionActedSequenceName, _titleStyle);
+            GUILayout.Label("Starts with a hello wave, loops Speech A while speaking, then returns to Neutral Arms.");
+            GUILayout.Label("Speech text");
+            reachyIntroductionSequenceText = GUILayout.TextArea(
+                reachyIntroductionSequenceText ?? string.Empty,
+                GUILayout.MinHeight(132f));
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && !isReachyIntroductionActive;
+            if (GUILayout.Button(isReachyIntroductionActive ? "Running" : "Start", GUILayout.Height(26f)))
+            {
+                bool ok = TryStartReachyIntroductionActedSequence(out string message);
+                if (!ok)
+                {
+                    SetStatus("Acted sequence failed", message);
+                }
+            }
+
+            GUI.enabled = previousEnabled;
+            GUILayout.EndVertical();
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && _actedSequenceCoroutine != null;
+            if (GUILayout.Button("Stop Acted Sequence", GUILayout.Height(28f)))
+            {
+                StopActedSequence(updateStatus: true, reason: "Stopped from Animations & Poses panel.");
+            }
+
+            GUI.enabled = previousEnabled;
+
+            if (_isConnectAttemptInProgress)
+            {
+                GUILayout.Label("Connection attempt in progress. Acted sequences are temporarily disabled.");
+            }
+        }
+
+        private bool TryStartLoopingAnimation(
+            string animationName,
+            out string message,
+            bool updateStatus,
+            bool stopActedSequence)
+        {
             message = string.Empty;
             if (_isConnectAttemptInProgress)
             {
@@ -6759,6 +6904,13 @@ namespace Reachy.ControlApp
             StopVoiceHelloReturnTimer(
                 updateStatus: false,
                 reason: $"Interrupted by looping animation '{definition.Name}'.");
+            if (stopActedSequence)
+            {
+                StopActedSequence(
+                    updateStatus: false,
+                    reason: $"Interrupted by looping animation '{definition.Name}'.",
+                    stopLoopingAnimation: false);
+            }
             StopLoopingAnimation(
                 updateStatus: false,
                 reason: $"Restarted by looping animation '{definition.Name}'.");
@@ -6776,8 +6928,368 @@ namespace Reachy.ControlApp
 
             message =
                 $"Looping animation '{definition.Name}' started. It will keep running until stopped or interrupted.";
-            SetStatus("Looping animation started", message);
+            if (updateStatus)
+            {
+                SetStatus("Looping animation started", message);
+            }
             return true;
+        }
+
+        private bool TryStartReachyIntroductionActedSequence(out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Acted sequence start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Acted sequence start blocked: robot is not connected.";
+                return false;
+            }
+
+            string speechText = GetReachyIntroductionSequenceText();
+            if (string.IsNullOrWhiteSpace(speechText))
+            {
+                message = "Acted sequence start blocked: introduction text is empty.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{ReachyIntroductionActedSequenceName}'.");
+            StopVoiceHelloReturnTimer(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{ReachyIntroductionActedSequenceName}'.");
+            StopActedSequence(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{ReachyIntroductionActedSequenceName}'.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{ReachyIntroductionActedSequenceName}'.");
+
+            _activeActedSequenceName = ReachyIntroductionActedSequenceName;
+            _actedSequenceCoroutine = StartCoroutine(RunReachyIntroductionActedSequenceCoroutine(speechText));
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "start",
+                $"sequence={ReachyIntroductionActedSequenceName}; speechChars={speechText.Length}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message =
+                $"Acted sequence '{ReachyIntroductionActedSequenceName}' started. It will wave hello, speak the configured introduction, and return to neutral arms.";
+            SetStatus("Acted sequence started", message);
+            return true;
+        }
+
+        private IEnumerator RunReachyIntroductionActedSequenceCoroutine(string speechText)
+        {
+            string sequenceName = ReachyIntroductionActedSequenceName;
+            speechText = string.IsNullOrWhiteSpace(speechText)
+                ? ReachyIntroductionDefaultSpeechText
+                : speechText.Trim();
+
+            if (ShouldActedSequencePrepareLocalTtsSidecar())
+            {
+                _actedSequenceRequestingTtsSidecar = true;
+                if (!_localAiAgentSidecarReady)
+                {
+                    string preparingMessage =
+                        $"Waiting for local TTS service before running '{sequenceName}'.";
+                    LogRuntimeEvent("acted-sequence", "tts-preparing", preparingMessage, "INFO");
+                    SetStatus("Acted sequence preparing speech", preparingMessage);
+                }
+
+                float ttsReadyDeadline = Time.unscaledTime + localAiAgentSidecarStartupTimeoutSeconds;
+                while (!_localAiAgentSidecarReady && Time.unscaledTime < ttsReadyDeadline)
+                {
+                    UpdateLocalAiAgentSidecarStartup(enableRequested: true);
+                    yield return null;
+                }
+
+                UpdateLocalAiAgentSidecarStartup(enableRequested: true);
+                if (!_localAiAgentSidecarReady)
+                {
+                    string sidecarDetail = string.IsNullOrWhiteSpace(_localAiAgentSidecarStatus)
+                        ? $"Timed out waiting for local TTS after {localAiAgentSidecarStartupTimeoutSeconds:F1}s."
+                        : _localAiAgentSidecarStatus.Trim();
+                    string blockedMessage =
+                        $"Acted sequence '{sequenceName}' could not start speech because local TTS is unavailable. {sidecarDetail}";
+                    LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
+                    ClearActedSequenceState();
+                    SetStatus("Acted sequence blocked", blockedMessage);
+                    yield break;
+                }
+            }
+
+            bool shouldReturnToNeutral = false;
+            IReadOnlyList<string> availablePoses = _client?.PresetPoseNames;
+            List<string> helloPoseSequence = BuildReachyIntroductionHelloPoseSequence(availablePoses);
+            if (helloPoseSequence.Count == 0)
+            {
+                string noHelloPoseMessage =
+                    $"Acted sequence '{sequenceName}' could not start because no hello poses are available.";
+                LogRuntimeEvent("acted-sequence", "blocked", noHelloPoseMessage, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence failed", noHelloPoseMessage);
+                yield break;
+            }
+
+            float helloPoseDelaySeconds =
+                0.55f / Mathf.Max(LoopingAnimationMinimumPlaybackSpeedScale, GetLoopingAnimationPlaybackSpeedScale());
+            helloPoseDelaySeconds = Mathf.Max(0.15f, helloPoseDelaySeconds);
+
+            for (int i = 0; i < helloPoseSequence.Count; i++)
+            {
+                if (_client == null || !_client.IsConnected)
+                {
+                    string disconnectedMessage =
+                        $"Acted sequence '{sequenceName}' stopped because the robot is disconnected.";
+                    LogRuntimeEvent("acted-sequence", "stopped", disconnectedMessage, "WARN");
+                    ClearActedSequenceState();
+                    yield break;
+                }
+
+                string poseName = helloPoseSequence[i];
+                bool poseOk = TrySendActedSequencePresetPose(
+                    sequenceName,
+                    poseName,
+                    "hello",
+                    i + 1,
+                    helloPoseSequence.Count,
+                    out string poseMessage);
+                if (!poseOk)
+                {
+                    StopLoopingAnimation(
+                        updateStatus: false,
+                        reason: $"Interrupted because acted sequence '{sequenceName}' failed.");
+                    yield return CompleteActedSequenceAfterSpeech(sequenceName, false, poseMessage, shouldReturnToNeutral);
+                    yield break;
+                }
+
+                shouldReturnToNeutral = true;
+                if (i < helloPoseSequence.Count - 1)
+                {
+                    yield return new WaitForSecondsRealtime(helloPoseDelaySeconds);
+                }
+            }
+
+            bool startedLoop = TryStartLoopingAnimation(
+                SpeechLoopingAnimationName,
+                out string loopMessage,
+                updateStatus: false,
+                stopActedSequence: false);
+            if (!startedLoop)
+            {
+                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, loopMessage, shouldReturnToNeutral);
+                yield break;
+            }
+
+            bool queuedSpeech = TryQueueActedSequenceSpeech(
+                speechText,
+                out int baselineSuccessfulTtsCount,
+                out int baselineFailedTtsCount,
+                out string queueMessage);
+            if (!queuedSpeech)
+            {
+                StopLoopingAnimation(
+                    updateStatus: false,
+                    reason: $"Interrupted because acted sequence '{sequenceName}' could not queue speech.");
+                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, queueMessage, shouldReturnToNeutral);
+                yield break;
+            }
+
+            LogRuntimeEvent(
+                "acted-sequence",
+                "tts-queued",
+                $"Queued introduction speech for '{sequenceName}' ({speechText.Length} chars).",
+                "INFO");
+
+            float speechTimeoutSeconds = GetActedSequenceSpeechTimeoutSeconds(speechText);
+            float speechDeadline = Time.unscaledTime + speechTimeoutSeconds;
+            float fallbackSpeechCompletionAt =
+                Time.unscaledTime + EstimateActedSequenceSpeechDurationSeconds(speechText);
+            bool shouldTrackLocalTtsPlayback = ShouldActedSequenceTrackLocalTtsPlayback();
+            float nextLocalTtsProbeAt = Time.unscaledTime;
+            Task<SidecarProbeResult> localTtsProbeTask = null;
+            bool ttsAccepted = false;
+            bool observedLocalTtsHealth = false;
+            bool observedLocalTtsPlaybackStart = false;
+            bool latestLocalTtsSpeaking = false;
+            bool ttsSucceeded = false;
+            string speechCompletionMessage = string.Empty;
+
+            while (true)
+            {
+                if (shouldTrackLocalTtsPlayback &&
+                    localTtsProbeTask == null &&
+                    Time.unscaledTime >= nextLocalTtsProbeAt)
+                {
+                    string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                        ? VoiceAgentBridge.DefaultEndpoint
+                        : localAiAgentEndpoint.Trim();
+                    int probeTimeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 150, 1000);
+                    localTtsProbeTask = Task.Run(() => ProbeSidecar(intentEndpoint, probeTimeoutMs));
+                    nextLocalTtsProbeAt = Time.unscaledTime + 0.2f;
+                }
+
+                if (localTtsProbeTask != null && localTtsProbeTask.IsCompleted)
+                {
+                    try
+                    {
+                        SidecarProbeResult probeResult = localTtsProbeTask.Result;
+                        if (probeResult.Success && probeResult.Reachable && probeResult.HealthAvailable)
+                        {
+                            observedLocalTtsHealth = true;
+                            latestLocalTtsSpeaking = probeResult.TtsSpeaking;
+                            if (latestLocalTtsSpeaking)
+                            {
+                                observedLocalTtsPlaybackStart = true;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Health polling is best-effort here; fall back to duration-based completion below.
+                    }
+                    finally
+                    {
+                        localTtsProbeTask = null;
+                    }
+                }
+
+                if (_voiceAgentBridge == null)
+                {
+                    speechCompletionMessage = "Introduction speech stopped because the TTS bridge is unavailable.";
+                    break;
+                }
+
+                VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
+                bool ttsQueueDrained = !snapshot.TtsInFlight && snapshot.QueuedTtsCount == 0;
+                if (snapshot.SuccessfulTtsCount > baselineSuccessfulTtsCount)
+                {
+                    ttsAccepted = true;
+                }
+
+                if (snapshot.FailedTtsCount > baselineFailedTtsCount && ttsQueueDrained)
+                {
+                    speechCompletionMessage = string.IsNullOrWhiteSpace(snapshot.LastTtsError)
+                        ? "Introduction speech failed."
+                        : snapshot.LastTtsError;
+                    break;
+                }
+
+                if (shouldTrackLocalTtsPlayback && observedLocalTtsHealth)
+                {
+                    if (observedLocalTtsPlaybackStart && !latestLocalTtsSpeaking && ttsQueueDrained)
+                    {
+                        ttsSucceeded = true;
+                        speechCompletionMessage = "Introduction speech completed.";
+                        break;
+                    }
+
+                    if (!observedLocalTtsPlaybackStart &&
+                        ttsAccepted &&
+                        ttsQueueDrained &&
+                        Time.unscaledTime >= fallbackSpeechCompletionAt)
+                    {
+                        ttsSucceeded = true;
+                        speechCompletionMessage = "Introduction speech completed using estimated playback duration.";
+                        break;
+                    }
+                }
+                else if (ttsAccepted && ttsQueueDrained && Time.unscaledTime >= fallbackSpeechCompletionAt)
+                {
+                    ttsSucceeded = true;
+                    speechCompletionMessage = observedLocalTtsHealth
+                        ? "Introduction speech completed."
+                        : "Introduction speech completed using estimated playback duration.";
+                    break;
+                }
+
+                if (Time.unscaledTime >= speechDeadline)
+                {
+                    speechCompletionMessage =
+                        $"Timed out waiting for acted sequence '{sequenceName}' speech to finish.";
+                    break;
+                }
+
+                if (_client == null || !_client.IsConnected)
+                {
+                    speechCompletionMessage =
+                        $"Acted sequence '{sequenceName}' stopped because the robot is disconnected.";
+                    break;
+                }
+
+                yield return null;
+            }
+
+            yield return CompleteActedSequenceAfterSpeech(
+                sequenceName,
+                ttsSucceeded,
+                speechCompletionMessage,
+                shouldReturnToNeutral: true);
+        }
+
+        private IEnumerator CompleteActedSequenceAfterSpeech(
+            string sequenceName,
+            bool speechSucceeded,
+            string speechMessage,
+            bool shouldReturnToNeutral)
+        {
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Acted sequence '{sequenceName}' finished its speech window.");
+
+            bool neutralSent = false;
+            string neutralMessage = string.Empty;
+            if (shouldReturnToNeutral && _client != null && _client.IsConnected)
+            {
+                neutralSent = TrySendActedSequencePresetPose(
+                    sequenceName,
+                    VoiceHelloReturnPoseName,
+                    "return-neutral",
+                    1,
+                    1,
+                    out neutralMessage);
+            }
+
+            ClearActedSequenceState();
+
+            string trimmedSpeechMessage = string.IsNullOrWhiteSpace(speechMessage)
+                ? (speechSucceeded ? "Introduction speech completed." : "Introduction speech ended with an issue.")
+                : speechMessage.Trim();
+            string finalMessage = speechSucceeded
+                ? $"Acted sequence '{sequenceName}' finished. {trimmedSpeechMessage}"
+                : $"Acted sequence '{sequenceName}' finished with a speech issue. {trimmedSpeechMessage}";
+
+            if (shouldReturnToNeutral)
+            {
+                if (neutralSent)
+                {
+                    finalMessage += $" Returned to '{VoiceHelloReturnPoseName}'.";
+                }
+                else if (!string.IsNullOrWhiteSpace(neutralMessage))
+                {
+                    finalMessage += $" Failed to return to '{VoiceHelloReturnPoseName}'. {neutralMessage}";
+                }
+            }
+
+            LogRuntimeEvent(
+                "acted-sequence",
+                speechSucceeded ? "completed" : "completed-with-issue",
+                finalMessage,
+                speechSucceeded ? "INFO" : "WARN");
+            SetStatus(
+                speechSucceeded ? "Acted sequence completed" : "Acted sequence finished with issue",
+                finalMessage);
+            yield break;
         }
 
         private IEnumerator RunLoopingAnimationCoroutine(LoopingAnimationDefinition definition)
@@ -6883,10 +7395,249 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        private bool StopActedSequence(bool updateStatus, string reason, bool stopLoopingAnimation = true)
+        {
+            if (_actedSequenceCoroutine == null)
+            {
+                return false;
+            }
+
+            string stoppedSequenceName = string.IsNullOrWhiteSpace(_activeActedSequenceName)
+                ? "Acted sequence"
+                : _activeActedSequenceName;
+            StopCoroutine(_actedSequenceCoroutine);
+            ClearActedSequenceState();
+
+            if (stopLoopingAnimation)
+            {
+                StopLoopingAnimation(
+                    updateStatus: false,
+                    reason: $"Interrupted because acted sequence '{stoppedSequenceName}' stopped.");
+            }
+
+            string message = string.IsNullOrWhiteSpace(reason)
+                ? $"Acted sequence '{stoppedSequenceName}' stopped."
+                : $"Acted sequence '{stoppedSequenceName}' stopped. {reason}";
+            LogRuntimeEvent("acted-sequence", "stopped", message, "WARN");
+            if (updateStatus)
+            {
+                SetStatus("Acted sequence stopped", message);
+            }
+
+            return true;
+        }
+
+        private bool IsActedSequenceActive(string sequenceName)
+        {
+            return _actedSequenceCoroutine != null &&
+                   string.Equals(_activeActedSequenceName, sequenceName, StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool IsLoopingAnimationActive(string animationName)
         {
             return _loopingAnimationCoroutine != null &&
                    string.Equals(_activeLoopingAnimationName, animationName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ClearActedSequenceState()
+        {
+            _actedSequenceCoroutine = null;
+            _activeActedSequenceName = string.Empty;
+            _actedSequenceRequestingTtsSidecar = false;
+        }
+
+        private bool ShouldActedSequencePrepareLocalTtsSidecar()
+        {
+            return localAiAgentAutoStartSidecar && ShouldActedSequenceTrackLocalTtsPlayback();
+        }
+
+        private bool ShouldActedSequenceTrackLocalTtsPlayback()
+        {
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            string ttsEndpoint = string.IsNullOrWhiteSpace(localAiAgentTtsEndpoint)
+                ? VoiceAgentBridge.DefaultTtsEndpoint
+                : localAiAgentTtsEndpoint.Trim();
+            if (!Uri.TryCreate(intentEndpoint, UriKind.Absolute, out Uri intentUri) ||
+                !Uri.TryCreate(ttsEndpoint, UriKind.Absolute, out Uri ttsUri))
+            {
+                return false;
+            }
+
+            return intentUri.IsLoopback &&
+                   ttsUri.IsLoopback &&
+                   string.Equals(intentUri.Host, ttsUri.Host, StringComparison.OrdinalIgnoreCase) &&
+                   intentUri.Port == ttsUri.Port;
+        }
+
+        private static float EstimateActedSequenceSpeechDurationSeconds(string speechText)
+        {
+            string trimmed = (speechText ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return 1f;
+            }
+
+            string[] words = trimmed.Split(
+                new[] { ' ', '\t', '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries);
+            int wordCount = Math.Max(1, words.Length);
+            float estimatedSeconds = (wordCount / 2.5f) + 1.5f;
+            return Mathf.Clamp(estimatedSeconds, 2f, 180f);
+        }
+
+        private string GetReachyIntroductionSequenceText()
+        {
+            string trimmed = (reachyIntroductionSequenceText ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                trimmed = ReachyIntroductionDefaultSpeechText;
+                reachyIntroductionSequenceText = trimmed;
+            }
+
+            return trimmed;
+        }
+
+        private static List<string> BuildReachyIntroductionHelloPoseSequence(IReadOnlyList<string> availablePoses)
+        {
+            var sequence = new List<string>();
+            string helloPose = FindPresetPoseName(availablePoses, VoiceCommandRouter.HelloPoseName);
+            string wavePose = FindPresetPoseName(availablePoses, ReachyIntroductionHelloWavePoseName);
+            if (!string.IsNullOrWhiteSpace(helloPose))
+            {
+                sequence.Add(helloPose);
+            }
+
+            if (!string.IsNullOrWhiteSpace(wavePose))
+            {
+                sequence.Add(wavePose);
+            }
+
+            if (!string.IsNullOrWhiteSpace(helloPose))
+            {
+                sequence.Add(helloPose);
+            }
+
+            if (sequence.Count > 0)
+            {
+                return sequence;
+            }
+
+            string fallbackPose = FindPresetPoseName(availablePoses, "Hello Pose B");
+            if (string.IsNullOrWhiteSpace(fallbackPose))
+            {
+                fallbackPose = FindPresetPoseName(availablePoses, "Hello Pose A");
+            }
+
+            if (!string.IsNullOrWhiteSpace(fallbackPose))
+            {
+                sequence.Add(fallbackPose);
+            }
+
+            return sequence;
+        }
+
+        private static string FindPresetPoseName(IReadOnlyList<string> availablePoses, string desiredPoseName)
+        {
+            if (availablePoses == null || string.IsNullOrWhiteSpace(desiredPoseName))
+            {
+                return string.Empty;
+            }
+
+            for (int i = 0; i < availablePoses.Count; i++)
+            {
+                string candidate = (availablePoses[i] ?? string.Empty).Trim();
+                if (string.Equals(candidate, desiredPoseName.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    return candidate;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private bool TrySendActedSequencePresetPose(
+            string sequenceName,
+            string poseName,
+            string phase,
+            int stepIndex,
+            int stepCount,
+            out string message)
+        {
+            message = string.Empty;
+            if (_client == null || !_client.IsConnected)
+            {
+                message = $"Acted sequence '{sequenceName}' cannot send pose '{poseName}' because the robot is disconnected.";
+                return false;
+            }
+
+            bool wasConnected = _client.IsConnected;
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "pose-attempt",
+                $"sequence={sequenceName}; phase={phase}; step={stepIndex}/{stepCount}; pose={poseName}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+            bool ok = _client.SendPresetPose(poseName, out message);
+            HandlePotentialDisconnectAfterOperation($"acted sequence '{sequenceName}' pose '{poseName}'", wasConnected);
+            LogMotionEvent(
+                "acted-sequence",
+                "pose-result",
+                $"sequence={sequenceName}; phase={phase}; step={stepIndex}/{stepCount}; pose={poseName}; result={(ok ? "ok" : "failed")}; detail={message}",
+                success: ok,
+                targetsRealRobot: targetsRealRobot);
+            return ok;
+        }
+
+        private bool TryQueueActedSequenceSpeech(
+            string speechText,
+            out int baselineSuccessfulTtsCount,
+            out int baselineFailedTtsCount,
+            out string message)
+        {
+            baselineSuccessfulTtsCount = 0;
+            baselineFailedTtsCount = 0;
+            message = string.Empty;
+
+            if (_voiceAgentBridge == null)
+            {
+                message = "Acted sequence speech blocked: TTS bridge is unavailable.";
+                return false;
+            }
+
+            string trimmedText = (speechText ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedText))
+            {
+                message = "Acted sequence speech blocked: no speech text was provided.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(localAiAgentTtsEndpoint))
+            {
+                message = "Acted sequence speech blocked: TTS endpoint is empty.";
+                return false;
+            }
+
+            _voiceAgentBridge.ConfigureTtsEndpoint(localAiAgentTtsEndpoint);
+            _voiceAgentBridge.ConfigureTtsMirror(
+                BuildRobotSpeakerTtsMirrorEndpoint(),
+                localAiAgentMirrorTtsToRobotSpeaker);
+
+            VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
+            baselineSuccessfulTtsCount = snapshot.SuccessfulTtsCount;
+            baselineFailedTtsCount = snapshot.FailedTtsCount;
+            _voiceAgentBridge.EnqueueTtsFeedback(trimmedText, interrupt: true);
+            _voiceLastSpokenFeedback = trimmedText;
+            message = "Queued acted sequence speech.";
+            return true;
+        }
+
+        private static float GetActedSequenceSpeechTimeoutSeconds(string speechText)
+        {
+            int length = string.IsNullOrWhiteSpace(speechText) ? 0 : speechText.Trim().Length;
+            return Mathf.Clamp((length * 0.12f) + 15f, 20f, 180f);
         }
 
         private LoopingAnimationDefinition FindLoopingAnimationDefinition(string animationName)
@@ -8566,6 +9317,10 @@ namespace Reachy.ControlApp
                     ReachyControlMode disconnectedMode = _connectedMode ?? mode;
                     _manualDisconnect = true;
                     _autoReconnectScheduled = false;
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Disconnected by UI button.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Disconnected by UI button.");
                     _client.Disconnect();
                     _connectedMode = null;
@@ -8881,6 +9636,10 @@ namespace Reachy.ControlApp
                 }
                 else
                 {
+                    StopActedSequence(
+                        updateStatus: false,
+                        reason: "Interrupted by manual single-joint command.",
+                        stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by manual single-joint command.");
                     bool targetsRealRobot = IsRealRobotSessionActive();
                     LogMotionEvent(
@@ -8941,6 +9700,10 @@ namespace Reachy.ControlApp
                     string presetName = presetNames[index];
                     if (GUILayout.Button(presetName, GUILayout.Height(28f)))
                     {
+                        StopActedSequence(
+                            updateStatus: false,
+                            reason: $"Interrupted by preset '{presetName}'.",
+                            stopLoopingAnimation: false);
                         StopLoopingAnimation(
                             updateStatus: false,
                             reason: $"Interrupted by preset '{presetName}'.");

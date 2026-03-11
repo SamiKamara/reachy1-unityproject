@@ -54,6 +54,7 @@ namespace Reachy.ControlApp
             public bool LastTranscriptIsFinal;
             public float LastTranscriptConfidence;
             public bool TtsInFlight;
+            public int QueuedTtsCount;
             public string TtsEndpoint;
             public int SuccessfulTtsCount;
             public int FailedTtsCount;
@@ -590,7 +591,7 @@ namespace Reachy.ControlApp
                     shouldStartPoll = true;
                 }
 
-                if (_enabled && _ttsTask == null && _ttsQueue.Count > 0)
+                if (_ttsTask == null && _ttsQueue.Count > 0)
                 {
                     ttsEndpoint = _ttsEndpoint;
                     ttsMirrorEndpoint = _ttsMirrorEndpoint;
@@ -709,6 +710,7 @@ namespace Reachy.ControlApp
                     LastTranscriptIsFinal = _lastTranscriptIsFinal,
                     LastTranscriptConfidence = _lastTranscriptConfidence,
                     TtsInFlight = _ttsTask != null,
+                    QueuedTtsCount = _ttsQueue.Count,
                     TtsEndpoint = _ttsEndpoint,
                     SuccessfulTtsCount = _successfulTtsCount,
                     FailedTtsCount = _failedTtsCount,
@@ -844,8 +846,10 @@ namespace Reachy.ControlApp
                 lock (_gate)
                 {
                     _failedTtsCount++;
-                    _lastTtsError = ex.Message;
-                    _lastTtsMessage = $"TTS task crashed: {ex.Message}";
+                    _lastTtsError = SanitizeBridgeText(ex.Message);
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(_lastTtsError)
+                        ? "TTS task crashed."
+                        : $"TTS task crashed: {_lastTtsError}";
                     AddLogLocked("tts", "error", _lastTtsMessage);
                 }
                 return;
@@ -853,15 +857,17 @@ namespace Reachy.ControlApp
 
             lock (_gate)
             {
+                string sanitizedMessage = SanitizeBridgeText(result.Message);
+                string sanitizedError = SanitizeBridgeText(result.Error);
                 if (result.Success)
                 {
                     _successfulTtsCount++;
-                    _lastTtsMessage = string.IsNullOrWhiteSpace(result.Message)
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(sanitizedMessage)
                         ? "TTS request sent."
-                        : result.Message;
+                        : sanitizedMessage;
                     if (result.MirrorAttempted && !result.MirrorSuccess)
                     {
-                        _lastTtsError = result.Error;
+                        _lastTtsError = sanitizedError;
                         AddLogLocked("tts", "warn", _lastTtsMessage);
                     }
                     else
@@ -873,10 +879,10 @@ namespace Reachy.ControlApp
                 else
                 {
                     _failedTtsCount++;
-                    _lastTtsError = result.Error;
-                    _lastTtsMessage = string.IsNullOrWhiteSpace(result.Message)
+                    _lastTtsError = sanitizedError;
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(sanitizedMessage)
                         ? "TTS request failed."
-                        : result.Message;
+                        : sanitizedMessage;
                     AddLogLocked("tts", "warn", _lastTtsMessage);
                 }
             }
@@ -1094,7 +1100,7 @@ namespace Reachy.ControlApp
                 using (Stream responseStream = response.GetResponseStream())
                 using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
                 {
-                    string responseBody = reader.ReadToEnd();
+                    string responseBody = SanitizeBridgeText(reader.ReadToEnd());
                     string responseMessage = string.IsNullOrWhiteSpace(responseBody)
                         ? "TTS endpoint accepted speech request."
                         : $"TTS endpoint response: {responseBody}";
@@ -1116,13 +1122,15 @@ namespace Reachy.ControlApp
                     using (Stream responseStream = webEx.Response.GetResponseStream())
                     using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
                     {
-                        string responseText = reader.ReadToEnd();
+                        string responseText = SanitizeBridgeText(reader.ReadToEnd());
                         if (!string.IsNullOrWhiteSpace(responseText))
                         {
                             detail = $"{detail} ({responseText})";
                         }
                     }
                 }
+
+                detail = SanitizeBridgeText(detail);
 
                 return new TtsResult
                 {
@@ -1135,15 +1143,36 @@ namespace Reachy.ControlApp
             }
             catch (Exception ex)
             {
+                string detail = SanitizeBridgeText(ex.Message);
                 return new TtsResult
                 {
                     Success = false,
                     MirrorAttempted = false,
                     MirrorSuccess = false,
                     Message = "TTS request failed.",
-                    Error = ex.Message
+                    Error = detail
                 };
             }
+        }
+
+        private static string SanitizeBridgeText(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder(value.Length);
+            for (int i = 0; i < value.Length; i++)
+            {
+                char character = value[i];
+                if (!char.IsControl(character) || character == '\r' || character == '\n' || character == '\t')
+                {
+                    builder.Append(character);
+                }
+            }
+
+            return builder.ToString().Trim();
         }
 
         private static HelpResult SendHelpRequest(string endpoint, int timeoutMs, HelpRequest requestPayload)
