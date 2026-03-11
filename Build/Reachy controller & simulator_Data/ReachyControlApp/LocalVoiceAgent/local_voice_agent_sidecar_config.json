@@ -8,6 +8,7 @@
     "intent_confidence_threshold": 0.7799999713897705,
     "tts_backend": "pyttsx3",
     "tts_rate": 175,
+    "tts_timeout_seconds": 30.0,
     "tts_voice_name": "",
     "known_poses": [
         "Neutral Arms",

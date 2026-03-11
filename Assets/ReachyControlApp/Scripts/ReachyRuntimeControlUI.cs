@@ -222,6 +222,7 @@ namespace Reachy.ControlApp
         private const float ManualControllerTriggerDeadzone = 0.12f;
         private const float ManualControllerBaseSendIntervalSeconds = 0.1f;
         private const float ManualControllerJointSendIntervalSeconds = 0.1f;
+        private const float ManualControllerActedSequenceCancelDoubleTapWindowSeconds = 0.45f;
         private const int ManualControllerMaxJoystickSlots = 8;
         private const int ManualControllerButtonsPerJoystick = 20;
         private const string ReachySimulationRootObjectName = "Reachy";
@@ -785,6 +786,9 @@ namespace Reachy.ControlApp
         private bool _manualControllerTargetsInitialized;
         private bool _manualControllerBaseWasActiveLastFrame;
         private bool _manualControllerAutoEnableArmed = true;
+        private bool _manualControllerActedSequenceLockActive;
+        private int _manualControllerActedSequenceCancelTapCount;
+        private float _manualControllerActedSequenceLastCancelTapAt = -1f;
         private int _manualControllerLeftArmTargetPoseIndex;
         private int _manualControllerRightArmTargetPoseIndex;
         private Transform _manualControllerSimulationRoot;
@@ -1325,6 +1329,13 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            if (HandleManualControllerActedSequenceInput(
+                _manualControllerSnapshot,
+                _manualControllerPreviousSnapshot))
+            {
+                return;
+            }
+
             if (HasManualControllerMotionIntent(_manualControllerSnapshot))
             {
                 StopActedSequence(
@@ -1372,6 +1383,161 @@ namespace Reachy.ControlApp
                    Mathf.Abs(snapshot.LeftStickY) > 0f ||
                    Mathf.Abs(snapshot.RightStickX) > 0f ||
                    HasAnyManualKeyboardDirectionalInput();
+        }
+
+        private bool HandleManualControllerActedSequenceInput(
+            ManualControllerSnapshot currentSnapshot,
+            ManualControllerSnapshot previousSnapshot)
+        {
+            if (_manualControllerActedSequenceLockActive)
+            {
+                if (!IsActedSequenceActive(ReachyIntroductionActedSequenceName))
+                {
+                    ResetManualControllerActedSequenceLockState();
+                    return false;
+                }
+
+                return HandleManualControllerActedSequenceCancellation(currentSnapshot, previousSnapshot);
+            }
+
+            if (IsActedSequenceActive(ReachyIntroductionActedSequenceName))
+            {
+                return false;
+            }
+
+            bool introTriggerPressed = currentSnapshot.LeftShoulder &&
+                                       currentSnapshot.RightShoulder &&
+                                       (!previousSnapshot.LeftShoulder || !previousSnapshot.RightShoulder);
+            if (!introTriggerPressed)
+            {
+                return false;
+            }
+
+            bool ok = TryStartReachyIntroductionActedSequence(out string message);
+            if (ok)
+            {
+                _manualControllerActedSequenceLockActive = true;
+                _manualControllerActedSequenceCancelTapCount = 0;
+                _manualControllerActedSequenceLastCancelTapAt = -1f;
+                _manualControllerStatus =
+                    $"Controller: started '{ReachyIntroductionActedSequenceName}'. Double-tap any gamepad button to cancel.";
+            }
+            else
+            {
+                _manualControllerStatus = $"Controller intro trigger failed: {message}";
+            }
+
+            return true;
+        }
+
+        private bool HandleManualControllerActedSequenceCancellation(
+            ManualControllerSnapshot currentSnapshot,
+            ManualControllerSnapshot previousSnapshot)
+        {
+            if (_manualControllerActedSequenceCancelTapCount > 0 &&
+                Time.unscaledTime - _manualControllerActedSequenceLastCancelTapAt >
+                ManualControllerActedSequenceCancelDoubleTapWindowSeconds)
+            {
+                _manualControllerActedSequenceCancelTapCount = 0;
+                _manualControllerActedSequenceLastCancelTapAt = -1f;
+            }
+
+            if (DidAnyManualControllerButtonGoDown(currentSnapshot, previousSnapshot))
+            {
+                if (_manualControllerActedSequenceCancelTapCount > 0 &&
+                    Time.unscaledTime - _manualControllerActedSequenceLastCancelTapAt <=
+                    ManualControllerActedSequenceCancelDoubleTapWindowSeconds)
+                {
+                    CancelManualControllerActedSequence();
+                    return true;
+                }
+
+                _manualControllerActedSequenceCancelTapCount = 1;
+                _manualControllerActedSequenceLastCancelTapAt = Time.unscaledTime;
+                _manualControllerStatus =
+                    $"Controller sequence active: press any gamepad button again quickly to cancel '{ReachyIntroductionActedSequenceName}'.";
+                return true;
+            }
+
+            _manualControllerStatus = _manualControllerActedSequenceCancelTapCount > 0
+                ? $"Controller sequence active: press any gamepad button again quickly to cancel '{ReachyIntroductionActedSequenceName}'."
+                : $"Controller sequence active: '{ReachyIntroductionActedSequenceName}' is running. Double-tap any gamepad button to cancel.";
+            return true;
+        }
+
+        private void CancelManualControllerActedSequence()
+        {
+            StopActedSequence(
+                updateStatus: false,
+                reason: "Canceled from Manual Control after a double button press.");
+
+            bool neutralOk = false;
+            string neutralMessage = "Robot is not connected.";
+            if (_client != null && _client.IsConnected)
+            {
+                neutralOk = _client.SendNeutralArmsPreset(out neutralMessage);
+                if (neutralOk)
+                {
+                    ResetManualControllerTargetsToDefaults();
+                }
+            }
+
+            string message = neutralOk
+                ? $"Acted sequence '{ReachyIntroductionActedSequenceName}' was canceled from Manual Control and returned to '{VoiceHelloReturnPoseName}'."
+                : $"Acted sequence '{ReachyIntroductionActedSequenceName}' was canceled from Manual Control, but returning to '{VoiceHelloReturnPoseName}' failed. {neutralMessage}";
+            _manualControllerStatus = neutralOk
+                ? $"Controller: canceled '{ReachyIntroductionActedSequenceName}' and sent {VoiceHelloReturnPoseName}."
+                : $"Controller: canceled '{ReachyIntroductionActedSequenceName}', but neutral pose failed. {neutralMessage}";
+            SetStatus("Acted sequence canceled", message);
+        }
+
+        private void ResetManualControllerActedSequenceLockState()
+        {
+            _manualControllerActedSequenceLockActive = false;
+            _manualControllerActedSequenceCancelTapCount = 0;
+            _manualControllerActedSequenceLastCancelTapAt = -1f;
+        }
+
+        private static bool DidAnyManualControllerButtonGoDown(
+            ManualControllerSnapshot currentSnapshot,
+            ManualControllerSnapshot previousSnapshot)
+        {
+            return DidManualControllerButtonGoDown(currentSnapshot.A, previousSnapshot.A) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.B, previousSnapshot.B) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.X, previousSnapshot.X) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.Y, previousSnapshot.Y) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.LeftShoulder, previousSnapshot.LeftShoulder) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.RightShoulder, previousSnapshot.RightShoulder) ||
+                   DidManualControllerTriggerGoDown(currentSnapshot.LeftTrigger, previousSnapshot.LeftTrigger) ||
+                   DidManualControllerTriggerGoDown(currentSnapshot.RightTrigger, previousSnapshot.RightTrigger) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.LeftStickButton, previousSnapshot.LeftStickButton) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.RightStickButton, previousSnapshot.RightStickButton) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.Back, previousSnapshot.Back) ||
+                   DidManualControllerButtonGoDown(currentSnapshot.Start, previousSnapshot.Start) ||
+                   DidManualControllerDirectionGoDown(currentSnapshot.DPadX, previousSnapshot.DPadX, negativeDirection: true) ||
+                   DidManualControllerDirectionGoDown(currentSnapshot.DPadX, previousSnapshot.DPadX, negativeDirection: false) ||
+                   DidManualControllerDirectionGoDown(currentSnapshot.DPadY, previousSnapshot.DPadY, negativeDirection: true) ||
+                   DidManualControllerDirectionGoDown(currentSnapshot.DPadY, previousSnapshot.DPadY, negativeDirection: false);
+        }
+
+        private static bool DidManualControllerButtonGoDown(bool currentValue, bool previousValue)
+        {
+            return currentValue && !previousValue;
+        }
+
+        private static bool DidManualControllerTriggerGoDown(float currentValue, float previousValue)
+        {
+            return currentValue > 0f && previousValue <= 0f;
+        }
+
+        private static bool DidManualControllerDirectionGoDown(
+            float currentValue,
+            float previousValue,
+            bool negativeDirection)
+        {
+            return negativeDirection
+                ? currentValue < 0f && previousValue >= 0f
+                : currentValue > 0f && previousValue <= 0f;
         }
 
         private void EnsureManualControllerTargetsInitialized(bool forceResync = false)
@@ -6241,6 +6407,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("A / B: open and close both grippers.");
             GUILayout.Label("X / Y: tilt the head left and right.");
             GUILayout.Label("Back: switch left/right eye camera. Start: send Neutral Arms.");
+            GUILayout.Label("Hold L1 + R1 together: start the Reachy introduction. While it runs, manual controls pause until it finishes or you double-tap any gamepad button to cancel back to Neutral Arms.");
         }
 
         private void DrawManualControlRightPanel(Rect area)
@@ -7444,6 +7611,7 @@ namespace Reachy.ControlApp
             _actedSequenceCoroutine = null;
             _activeActedSequenceName = string.Empty;
             _actedSequenceRequestingTtsSidecar = false;
+            ResetManualControllerActedSequenceLockState();
         }
 
         private bool ShouldActedSequencePrepareLocalTtsSidecar()
