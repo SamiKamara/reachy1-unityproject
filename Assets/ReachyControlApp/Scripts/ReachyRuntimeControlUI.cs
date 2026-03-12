@@ -97,6 +97,10 @@ namespace Reachy.ControlApp
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
         private const int DefaultRobotSpeakerTtsPort = 8101;
+        private const int RobotSpeakerFallbackTtsPort = 8099;
+        private const int RobotSpeakerHealthProbeTimeoutMs = 1200;
+        private const float RobotSpeakerHealthProbeRetrySeconds = 20f;
+        private const float RobotSpeakerHealthProbeRefreshSeconds = 45f;
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private static readonly string[] DefaultSidecarKnownPoses =
@@ -694,6 +698,10 @@ namespace Reachy.ControlApp
         [SerializeField] private float localAiAgentTtsMinIntervalSeconds = 0.35f;
         [SerializeField] private bool localAiAgentMirrorTtsToRobotSpeaker = true;
         [SerializeField] private int localAiAgentRobotSpeakerPort = DefaultRobotSpeakerTtsPort;
+        [SerializeField] private string robotSshUser = "reachy";
+        [SerializeField] private string robotSshPassword = "reachy";
+        [SerializeField] private string robotSshRemoteProjectRoot = "~/reachy1-unityproject";
+        [SerializeField] private bool robotSshShowPassword;
         [SerializeField] private bool localAiAgentEnablePushToTalk;
         [SerializeField] private string localAiAgentPushToTalkKey = "V";
         [SerializeField] private bool localAiAgentListeningEnabled = true;
@@ -858,6 +866,22 @@ namespace Reachy.ControlApp
         private string _localAiAgentSidecarStatus = "Sidecar auto-start idle.";
         private System.Diagnostics.Process _localAiAgentSidecarProcess;
         private Task<SidecarProbeResult> _localAiAgentSidecarProbeTask;
+        private Task<RobotSpeakerProbeResult> _robotSpeakerProbeTask;
+        private float _nextRobotSpeakerProbeAt;
+        private string _robotSpeakerProbeHost = string.Empty;
+        private int _robotSpeakerProbeRequestedPort;
+        private string _robotSpeakerResolvedTtsEndpoint = string.Empty;
+        private string _robotSpeakerResolvedAudioEndpoint = string.Empty;
+        private string _robotSpeakerResolvedStopEndpoint = string.Empty;
+        private string _robotSpeakerMirrorStatus = "Robot speaker mirror idle.";
+        private string _robotSpeakerMirrorResolution = string.Empty;
+        private bool _robotSpeakerAudioMirrorAvailable;
+        private bool _robotSpeakerProbeHasResult;
+        private string _robotSpeakerLastProbeLogKey = string.Empty;
+        private string _robotSpeakerHelperStatus = "Robot speaker helper idle.";
+        private string _robotSpeakerHelperLogPath = string.Empty;
+        private int _voiceLastHandledTtsSuccessCount;
+        private int _voiceLastHandledTtsFailureCount;
         private bool _sidecarShutdownCleanupDone;
 
         private struct SidecarProbeResult
@@ -870,6 +894,23 @@ namespace Reachy.ControlApp
             public string Error;
         }
 
+        private struct RobotSpeakerProbeResult
+        {
+            public bool Reachable;
+            public bool AudioMirrorAvailable;
+            public string RequestedHost;
+            public int RequestedPort;
+            public int ResolvedPort;
+            public string ServiceKind;
+            public string ResolvedTtsEndpoint;
+            public string ResolvedAudioEndpoint;
+            public string ResolvedStopEndpoint;
+            public string Message;
+            public string Error;
+            public string HealthSummary;
+            public string CandidateSummary;
+        }
+
         [Serializable]
         private sealed class SidecarHealthEnvelope
         {
@@ -879,6 +920,19 @@ namespace Reachy.ControlApp
             public bool tts_speaking;
             public int selected_input_device_index = -1;
             public string selected_input_device_name = string.Empty;
+            public string last_error = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class RobotSpeakerHealthEnvelope
+        {
+            public bool ok = true;
+            public string backend = string.Empty;
+            public string audio_backend = string.Empty;
+            public bool speaking;
+            public bool tts_speaking;
+            public string stt_backend = string.Empty;
+            public string last_message = string.Empty;
             public string last_error = string.Empty;
         }
 
@@ -1023,6 +1077,18 @@ namespace Reachy.ControlApp
                 Mathf.Max(0.05f, localAiAgentDuplicateCommandWindowSeconds);
             localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, localAiAgentTtsMinIntervalSeconds);
             localAiAgentRobotSpeakerPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            if (string.IsNullOrWhiteSpace(robotSshUser))
+            {
+                robotSshUser = "reachy";
+            }
+            if (string.IsNullOrWhiteSpace(robotSshPassword))
+            {
+                robotSshPassword = "reachy";
+            }
+            if (string.IsNullOrWhiteSpace(robotSshRemoteProjectRoot))
+            {
+                robotSshRemoteProjectRoot = "~/reachy1-unityproject";
+            }
             localAiAgentHeartbeatTimeoutSeconds = Mathf.Max(0.5f, localAiAgentHeartbeatTimeoutSeconds);
             localAiAgentRetryBackoffMinSeconds = Mathf.Max(0.05f, localAiAgentRetryBackoffMinSeconds);
             localAiAgentRetryBackoffMaxSeconds = Mathf.Max(
@@ -1123,6 +1189,7 @@ namespace Reachy.ControlApp
             StopMicTestRecordingSilently();
             CleanupAllSidecarsOnShutdown("UI destroyed");
             _localAiAgentSidecarProbeTask = null;
+            _robotSpeakerProbeTask = null;
 
             _client?.Dispose();
             _client = null;
@@ -1140,6 +1207,7 @@ namespace Reachy.ControlApp
         private void Update()
         {
             UpdateCameraPreview();
+            UpdateRobotSpeakerMirrorDiagnostics();
             UpdateLocalAiAgent();
             UpdateManualController();
 
@@ -2846,6 +2914,18 @@ namespace Reachy.ControlApp
                 }
             }
 
+            if (bridgeSnapshot.SuccessfulTtsCount > _voiceLastHandledTtsSuccessCount)
+            {
+                _voiceLastHandledTtsSuccessCount = bridgeSnapshot.SuccessfulTtsCount;
+                LogVoiceBridgeTtsRuntimeEvent(bridgeSnapshot, success: true);
+            }
+
+            if (bridgeSnapshot.FailedTtsCount > _voiceLastHandledTtsFailureCount)
+            {
+                _voiceLastHandledTtsFailureCount = bridgeSnapshot.FailedTtsCount;
+                LogVoiceBridgeTtsRuntimeEvent(bridgeSnapshot, success: false);
+            }
+
             int processedThisFrame = 0;
             while (_voiceAgentBridge.TryDequeueIntent(out VoiceAgentIntent incomingIntent))
             {
@@ -2858,6 +2938,52 @@ namespace Reachy.ControlApp
             }
 
             RefreshVoiceAgentStatusState();
+        }
+
+        private void LogVoiceBridgeTtsRuntimeEvent(VoiceAgentBridge.BridgeSnapshot snapshot, bool success)
+        {
+            string message = NormalizeLogText(snapshot.LastTtsMessage);
+            string error = NormalizeLogText(snapshot.LastTtsError);
+            if (string.IsNullOrWhiteSpace(message) && string.IsNullOrWhiteSpace(error))
+            {
+                return;
+            }
+
+            bool mirrorRelated =
+                message.IndexOf("robot speaker mirror", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                error.IndexOf("robot speaker mirror", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                error.IndexOf(":8101", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                error.IndexOf(":8099", StringComparison.OrdinalIgnoreCase) >= 0;
+            string category = mirrorRelated ? "robot-speaker" : "voice";
+            string title;
+            string severity;
+            if (mirrorRelated)
+            {
+                title = success
+                    ? (string.IsNullOrWhiteSpace(error) ? "tts-mirror-accepted" : "tts-mirror-warning")
+                    : "tts-mirror-failed";
+                severity = success && string.IsNullOrWhiteSpace(error) ? "INFO" : "WARN";
+                _robotSpeakerMirrorStatus = string.IsNullOrWhiteSpace(message)
+                    ? _robotSpeakerMirrorStatus
+                    : message;
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    _robotSpeakerMirrorResolution = error;
+                }
+            }
+            else
+            {
+                title = success ? "tts-request-accepted" : "tts-request-failed";
+                severity = success ? "INFO" : "WARN";
+            }
+
+            string detail = $"message={message}";
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                detail += $"; error={error}";
+            }
+
+            LogRuntimeEvent(category, title, detail, severity);
         }
 
         private void HandleIncomingVoiceIntent(VoiceAgentIntent incomingIntent)
@@ -5467,12 +5593,161 @@ namespace Reachy.ControlApp
             return resolved;
         }
 
+        private void UpdateRobotSpeakerMirrorDiagnostics()
+        {
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
+            {
+                ResetRobotSpeakerMirrorProbeState("Robot speaker mirror idle.");
+                return;
+            }
+
+            string host = GetRobotSpeakerMirrorHost();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                ResetRobotSpeakerMirrorProbeState("Robot speaker mirror is waiting for a robot host.");
+                return;
+            }
+
+            int requestedPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            bool targetChanged =
+                !string.Equals(_robotSpeakerProbeHost, host, StringComparison.OrdinalIgnoreCase) ||
+                _robotSpeakerProbeRequestedPort != requestedPort;
+            if (targetChanged)
+            {
+                _robotSpeakerProbeHost = host;
+                _robotSpeakerProbeRequestedPort = requestedPort;
+                _robotSpeakerProbeHasResult = false;
+                ClearRobotSpeakerResolvedEndpoints();
+                _nextRobotSpeakerProbeAt = 0f;
+                _robotSpeakerMirrorStatus = $"Robot speaker mirror target set to {host}:{requestedPort}.";
+                _robotSpeakerMirrorResolution = BuildRobotSpeakerTtsMirrorEndpointPreview();
+            }
+
+            if (_robotSpeakerProbeTask != null && _robotSpeakerProbeTask.IsCompleted)
+            {
+                ConsumeRobotSpeakerProbeResult(_robotSpeakerProbeTask);
+                _robotSpeakerProbeTask = null;
+            }
+
+            if (_robotSpeakerProbeTask != null || Time.unscaledTime < _nextRobotSpeakerProbeAt)
+            {
+                return;
+            }
+
+            _robotSpeakerProbeTask = Task.Run(() =>
+                ProbeRobotSpeakerMirrorEndpoints(host, requestedPort, RobotSpeakerHealthProbeTimeoutMs));
+        }
+
+        private void ResetRobotSpeakerMirrorProbeState(string message)
+        {
+            _robotSpeakerProbeTask = null;
+            _nextRobotSpeakerProbeAt = 0f;
+            _robotSpeakerProbeHost = string.Empty;
+            _robotSpeakerProbeRequestedPort = 0;
+            _robotSpeakerProbeHasResult = false;
+            ClearRobotSpeakerResolvedEndpoints();
+            _robotSpeakerMirrorStatus = string.IsNullOrWhiteSpace(message)
+                ? "Robot speaker mirror idle."
+                : message;
+            _robotSpeakerMirrorResolution = string.Empty;
+        }
+
+        private void ClearRobotSpeakerResolvedEndpoints()
+        {
+            _robotSpeakerResolvedTtsEndpoint = string.Empty;
+            _robotSpeakerResolvedAudioEndpoint = string.Empty;
+            _robotSpeakerResolvedStopEndpoint = string.Empty;
+            _robotSpeakerAudioMirrorAvailable = false;
+        }
+
+        private void ConsumeRobotSpeakerProbeResult(Task<RobotSpeakerProbeResult> completedTask)
+        {
+            RobotSpeakerProbeResult result;
+            try
+            {
+                result = completedTask.Result;
+            }
+            catch (Exception ex)
+            {
+                ClearRobotSpeakerResolvedEndpoints();
+                _robotSpeakerProbeHasResult = true;
+                _robotSpeakerMirrorStatus = "Robot speaker mirror probe crashed.";
+                _robotSpeakerMirrorResolution = NormalizeLogText(ex.Message);
+                _nextRobotSpeakerProbeAt = Time.unscaledTime + RobotSpeakerHealthProbeRetrySeconds;
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    "probe-crashed",
+                    $"detail={_robotSpeakerMirrorResolution}",
+                    "ERROR");
+                return;
+            }
+
+            _robotSpeakerProbeHasResult = true;
+            ClearRobotSpeakerResolvedEndpoints();
+            if (result.Reachable)
+            {
+                _robotSpeakerResolvedTtsEndpoint = result.ResolvedTtsEndpoint ?? string.Empty;
+                _robotSpeakerResolvedAudioEndpoint = result.ResolvedAudioEndpoint ?? string.Empty;
+                _robotSpeakerResolvedStopEndpoint = result.ResolvedStopEndpoint ?? string.Empty;
+                _robotSpeakerAudioMirrorAvailable = result.AudioMirrorAvailable;
+                _robotSpeakerMirrorStatus = string.IsNullOrWhiteSpace(result.Message)
+                    ? "Robot speaker mirror endpoint is reachable."
+                    : result.Message;
+                _robotSpeakerMirrorResolution = string.IsNullOrWhiteSpace(result.HealthSummary)
+                    ? result.CandidateSummary
+                    : result.HealthSummary;
+                _nextRobotSpeakerProbeAt = Time.unscaledTime + RobotSpeakerHealthProbeRefreshSeconds;
+            }
+            else
+            {
+                _robotSpeakerMirrorStatus = string.IsNullOrWhiteSpace(result.Message)
+                    ? "Robot speaker mirror endpoint is unreachable."
+                    : result.Message;
+                _robotSpeakerMirrorResolution = string.IsNullOrWhiteSpace(result.CandidateSummary)
+                    ? result.Error
+                    : result.CandidateSummary;
+                _nextRobotSpeakerProbeAt = Time.unscaledTime + RobotSpeakerHealthProbeRetrySeconds;
+            }
+
+            string logDetail =
+                $"requested={result.RequestedHost}:{result.RequestedPort}; " +
+                $"resolvedPort={(result.ResolvedPort > 0 ? result.ResolvedPort.ToString(CultureInfo.InvariantCulture) : "none")}; " +
+                $"service={result.ServiceKind}; audioSupported={result.AudioMirrorAvailable}; " +
+                $"message={result.Message}; health={result.HealthSummary}; " +
+                $"error={result.Error}; candidates={result.CandidateSummary}";
+            string logKey =
+                $"{result.RequestedHost}|{result.RequestedPort}|{result.ResolvedPort}|{result.ServiceKind}|{result.AudioMirrorAvailable}|{result.Message}|{result.Error}|{result.CandidateSummary}";
+            if (!string.Equals(logKey, _robotSpeakerLastProbeLogKey, StringComparison.Ordinal))
+            {
+                _robotSpeakerLastProbeLogKey = logKey;
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    result.Reachable ? "probe-ok" : "probe-failed",
+                    logDetail,
+                    result.Reachable ? "INFO" : "WARN");
+            }
+        }
+
         private string BuildRobotSpeakerTtsMirrorEndpoint()
         {
             ReachyControlMode activeMode = _connectedMode ?? mode;
             if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
             {
                 return string.Empty;
+            }
+
+            if (HasResolvedRobotSpeakerProbeForCurrentTarget())
+            {
+                if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedTtsEndpoint))
+                {
+                    return _robotSpeakerResolvedTtsEndpoint;
+                }
+
+                if (_robotSpeakerProbeHasResult)
+                {
+                    return string.Empty;
+                }
             }
 
             return BuildRobotSpeakerTtsMirrorEndpointPreview();
@@ -5486,6 +5761,19 @@ namespace Reachy.ControlApp
                 return string.Empty;
             }
 
+            if (HasResolvedRobotSpeakerProbeForCurrentTarget())
+            {
+                if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedAudioEndpoint))
+                {
+                    return _robotSpeakerResolvedAudioEndpoint;
+                }
+
+                if (_robotSpeakerProbeHasResult)
+                {
+                    return string.Empty;
+                }
+            }
+
             return BuildRobotSpeakerMirrorEndpointPreview(RobotSpeakerAudioMirrorPath);
         }
 
@@ -5497,7 +5785,45 @@ namespace Reachy.ControlApp
                 return string.Empty;
             }
 
+            if (HasResolvedRobotSpeakerProbeForCurrentTarget())
+            {
+                if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedStopEndpoint))
+                {
+                    return _robotSpeakerResolvedStopEndpoint;
+                }
+
+                if (_robotSpeakerProbeHasResult)
+                {
+                    return string.Empty;
+                }
+            }
+
             return BuildRobotSpeakerMirrorEndpointPreview(RobotSpeakerStopPath);
+        }
+
+        private bool HasResolvedRobotSpeakerProbeForCurrentTarget()
+        {
+            string host = GetRobotSpeakerMirrorHost();
+            int requestedPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            return _robotSpeakerProbeHasResult &&
+                   string.Equals(_robotSpeakerProbeHost, host, StringComparison.OrdinalIgnoreCase) &&
+                   _robotSpeakerProbeRequestedPort == requestedPort;
+        }
+
+        private string GetRobotSpeakerMirrorHost()
+        {
+            string host = (robotHost ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                return string.Empty;
+            }
+
+            if (Uri.TryCreate(host, UriKind.Absolute, out Uri absoluteUri))
+            {
+                return absoluteUri.Host ?? string.Empty;
+            }
+
+            return host;
         }
 
         private string BuildRobotSpeakerTtsMirrorEndpointPreview()
@@ -5507,34 +5833,491 @@ namespace Reachy.ControlApp
 
         private string BuildRobotSpeakerMirrorEndpointPreview(string path)
         {
-            string host = (robotHost ?? string.Empty).Trim();
+            string host = GetRobotSpeakerMirrorHost();
             if (string.IsNullOrWhiteSpace(host))
             {
                 return string.Empty;
             }
 
             int port = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            return BuildAbsoluteHttpEndpoint(host, port, path);
+        }
+
+        private static string BuildAbsoluteHttpEndpoint(string host, int port, string path)
+        {
+            string trimmedHost = (host ?? string.Empty).Trim();
+            string trimmedPath = string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim().TrimStart('/');
+            if (string.IsNullOrWhiteSpace(trimmedHost))
+            {
+                return string.Empty;
+            }
+
+            int safePort = Math.Max(1, Math.Min(65535, port));
 
             try
             {
-                if (Uri.TryCreate(host, UriKind.Absolute, out Uri absoluteUri))
+                if (Uri.TryCreate(trimmedHost, UriKind.Absolute, out Uri absoluteUri))
                 {
                     var builder = new UriBuilder(absoluteUri)
                     {
-                        Port = port,
-                        Path = path,
+                        Host = absoluteUri.Host,
+                        Port = safePort,
+                        Path = trimmedPath,
                         Query = string.Empty,
                         Fragment = string.Empty
                     };
                     return builder.Uri.AbsoluteUri;
                 }
 
-                return new UriBuilder(Uri.UriSchemeHttp, host, port, path).Uri.AbsoluteUri;
+                return new UriBuilder(Uri.UriSchemeHttp, trimmedHost, safePort, trimmedPath).Uri.AbsoluteUri;
             }
             catch
             {
                 return string.Empty;
             }
+        }
+
+        private static RobotSpeakerProbeResult ProbeRobotSpeakerMirrorEndpoints(
+            string host,
+            int requestedPort,
+            int timeoutMs)
+        {
+            string trimmedHost = (host ?? string.Empty).Trim();
+            int safeRequestedPort = Math.Max(1, Math.Min(65535, requestedPort));
+            var candidateSummaries = new List<string>();
+            int[] candidatePorts = BuildRobotSpeakerProbePorts(safeRequestedPort);
+            for (int i = 0; i < candidatePorts.Length; i++)
+            {
+                int candidatePort = candidatePorts[i];
+                string healthEndpoint = BuildAbsoluteHttpEndpoint(trimmedHost, candidatePort, "health");
+                if (string.IsNullOrWhiteSpace(healthEndpoint))
+                {
+                    candidateSummaries.Add($"{candidatePort}=invalid-endpoint");
+                    continue;
+                }
+
+                if (!TryReadRobotSpeakerHealth(
+                    healthEndpoint,
+                    timeoutMs,
+                    out RobotSpeakerHealthEnvelope health,
+                    out string responseText,
+                    out string error))
+                {
+                    candidateSummaries.Add($"{candidatePort}=unreachable({NormalizeLogText(error)})");
+                    continue;
+                }
+
+                string serviceKind = DetectRobotSpeakerServiceKind(responseText, health);
+                if (string.Equals(serviceKind, "unknown-http", StringComparison.Ordinal) ||
+                    string.Equals(serviceKind, "http-health", StringComparison.Ordinal))
+                {
+                    candidateSummaries.Add($"{candidatePort}=unsupported({serviceKind})");
+                    continue;
+                }
+
+                bool audioMirrorAvailable =
+                    string.Equals(serviceKind, "robot-speaker-server", StringComparison.Ordinal) &&
+                    ContainsJsonField(responseText, "audio_backend") &&
+                    !string.IsNullOrWhiteSpace(health.audio_backend) &&
+                    !string.Equals(health.audio_backend.Trim(), "unavailable", StringComparison.OrdinalIgnoreCase);
+                string ttsEndpoint = BuildAbsoluteHttpEndpoint(trimmedHost, candidatePort, RobotSpeakerTtsMirrorPath);
+                string audioEndpoint = audioMirrorAvailable
+                    ? BuildAbsoluteHttpEndpoint(trimmedHost, candidatePort, RobotSpeakerAudioMirrorPath)
+                    : string.Empty;
+                string stopEndpoint = audioMirrorAvailable
+                    ? BuildAbsoluteHttpEndpoint(trimmedHost, candidatePort, RobotSpeakerStopPath)
+                    : string.Empty;
+                candidateSummaries.Add($"{candidatePort}=ok({serviceKind})");
+                return new RobotSpeakerProbeResult
+                {
+                    Reachable = true,
+                    AudioMirrorAvailable = audioMirrorAvailable,
+                    RequestedHost = trimmedHost,
+                    RequestedPort = safeRequestedPort,
+                    ResolvedPort = candidatePort,
+                    ServiceKind = serviceKind,
+                    ResolvedTtsEndpoint = ttsEndpoint,
+                    ResolvedAudioEndpoint = audioEndpoint,
+                    ResolvedStopEndpoint = stopEndpoint,
+                    Message = BuildRobotSpeakerReachableMessage(
+                        candidatePort,
+                        safeRequestedPort,
+                        serviceKind,
+                        audioMirrorAvailable,
+                        health),
+                    Error = string.Empty,
+                    HealthSummary = BuildRobotSpeakerHealthSummary(candidatePort, serviceKind, health),
+                    CandidateSummary = string.Join(" | ", candidateSummaries.ToArray())
+                };
+            }
+
+            return new RobotSpeakerProbeResult
+            {
+                Reachable = false,
+                AudioMirrorAvailable = false,
+                RequestedHost = trimmedHost,
+                RequestedPort = safeRequestedPort,
+                ResolvedPort = 0,
+                ServiceKind = "none",
+                ResolvedTtsEndpoint = string.Empty,
+                ResolvedAudioEndpoint = string.Empty,
+                ResolvedStopEndpoint = string.Empty,
+                Message = $"No reachable robot speaker mirror endpoint on {trimmedHost}.",
+                Error =
+                    "Stock Reachy 2021 does not expose one by default. Start the included " +
+                    "reachy_robot_speaker_server.py on the robot, or run the local voice sidecar there " +
+                    "for TTS-only mirroring.",
+                HealthSummary = string.Empty,
+                CandidateSummary = string.Join(" | ", candidateSummaries.ToArray())
+            };
+        }
+
+        private static int[] BuildRobotSpeakerProbePorts(int requestedPort)
+        {
+            var ports = new List<int>(2)
+            {
+                Math.Max(1, Math.Min(65535, requestedPort))
+            };
+            if (requestedPort != RobotSpeakerFallbackTtsPort)
+            {
+                ports.Add(RobotSpeakerFallbackTtsPort);
+            }
+
+            return ports.ToArray();
+        }
+
+        private static bool TryReadRobotSpeakerHealth(
+            string endpoint,
+            int timeoutMs,
+            out RobotSpeakerHealthEnvelope health,
+            out string responseText,
+            out string error)
+        {
+            health = new RobotSpeakerHealthEnvelope();
+            responseText = string.Empty;
+            error = string.Empty;
+
+            try
+            {
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "GET";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.Accept = "application/json";
+                request.Proxy = null;
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    responseText = reader.ReadToEnd();
+                }
+
+                if (string.IsNullOrWhiteSpace(responseText))
+                {
+                    error = $"endpoint={endpoint}; health response was empty";
+                    return false;
+                }
+
+                try
+                {
+                    RobotSpeakerHealthEnvelope parsed = JsonUtility.FromJson<RobotSpeakerHealthEnvelope>(responseText);
+                    if (parsed != null)
+                    {
+                        health = parsed;
+                    }
+                }
+                catch (Exception jsonEx)
+                {
+                    error = $"endpoint={endpoint}; invalid health JSON: {NormalizeLogText(jsonEx.Message)}";
+                    return false;
+                }
+
+                return true;
+            }
+            catch (WebException webEx)
+            {
+                error = FormatRobotSpeakerProbeError(endpoint, webEx);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = $"endpoint={endpoint}; {NormalizeLogText(ex.Message)}";
+                return false;
+            }
+        }
+
+        private static string FormatRobotSpeakerProbeError(string endpoint, WebException webEx)
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(endpoint))
+            {
+                parts.Add($"endpoint={NormalizeLogText(endpoint)}");
+            }
+
+            if (webEx != null)
+            {
+                if (webEx.Status != WebExceptionStatus.Success)
+                {
+                    parts.Add($"status={webEx.Status}");
+                }
+
+                string message = NormalizeLogText(webEx.Message);
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    parts.Add(message);
+                }
+
+                if (webEx.Response is HttpWebResponse httpResponse)
+                {
+                    parts.Add($"http={(int)httpResponse.StatusCode} {httpResponse.StatusCode}");
+                }
+
+                string responseText = ReadRobotSpeakerProbeResponseBody(webEx.Response);
+                if (!string.IsNullOrWhiteSpace(responseText))
+                {
+                    parts.Add($"body={responseText}");
+                }
+            }
+
+            return string.Join("; ", parts.ToArray());
+        }
+
+        private static string ReadRobotSpeakerProbeResponseBody(WebResponse response)
+        {
+            if (response == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    return NormalizeLogText(reader.ReadToEnd());
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string DetectRobotSpeakerServiceKind(string responseText, RobotSpeakerHealthEnvelope health)
+        {
+            if (ContainsJsonField(responseText, "audio_backend") || !string.IsNullOrWhiteSpace(health.backend))
+            {
+                return "robot-speaker-server";
+            }
+
+            if (ContainsJsonField(responseText, "stt_backend") ||
+                ContainsJsonField(responseText, "tts_speaking") ||
+                ContainsJsonField(responseText, "mic_active"))
+            {
+                return "voice-sidecar";
+            }
+
+            if (ContainsJsonField(responseText, "last_message") || ContainsJsonField(responseText, "last_error"))
+            {
+                return "http-health";
+            }
+
+            return "unknown-http";
+        }
+
+        private static bool ContainsJsonField(string json, string fieldName)
+        {
+            if (string.IsNullOrWhiteSpace(json) || string.IsNullOrWhiteSpace(fieldName))
+            {
+                return false;
+            }
+
+            return json.IndexOf(
+                       "\"" + fieldName.Trim() + "\"",
+                       StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string BuildRobotSpeakerReachableMessage(
+            int resolvedPort,
+            int requestedPort,
+            string serviceKind,
+            bool audioMirrorAvailable,
+            RobotSpeakerHealthEnvelope health)
+        {
+            bool usingFallbackPort = resolvedPort != requestedPort;
+            if (string.Equals(serviceKind, "robot-speaker-server", StringComparison.Ordinal))
+            {
+                string prefix = usingFallbackPort
+                    ? $"Robot speaker server fallback is reachable on port {resolvedPort}."
+                    : $"Robot speaker server is reachable on port {resolvedPort}.";
+                if (audioMirrorAvailable)
+                {
+                    return $"{prefix} TTS and mirrored audio clips are available.";
+                }
+
+                string audioBackend = string.IsNullOrWhiteSpace(health.audio_backend)
+                    ? "unavailable"
+                    : health.audio_backend.Trim();
+                return $"{prefix} TTS mirroring is available, but mirrored audio clips are unavailable because audio_backend='{audioBackend}'.";
+            }
+
+            if (string.Equals(serviceKind, "voice-sidecar", StringComparison.Ordinal))
+            {
+                string prefix = usingFallbackPort
+                    ? $"Voice sidecar fallback is reachable on port {resolvedPort}."
+                    : $"Voice sidecar is reachable on port {resolvedPort}.";
+                return $"{prefix} Using it for TTS-only mirroring; audio clip mirroring still needs reachy_robot_speaker_server.py.";
+            }
+
+            return $"A health endpoint is reachable on port {resolvedPort}, but it does not look like a supported robot speaker service.";
+        }
+
+        private static string BuildRobotSpeakerHealthSummary(
+            int resolvedPort,
+            string serviceKind,
+            RobotSpeakerHealthEnvelope health)
+        {
+            if (string.Equals(serviceKind, "robot-speaker-server", StringComparison.Ordinal))
+            {
+                return
+                    $"port={resolvedPort}; backend={NormalizeLogText(health.backend)}; " +
+                    $"audioBackend={NormalizeLogText(health.audio_backend)}; " +
+                    $"lastMessage={NormalizeLogText(health.last_message)}; " +
+                    $"lastError={NormalizeLogText(health.last_error)}";
+            }
+
+            if (string.Equals(serviceKind, "voice-sidecar", StringComparison.Ordinal))
+            {
+                return
+                    $"port={resolvedPort}; sttBackend={NormalizeLogText(health.stt_backend)}; " +
+                    $"ttsSpeaking={health.tts_speaking}; lastMessage={NormalizeLogText(health.last_message)}; " +
+                    $"lastError={NormalizeLogText(health.last_error)}";
+            }
+
+            return $"port={resolvedPort}; lastMessage={NormalizeLogText(health.last_message)}; lastError={NormalizeLogText(health.last_error)}";
+        }
+
+        private string GetRobotSpeakerMirrorStatusForUi()
+        {
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (!localAiAgentMirrorTtsToRobotSpeaker)
+            {
+                return "Robot speaker mirroring is disabled.";
+            }
+
+            if (activeMode != ReachyControlMode.RealRobot)
+            {
+                return "Robot speaker mirroring activates only in Real Robot mode.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerMirrorStatus))
+            {
+                return _robotSpeakerMirrorStatus;
+            }
+
+            return "Robot speaker mirror probe has not completed yet.";
+        }
+
+        private bool TryLaunchRobotSpeakerServerHelper(out string message)
+        {
+            message = string.Empty;
+#if !(UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN)
+            message = "Robot speaker helper launch is currently supported only on Windows builds.";
+            return false;
+#else
+            string host = GetRobotSpeakerMirrorHost();
+            if (string.IsNullOrWhiteSpace(host))
+            {
+                message = "Robot speaker helper needs a real robot host first.";
+                return false;
+            }
+
+            string scriptPath = ResolveLocalAssetRelativePath(
+                "ReachyControlApp/LocalVoiceAgent/start_reachy_robot_speaker_server.ps1");
+            if (string.IsNullOrWhiteSpace(scriptPath) || !File.Exists(scriptPath))
+            {
+                message = $"Robot speaker helper script not found: {scriptPath}";
+                return false;
+            }
+
+            string user = string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim();
+            string password = (robotSshPassword ?? string.Empty).Trim();
+            string remoteProjectRoot = string.IsNullOrWhiteSpace(robotSshRemoteProjectRoot)
+                ? "~/reachy1-unityproject"
+                : robotSshRemoteProjectRoot.Trim();
+            string localLogPath = Path.Combine(
+                Path.GetDirectoryName(scriptPath) ?? Application.dataPath,
+                "start_reachy_robot_speaker_server_last_run.log");
+
+            string command =
+                "& '" + EscapePowerShellSingleQuotedString(scriptPath) + "'" +
+                " -ReachyHost '" + EscapePowerShellSingleQuotedString(host) + "'" +
+                " -ReachyUser '" + EscapePowerShellSingleQuotedString(user) + "'" +
+                " -RemoteProjectRoot '" + EscapePowerShellSingleQuotedString(remoteProjectRoot) + "'" +
+                " -Port " + Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535).ToString(CultureInfo.InvariantCulture) +
+                " -TtsBackend 'auto'" +
+                " -LocalLogPath '" + EscapePowerShellSingleQuotedString(localLogPath) + "'";
+            if (string.IsNullOrWhiteSpace(password))
+            {
+                command += " -PromptForPassword";
+            }
+            else
+            {
+                command += " -ReachyPassword '" + EscapePowerShellSingleQuotedString(password) + "'";
+            }
+
+            string powershellArguments =
+                "-NoProfile -ExecutionPolicy Bypass -Command \"" +
+                command.Replace("\"", "`\"") +
+                "\"";
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "powershell",
+                Arguments = powershellArguments,
+                WorkingDirectory = Path.GetDirectoryName(scriptPath) ?? Application.dataPath,
+                UseShellExecute = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Normal
+            };
+
+            try
+            {
+                System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo);
+                if (process == null)
+                {
+                    message = "Robot speaker helper process did not start.";
+                    return false;
+                }
+
+                _robotSpeakerHelperLogPath = localLogPath;
+                _robotSpeakerHelperStatus =
+                    $"Robot speaker helper launched for {user}@{host}. " +
+                    (string.IsNullOrWhiteSpace(password)
+                        ? "A PowerShell window should prompt for the password if SSH needs it."
+                        : "Using the configured SSH password; if that fails, edit the password field and retry.");
+                _robotSpeakerMirrorStatus = "Robot speaker helper launched; waiting for endpoint probe.";
+                _robotSpeakerMirrorResolution = $"Local helper log: {localLogPath}";
+                _nextRobotSpeakerProbeAt = 0f;
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    "helper-launch",
+                    $"host={host}; user={user}; port={localAiAgentRobotSpeakerPort}; localLog={localLogPath}; passwordSupplied={!string.IsNullOrWhiteSpace(password)}",
+                    "INFO");
+                message = _robotSpeakerHelperStatus;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Robot speaker helper launch failed: {ex.Message}";
+                LogRuntimeEvent("robot-speaker", "helper-launch-failed", message, "ERROR");
+                return false;
+            }
+#endif
+        }
+
+        private static string EscapePowerShellSingleQuotedString(string value)
+        {
+            return (value ?? string.Empty).Replace("'", "''");
         }
 
         private bool TryLoadVoiceAgentConfigFromDisk(out string message)
@@ -8162,8 +8945,26 @@ namespace Reachy.ControlApp
             bool interrupt)
         {
             string endpoint = BuildRobotSpeakerAudioMirrorEndpoint();
-            if (string.IsNullOrWhiteSpace(endpoint) || clip == null)
+            if (clip == null)
             {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                string reason = HasResolvedRobotSpeakerProbeForCurrentTarget()
+                    ? (string.IsNullOrWhiteSpace(_robotSpeakerMirrorStatus)
+                        ? "Robot speaker audio mirror endpoint is unavailable."
+                        : _robotSpeakerMirrorStatus)
+                    : "Robot speaker audio mirror endpoint is not configured yet.";
+                string detail = string.IsNullOrWhiteSpace(_robotSpeakerMirrorResolution)
+                    ? reason
+                    : $"{reason} Probe={_robotSpeakerMirrorResolution}";
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    "audio-mirror-skipped",
+                    $"label={label}; detail={detail}",
+                    "WARN");
                 return;
             }
 
@@ -8919,6 +9720,43 @@ namespace Reachy.ControlApp
                     : BuildRobotSpeakerTtsMirrorEndpointPreview());
             GUI.enabled = previousRobotSpeakerPreviewEnabled;
             GUILayout.EndHorizontal();
+            GUILayout.Label(GetRobotSpeakerMirrorStatusForUi());
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("SSH user", GUILayout.Width(62f));
+            robotSshUser = GUILayout.TextField(robotSshUser, GUILayout.Width(88f));
+            GUILayout.Label("SSH pass", GUILayout.Width(62f));
+            robotSshPassword = robotSshShowPassword
+                ? GUILayout.TextField(robotSshPassword, GUILayout.Width(110f))
+                : GUILayout.PasswordField(robotSshPassword, '*', GUILayout.Width(110f));
+            robotSshShowPassword = GUILayout.Toggle(robotSshShowPassword, "Show", GUILayout.Width(58f));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("SSH root", GUILayout.Width(62f));
+            robotSshRemoteProjectRoot = GUILayout.TextField(robotSshRemoteProjectRoot);
+            bool previousRobotHelperEnabled = GUI.enabled;
+            GUI.enabled = localAiAgentMirrorTtsToRobotSpeaker &&
+                          (_connectedMode ?? mode) == ReachyControlMode.RealRobot &&
+                          !string.IsNullOrWhiteSpace(GetRobotSpeakerMirrorHost());
+            if (GUILayout.Button("Start spk srv", GUILayout.Width(96f), GUILayout.Height(22f)))
+            {
+                bool started = TryLaunchRobotSpeakerServerHelper(out string helperMessage);
+                _robotSpeakerHelperStatus = helperMessage;
+                if (!started)
+                {
+                    _voiceLastParserMessage = helperMessage;
+                }
+            }
+            GUI.enabled = previousRobotHelperEnabled;
+            GUILayout.EndHorizontal();
+            GUILayout.Label(string.IsNullOrWhiteSpace(_robotSpeakerHelperStatus)
+                ? "Robot speaker helper uses SSH. Factory-default credentials are usually reachy / reachy."
+                : _robotSpeakerHelperStatus);
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerHelperLogPath))
+            {
+                GUILayout.Label($"Helper log: {_robotSpeakerHelperLogPath}");
+            }
 
             GUILayout.BeginHorizontal();
             localAiAgentEnablePushToTalk = GUILayout.Toggle(
@@ -9749,6 +10587,43 @@ namespace Reachy.ControlApp
                     : BuildRobotSpeakerTtsMirrorEndpointPreview());
             GUI.enabled = previousRobotSpeakerPreviewEnabled;
             GUILayout.EndHorizontal();
+            GUILayout.Label(GetRobotSpeakerMirrorStatusForUi());
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("SSH user", GUILayout.Width(62f));
+            robotSshUser = GUILayout.TextField(robotSshUser, GUILayout.Width(88f));
+            GUILayout.Label("SSH pass", GUILayout.Width(62f));
+            robotSshPassword = robotSshShowPassword
+                ? GUILayout.TextField(robotSshPassword, GUILayout.Width(110f))
+                : GUILayout.PasswordField(robotSshPassword, '*', GUILayout.Width(110f));
+            robotSshShowPassword = GUILayout.Toggle(robotSshShowPassword, "Show", GUILayout.Width(58f));
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("SSH root", GUILayout.Width(62f));
+            robotSshRemoteProjectRoot = GUILayout.TextField(robotSshRemoteProjectRoot);
+            bool previousRobotHelperEnabled = GUI.enabled;
+            GUI.enabled = localAiAgentMirrorTtsToRobotSpeaker &&
+                          (_connectedMode ?? mode) == ReachyControlMode.RealRobot &&
+                          !string.IsNullOrWhiteSpace(GetRobotSpeakerMirrorHost());
+            if (GUILayout.Button("Start spk srv", GUILayout.Width(96f), GUILayout.Height(22f)))
+            {
+                bool started = TryLaunchRobotSpeakerServerHelper(out string helperMessage);
+                _robotSpeakerHelperStatus = helperMessage;
+                if (!started)
+                {
+                    _voiceLastParserMessage = helperMessage;
+                }
+            }
+            GUI.enabled = previousRobotHelperEnabled;
+            GUILayout.EndHorizontal();
+            GUILayout.Label(string.IsNullOrWhiteSpace(_robotSpeakerHelperStatus)
+                ? "Robot speaker helper uses SSH. Factory-default credentials are usually reachy / reachy."
+                : _robotSpeakerHelperStatus);
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerHelperLogPath))
+            {
+                GUILayout.Label($"Helper log: {_robotSpeakerHelperLogPath}");
+            }
 
             GUILayout.BeginHorizontal();
             localAiAgentEnablePushToTalk = GUILayout.Toggle(

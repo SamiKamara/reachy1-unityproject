@@ -108,21 +108,55 @@ application plays sound directly on the robot computer. This project uses the sa
 robot audio: keep local desktop TTS as-is, and optionally send the same text to a small HTTP speaker service
 running on the Reachy computer.
 
+Important: stock Reachy 2021 software does not expose an HTTP speaker mirror endpoint by default. The `8101`
+port used by this Unity project is the default port for the custom helper server in this repository, not a
+built-in Reachy service.
+
 Run this on the robot computer:
 ```bash
 cd ~/reachy1-unityproject/Assets/ReachyControlApp/LocalVoiceAgent
 python3 ./reachy_robot_speaker_server.py --bind-host 0.0.0.0 --bind-port 8101 --tts-backend auto
 ```
 
+Or from Windows, use the helper script in this folder to copy/start the server remotely over SSH:
+```powershell
+./start_reachy_robot_speaker_server.ps1 -ReachyHost 192.168.1.109
+```
+
+The helper script defaults to the common factory credentials:
+- user: `reachy`
+- password: `reachy`
+
+If the password was changed, either pass `-ReachyPassword <newPassword>` or use `-PromptForPassword`.
+The script writes a local run log to `start_reachy_robot_speaker_server_last_run.log`.
+
 If `auto` cannot find a backend on the robot:
 - install `espeak`, or
 - install `pyttsx3` in the robot Python environment
 
 Unity now has a `Mirror to robot speaker` toggle in the Local AI panel. When enabled in `Real Robot` mode,
-Unity mirrors TTS to:
-- `http://<robotHost>:8101/speak`
+Unity now probes the robot and logs what it finds:
+- `http://<robotHost>:8101/health` for the bundled `reachy_robot_speaker_server.py`
+- `http://<robotHost>:8099/health` as a fallback if a full voice sidecar is running on the robot
+
+Resolution rules:
+- `8101` reachable with `reachy_robot_speaker_server.py`: TTS mirroring and mirrored audio clips are both available
+- `8099` reachable with `local_voice_agent_sidecar.py`: TTS-only mirroring is available
+- neither reachable: Unity skips mirroring and writes a diagnostic runtime log entry instead of repeatedly failing silently
+
+Unity UI also exposes:
+- SSH user/password fields for helper actions
+- `Start spk srv` button to launch the remote helper from the app on Windows
 
 The local desktop/device audio still plays through the existing sidecar at `http://127.0.0.1:8099/speak`.
+
+Useful runtime log events:
+- `robot-speaker probe-ok`
+- `robot-speaker probe-failed`
+- `robot-speaker tts-mirror-accepted`
+- `robot-speaker tts-mirror-failed`
+- `robot-speaker audio-mirror-started`
+- `robot-speaker audio-mirror-failed`
 
 Toggle sidecar listening state (used by Unity push-to-talk):
 ```powershell

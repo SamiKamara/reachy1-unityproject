@@ -1116,21 +1116,7 @@ namespace Reachy.ControlApp
             }
             catch (WebException webEx)
             {
-                string detail = webEx.Message;
-                if (webEx.Response != null)
-                {
-                    using (Stream responseStream = webEx.Response.GetResponseStream())
-                    using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
-                    {
-                        string responseText = SanitizeBridgeText(reader.ReadToEnd());
-                        if (!string.IsNullOrWhiteSpace(responseText))
-                        {
-                            detail = $"{detail} ({responseText})";
-                        }
-                    }
-                }
-
-                detail = SanitizeBridgeText(detail);
+                string detail = FormatWebExceptionDetail(webEx, endpoint);
 
                 return new TtsResult
                 {
@@ -1152,6 +1138,64 @@ namespace Reachy.ControlApp
                     Message = "TTS request failed.",
                     Error = detail
                 };
+            }
+        }
+
+        private static string FormatWebExceptionDetail(WebException webEx, string endpoint)
+        {
+            var parts = new List<string>();
+            string trimmedEndpoint = SanitizeBridgeText(endpoint);
+            if (!string.IsNullOrWhiteSpace(trimmedEndpoint))
+            {
+                parts.Add($"endpoint={trimmedEndpoint}");
+            }
+
+            if (webEx != null)
+            {
+                if (webEx.Status != WebExceptionStatus.Success)
+                {
+                    parts.Add($"status={webEx.Status}");
+                }
+
+                string message = SanitizeBridgeText(webEx.Message);
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    parts.Add(message);
+                }
+
+                if (webEx.Response is HttpWebResponse httpResponse)
+                {
+                    parts.Add($"http={(int)httpResponse.StatusCode} {httpResponse.StatusCode}");
+                }
+
+                string responseText = ReadWebResponseBody(webEx.Response);
+                if (!string.IsNullOrWhiteSpace(responseText))
+                {
+                    parts.Add($"body={responseText}");
+                }
+            }
+
+            return string.Join("; ", parts.ToArray());
+        }
+
+        private static string ReadWebResponseBody(WebResponse response)
+        {
+            if (response == null)
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    return SanitizeBridgeText(reader.ReadToEnd());
+                }
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 

@@ -34,7 +34,7 @@ The `ReachyControlApp` now includes a local AI panel backed by `Assets/ReachyCon
 - Safety controls for confirmation flow, duplicate suppression, transcript gating, safe numeric parsing, and joint range rejection
 - Push-to-talk or always-listening modes
 - Microphone selection plus hold-to-record mic test playback
-- Local TTS feedback with optional mirroring to a small robot-speaker HTTP service on the Reachy computer
+- Local TTS feedback with optional mirroring to a small robot-speaker HTTP service on the Reachy computer, with runtime probing/logging and a `8099` TTS-only fallback if a voice sidecar is running on the robot
 - Local help responses through a rule-based backend or optional `llama_cpp`
 - UI actions to load/save Unity voice config and sync/load the sidecar config
 - Optional sidecar auto-start, auto-stop, health probing, and bridge diagnostics
@@ -57,7 +57,8 @@ Default local model/config paths point outside `Assets/` under `.local_voice_mod
 - Real robot restart-signal port: `50059`
 - Camera service: `50057`
 - Local voice sidecar base URL: `http://127.0.0.1:8099`
-- Robot speaker mirror port: `8101`
+- Robot speaker mirror port: `8101` (custom helper service, not a stock Reachy 2021 port)
+- Remote helper SSH defaults for stock robots: user `reachy`, password `reachy` (editable in UI/helper script)
 
 ## Notes
 
