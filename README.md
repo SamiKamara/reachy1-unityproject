@@ -1,68 +1,72 @@
-# Reachy Controller and Simulator (Unity 2021)
+# Reachy Controller and Simulator
 
-This project is no longer only a simulator package.  
-It is now a Unity 2021 project that combines:
+Unity `2021.3.24f1` project for Reachy 1 that combines the simulator package, an in-Play-Mode runtime control app, and an optional local voice-agent sidecar.
 
-- Reachy1 simulator services (gRPC)
-- an in-Play-Mode control app for simulation and real robot targets
-- runtime tools for connection management, commanding joints, and preset poses
+## What is in this repository
 
-## Current State
+- `Packages/ReachySimulator`: Reachy simulator package and gRPC-facing robot services
+- `Assets/ReachyControlApp`: runtime UI for simulation and real robot control
+- `Assets/Scenes/SampleScene.unity` and `Assets/Scenes/OfficeScene.unity`: included scenes
+- `Build/Reachy controller & simulator.exe`: current Windows build output
 
-As of March 5, 2026, this repo includes a runtime control UI (`ReachyControlApp`) that auto-loads in Play Mode and supports:
+The runtime control UI is auto-created in Play Mode by `ReachyControlBootstrap`, so no manual scene wiring is required.
 
-- Simulation mode and Real Robot mode switching
-- mode-aware connect/disconnect behavior
-- auto-connect on Play and auto-reconnect monitoring
-- connection health checking and reconnect cooldown
-- restart-signal recovery during retries (real robot mode)
-- real-robot endpoint prechecks (optional DNS resolve + TCP reachability probe)
-- preset poses with one click (`Neutral Arms`, `T-Pose`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`)
+## Current features
 
-UI layout:
+- Simulation and Real Robot connection modes
+- Auto-connect on Play, health watchdog, auto-reconnect, fallback host/port retries, and optional restart-signal recovery for real robots
+- Optional DNS resolution and TCP reachability prechecks before real-robot gRPC connects
+- Left/right eye camera preview over the Reachy camera service
+- Preset poses: `Neutral Arms`, `T-Pose`, `Tray Holding`, `Hello Pose A`, `Hello Pose B`, `Hello Pose C`, `Hello Pose D`
+- Looping animations and acted sequences, including `Speech A`, `Reachy introduction`, and `bender sleep`
+- Manual single-joint commands and full-pose commands at runtime
+- Xbox controller support for base driving, arm/head/gripper control, camera eye switching, and triggering acted sequences
+- Mobile-base velocity commands when the connected endpoint exposes mobility services
+- Window controls in the runtime UI: `Windowed`, `Fullscreen`, and `Exit`
+- Optional runtime file logging
 
-- left panel: connection + automation
-- right panel: commands + poses + status
-- right panel header: `Windowed`, `Fullscreen`, `Exit` controls
-- configurable windowed resolution fields (default `1280 x 720`)
+## Local AI / Voice features
 
-Build app name is set to:
+The `ReachyControlApp` now includes a local AI panel backed by `Assets/ReachyControlApp/LocalVoiceAgent`.
 
-- `Reachy controller & simulator`
+- Local sidecar endpoints for `/intent`, `/speak`, `/help`, and `/listening`
+- Transcript parsing for `help`, `status`, `connect_robot`, `disconnect_robot`, `set_pose`, `move_joint`, `stop_motion`, `confirm_pending`, `reject_pending`, `show_movement`, `hello`, and `who_are_you`
+- Safety controls for confirmation flow, duplicate suppression, transcript gating, safe numeric parsing, and joint range rejection
+- Push-to-talk or always-listening modes
+- Microphone selection plus hold-to-record mic test playback
+- Local TTS feedback with optional mirroring to a small robot-speaker HTTP service on the Reachy computer
+- Local help responses through a rule-based backend or optional `llama_cpp`
+- UI actions to load/save Unity voice config and sync/load the sidecar config
+- Optional sidecar auto-start, auto-stop, health probing, and bridge diagnostics
 
-## Quick Start
+Default local model/config paths point outside `Assets/` under `.local_voice_models/` so Unity does not try to import model files.
 
-1. Open `reachy1-unityproject` in Unity 2021.
-2. Open a scene (for example `Assets/Scenes/SampleScene.unity` or `Assets/Scenes/OfficeScene.unity`).
-3. Press Play. The runtime control panel appears automatically.
-4. Choose mode (Simulation or Real Robot), configure host/port, then connect.
+## Quick start
 
-## Connection Defaults
+1. Open the project in Unity `2021.3.24f1`.
+2. Open `Assets/Scenes/SampleScene.unity` or `Assets/Scenes/OfficeScene.unity`.
+3. Press Play. The runtime UI appears automatically.
+4. Use the `Connections` view to connect to Simulation or Real Robot mode.
+5. Use `Animations & Poses`, `Manual Control`, and `AI` for runtime operation.
 
-- Simulation default: `localhost:50055`
-- Real robot default: `192.168.1.109:3972`
-- Real robot fallback ports: `50055`
-- Restart-signal port (real robot): `50059`
+## Default endpoints
 
-Notes:
+- Simulation joint service: `localhost:50055`
+- Real robot joint service: `192.168.1.109:50055`
+- Real robot fallback ports: `3972`
+- Real robot restart-signal port: `50059`
+- Camera service: `50057`
+- Local voice sidecar base URL: `http://127.0.0.1:8099`
+- Robot speaker mirror port: `8101`
 
-- The connection logic was hardened by comparing against official Reachy Unity/SDK repositories.
-- Real hardware was not available during this setup, so physical validation is still required.
+## Notes
 
-## SDK Compatibility (Reachy 2021)
-
-For Reachy 2021 Python SDK usage, use:
-
-```python
-from reachy_sdk import ReachySDK
-reachy = ReachySDK(host="localhost")
-```
-
-Recommended SDK version for Reachy 2021:
-
-```bash
-pip install reachy-sdk==0.5.4
-```
+- The `Teleoperation` top-bar view exists, but it is still a placeholder and does not yet expose a dedicated runtime workflow.
+- Real-hardware validation is still required. Motion commands, acted sequences, and voice-confirmed actions can move physical hardware.
+- For detailed app-specific setup, see:
+  - `Assets/ReachyControlApp/README.md`
+  - `Assets/ReachyControlApp/LocalVoiceAgent/README.md`
+  - `Assets/ReachyControlApp/LOCAL_VOICE_AGENT_CONSTRUCTION_GUIDE.md`
 
 ## License
 

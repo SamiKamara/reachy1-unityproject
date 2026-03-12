@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading.Tasks;
 
 using UnityEngine;
+using UnityEngine.Networking;
 
 namespace Reachy.ControlApp
 {
@@ -68,6 +69,13 @@ namespace Reachy.ControlApp
         private const float VoiceHelloReturnDelaySeconds = 4f;
         private const string VoiceHelloReturnPoseName = "Neutral Arms";
         private const string SpeechLoopingAnimationName = "Speech A";
+        private const string BenderSleepActedSequenceName = "bender sleep";
+        private const string BenderSleepLoopingAnimationName = "Bender Sleep";
+        private const string BenderSleepAudioFileName = "bender_sleep.mp3";
+        private const string RobotSpeakerTtsMirrorPath = "speak";
+        private const string RobotSpeakerAudioMirrorPath = "play-audio";
+        private const string RobotSpeakerStopPath = "stop";
+        private const int RobotSpeakerAudioMirrorTimeoutSeconds = 15;
         private const string ReachyIntroductionActedSequenceName = "Reachy introduction";
         private const string ReachyIntroductionHelloWavePoseName = "Hello Pose D";
         private const string ReachyIntroductionDefaultSpeechText =
@@ -787,6 +795,7 @@ namespace Reachy.ControlApp
         private bool _manualControllerBaseWasActiveLastFrame;
         private bool _manualControllerAutoEnableArmed = true;
         private bool _manualControllerActedSequenceLockActive;
+        private string _manualControllerLockedActedSequenceName = string.Empty;
         private int _manualControllerActedSequenceCancelTapCount;
         private float _manualControllerActedSequenceLastCancelTapAt = -1f;
         private int _manualControllerLeftArmTargetPoseIndex;
@@ -819,7 +828,10 @@ namespace Reachy.ControlApp
         private bool _localAiMicDropdownOpen;
         private Vector2 _localAiMicDropdownScroll;
         private AudioSource _localAiMicTestAudioSource;
+        private AudioSource _actedSequenceAudioSource;
         private AudioClip _localAiMicTestRecordClip;
+        private AudioClip _benderSleepAudioClip;
+        private int _robotSpeakerAudioMirrorRequestVersion;
         private bool _localAiMicTestRecording;
         private bool _localAiMicTestButtonHeld;
         private string _localAiMicTestDevice = string.Empty;
@@ -858,6 +870,22 @@ namespace Reachy.ControlApp
             public int selected_input_device_index = -1;
             public string selected_input_device_name = string.Empty;
             public string last_error = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class RobotSpeakerAudioMirrorPayload
+        {
+            public string audio_base64 = string.Empty;
+            public string format = "wav";
+            public bool interrupt = true;
+            public bool loop;
+            public string label = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class RobotSpeakerStopPayload
+        {
+            public string reason = string.Empty;
         }
 
         [Serializable]
@@ -1389,42 +1417,91 @@ namespace Reachy.ControlApp
             ManualControllerSnapshot currentSnapshot,
             ManualControllerSnapshot previousSnapshot)
         {
+            bool introTriggerPressed = currentSnapshot.LeftShoulder &&
+                                       currentSnapshot.RightShoulder &&
+                                       (!previousSnapshot.LeftShoulder || !previousSnapshot.RightShoulder);
+            bool benderSleepTriggerPressed = currentSnapshot.LeftTrigger > 0f &&
+                                            currentSnapshot.RightTrigger > 0f &&
+                                            !(previousSnapshot.LeftTrigger > 0f &&
+                                              previousSnapshot.RightTrigger > 0f);
+
             if (_manualControllerActedSequenceLockActive)
             {
-                if (!IsActedSequenceActive(ReachyIntroductionActedSequenceName))
+                if (!IsActedSequenceActive(_manualControllerLockedActedSequenceName))
                 {
                     ResetManualControllerActedSequenceLockState();
                     return false;
                 }
 
+                if (introTriggerPressed || benderSleepTriggerPressed)
+                {
+                    return StartManualControllerTriggeredActedSequence(
+                        introTriggerPressed ? ReachyIntroductionActedSequenceName : BenderSleepActedSequenceName,
+                        introTriggerPressed ? "intro" : "bender sleep",
+                        replacingLockedSequence: true);
+                }
+
                 return HandleManualControllerActedSequenceCancellation(currentSnapshot, previousSnapshot);
             }
 
-            if (IsActedSequenceActive(ReachyIntroductionActedSequenceName))
+            if (!introTriggerPressed && !benderSleepTriggerPressed)
             {
                 return false;
             }
 
-            bool introTriggerPressed = currentSnapshot.LeftShoulder &&
-                                       currentSnapshot.RightShoulder &&
-                                       (!previousSnapshot.LeftShoulder || !previousSnapshot.RightShoulder);
-            if (!introTriggerPressed)
-            {
-                return false;
-            }
+            return StartManualControllerTriggeredActedSequence(
+                introTriggerPressed ? ReachyIntroductionActedSequenceName : BenderSleepActedSequenceName,
+                introTriggerPressed ? "intro" : "bender sleep",
+                replacingLockedSequence: false);
+        }
 
-            bool ok = TryStartReachyIntroductionActedSequence(out string message);
-            if (ok)
+        private bool StartManualControllerTriggeredActedSequence(
+            string sequenceName,
+            string triggerLabel,
+            bool replacingLockedSequence)
+        {
+            string previousSequenceName = _manualControllerLockedActedSequenceName;
+            bool ok;
+            string message;
+            if (string.Equals(sequenceName, ReachyIntroductionActedSequenceName, StringComparison.OrdinalIgnoreCase))
             {
-                _manualControllerActedSequenceLockActive = true;
-                _manualControllerActedSequenceCancelTapCount = 0;
-                _manualControllerActedSequenceLastCancelTapAt = -1f;
-                _manualControllerStatus =
-                    $"Controller: started '{ReachyIntroductionActedSequenceName}'. Double-tap any gamepad button to cancel.";
+                ok = TryStartReachyIntroductionActedSequence(out message);
+            }
+            else if (string.Equals(sequenceName, BenderSleepActedSequenceName, StringComparison.OrdinalIgnoreCase))
+            {
+                ok = TryStartBenderSleepActedSequence(out message);
             }
             else
             {
-                _manualControllerStatus = $"Controller intro trigger failed: {message}";
+                _manualControllerStatus = $"Controller {triggerLabel} trigger failed: unknown sequence '{sequenceName}'.";
+                return true;
+            }
+
+            if (ok)
+            {
+                _manualControllerLockedActedSequenceName = sequenceName;
+                _manualControllerActedSequenceLockActive = true;
+                _manualControllerActedSequenceCancelTapCount = 0;
+                _manualControllerActedSequenceLastCancelTapAt = -1f;
+
+                if (replacingLockedSequence && !string.IsNullOrWhiteSpace(previousSequenceName))
+                {
+                    _manualControllerStatus = string.Equals(
+                        previousSequenceName,
+                        sequenceName,
+                        StringComparison.OrdinalIgnoreCase)
+                        ? $"Controller: restarted '{sequenceName}'. Double-tap any gamepad button to cancel."
+                        : $"Controller: switched from '{previousSequenceName}' to '{sequenceName}'. Double-tap any gamepad button to cancel.";
+                }
+                else
+                {
+                    _manualControllerStatus =
+                        $"Controller: started '{sequenceName}'. Double-tap any gamepad button to cancel.";
+                }
+            }
+            else
+            {
+                _manualControllerStatus = $"Controller {triggerLabel} trigger failed: {message}";
             }
 
             return true;
@@ -1455,18 +1532,21 @@ namespace Reachy.ControlApp
                 _manualControllerActedSequenceCancelTapCount = 1;
                 _manualControllerActedSequenceLastCancelTapAt = Time.unscaledTime;
                 _manualControllerStatus =
-                    $"Controller sequence active: press any gamepad button again quickly to cancel '{ReachyIntroductionActedSequenceName}'.";
+                    $"Controller sequence active: press any gamepad button again quickly to cancel '{_manualControllerLockedActedSequenceName}'.";
                 return true;
             }
 
             _manualControllerStatus = _manualControllerActedSequenceCancelTapCount > 0
-                ? $"Controller sequence active: press any gamepad button again quickly to cancel '{ReachyIntroductionActedSequenceName}'."
-                : $"Controller sequence active: '{ReachyIntroductionActedSequenceName}' is running. Double-tap any gamepad button to cancel.";
+                ? $"Controller sequence active: press any gamepad button again quickly to cancel '{_manualControllerLockedActedSequenceName}'."
+                : $"Controller sequence active: '{_manualControllerLockedActedSequenceName}' is running. Double-tap any gamepad button to cancel.";
             return true;
         }
 
         private void CancelManualControllerActedSequence()
         {
+            string sequenceName = string.IsNullOrWhiteSpace(_manualControllerLockedActedSequenceName)
+                ? (string.IsNullOrWhiteSpace(_activeActedSequenceName) ? "Acted sequence" : _activeActedSequenceName)
+                : _manualControllerLockedActedSequenceName;
             StopActedSequence(
                 updateStatus: false,
                 reason: "Canceled from Manual Control after a double button press.");
@@ -1483,17 +1563,18 @@ namespace Reachy.ControlApp
             }
 
             string message = neutralOk
-                ? $"Acted sequence '{ReachyIntroductionActedSequenceName}' was canceled from Manual Control and returned to '{VoiceHelloReturnPoseName}'."
-                : $"Acted sequence '{ReachyIntroductionActedSequenceName}' was canceled from Manual Control, but returning to '{VoiceHelloReturnPoseName}' failed. {neutralMessage}";
+                ? $"Acted sequence '{sequenceName}' was canceled from Manual Control and returned to '{VoiceHelloReturnPoseName}'."
+                : $"Acted sequence '{sequenceName}' was canceled from Manual Control, but returning to '{VoiceHelloReturnPoseName}' failed. {neutralMessage}";
             _manualControllerStatus = neutralOk
-                ? $"Controller: canceled '{ReachyIntroductionActedSequenceName}' and sent {VoiceHelloReturnPoseName}."
-                : $"Controller: canceled '{ReachyIntroductionActedSequenceName}', but neutral pose failed. {neutralMessage}";
+                ? $"Controller: canceled '{sequenceName}' and sent {VoiceHelloReturnPoseName}."
+                : $"Controller: canceled '{sequenceName}', but neutral pose failed. {neutralMessage}";
             SetStatus("Acted sequence canceled", message);
         }
 
         private void ResetManualControllerActedSequenceLockState()
         {
             _manualControllerActedSequenceLockActive = false;
+            _manualControllerLockedActedSequenceName = string.Empty;
             _manualControllerActedSequenceCancelTapCount = 0;
             _manualControllerActedSequenceLastCancelTapAt = -1f;
         }
@@ -2419,7 +2500,86 @@ namespace Reachy.ControlApp
                         new LoopingAnimationJointGoal("l_elbow_pitch", -92f),
                         new LoopingAnimationJointGoal("l_forearm_yaw", 34f),
                         new LoopingAnimationJointGoal("l_wrist_pitch", 14f),
-                        new LoopingAnimationJointGoal("l_wrist_roll", -2f)))
+                        new LoopingAnimationJointGoal("l_wrist_roll", -2f))),
+                new LoopingAnimationDefinition(
+                    BenderSleepLoopingAnimationName,
+                    "Standing sleep sway with a bowed head and slow left-right drifting.",
+                    new LoopingAnimationKeyframe(
+                        1.15f,
+                        new LoopingAnimationJointGoal("neck_yaw", -6f),
+                        new LoopingAnimationJointGoal("neck_pitch", 18f),
+                        new LoopingAnimationJointGoal("neck_roll", -6f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -8f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -6f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -8f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -42f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -12f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 8f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 4f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -8f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 6f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 8f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -42f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 12f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 8f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -4f)),
+                    new LoopingAnimationKeyframe(
+                        0.95f,
+                        new LoopingAnimationJointGoal("neck_yaw", -2f),
+                        new LoopingAnimationJointGoal("neck_pitch", 15f),
+                        new LoopingAnimationJointGoal("neck_roll", -1f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -10f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -8f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -10f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -48f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -14f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 3f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -10f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 8f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 10f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -48f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 14f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -3f)),
+                    new LoopingAnimationKeyframe(
+                        1.10f,
+                        new LoopingAnimationJointGoal("neck_yaw", 6f),
+                        new LoopingAnimationJointGoal("neck_pitch", 18f),
+                        new LoopingAnimationJointGoal("neck_roll", 6f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -8f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -6f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -8f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -42f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -12f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 8f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 4f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -8f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 6f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 8f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -42f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 12f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 8f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -4f)),
+                    new LoopingAnimationKeyframe(
+                        0.90f,
+                        new LoopingAnimationJointGoal("neck_yaw", 2f),
+                        new LoopingAnimationJointGoal("neck_pitch", 15f),
+                        new LoopingAnimationJointGoal("neck_roll", 1f),
+                        new LoopingAnimationJointGoal("r_shoulder_pitch", -10f),
+                        new LoopingAnimationJointGoal("r_shoulder_roll", -8f),
+                        new LoopingAnimationJointGoal("r_arm_yaw", -10f),
+                        new LoopingAnimationJointGoal("r_elbow_pitch", -48f),
+                        new LoopingAnimationJointGoal("r_forearm_yaw", -14f),
+                        new LoopingAnimationJointGoal("r_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("r_wrist_roll", 3f),
+                        new LoopingAnimationJointGoal("l_shoulder_pitch", -10f),
+                        new LoopingAnimationJointGoal("l_shoulder_roll", 8f),
+                        new LoopingAnimationJointGoal("l_arm_yaw", 10f),
+                        new LoopingAnimationJointGoal("l_elbow_pitch", -48f),
+                        new LoopingAnimationJointGoal("l_forearm_yaw", 14f),
+                        new LoopingAnimationJointGoal("l_wrist_pitch", 10f),
+                        new LoopingAnimationJointGoal("l_wrist_roll", -3f)))
             };
         }
 
@@ -5288,7 +5448,34 @@ namespace Reachy.ControlApp
             return BuildRobotSpeakerTtsMirrorEndpointPreview();
         }
 
+        private string BuildRobotSpeakerAudioMirrorEndpoint()
+        {
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
+            {
+                return string.Empty;
+            }
+
+            return BuildRobotSpeakerMirrorEndpointPreview(RobotSpeakerAudioMirrorPath);
+        }
+
+        private string BuildRobotSpeakerAudioStopEndpoint()
+        {
+            ReachyControlMode activeMode = _connectedMode ?? mode;
+            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
+            {
+                return string.Empty;
+            }
+
+            return BuildRobotSpeakerMirrorEndpointPreview(RobotSpeakerStopPath);
+        }
+
         private string BuildRobotSpeakerTtsMirrorEndpointPreview()
+        {
+            return BuildRobotSpeakerMirrorEndpointPreview(RobotSpeakerTtsMirrorPath);
+        }
+
+        private string BuildRobotSpeakerMirrorEndpointPreview(string path)
         {
             string host = (robotHost ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(host))
@@ -5297,7 +5484,6 @@ namespace Reachy.ControlApp
             }
 
             int port = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
-            const string path = "speak";
 
             try
             {
@@ -6997,6 +7183,7 @@ namespace Reachy.ControlApp
 
             bool previousEnabled = GUI.enabled;
             bool isReachyIntroductionActive = IsActedSequenceActive(ReachyIntroductionActedSequenceName);
+            bool isBenderSleepActive = IsActedSequenceActive(BenderSleepActedSequenceName);
 
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label(ReachyIntroductionActedSequenceName, _titleStyle);
@@ -7010,6 +7197,24 @@ namespace Reachy.ControlApp
             if (GUILayout.Button(isReachyIntroductionActive ? "Running" : "Start", GUILayout.Height(26f)))
             {
                 bool ok = TryStartReachyIntroductionActedSequence(out string message);
+                if (!ok)
+                {
+                    SetStatus("Acted sequence failed", message);
+                }
+            }
+
+            GUI.enabled = previousEnabled;
+            GUILayout.EndVertical();
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label(BenderSleepActedSequenceName, _titleStyle);
+            GUILayout.Label(
+                $"Loops the {BenderSleepLoopingAnimationName} motion and plays '{BenderSleepAudioFileName}' until interrupted.");
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && !isBenderSleepActive;
+            if (GUILayout.Button(isBenderSleepActive ? "Running" : "Start", GUILayout.Height(26f)))
+            {
+                bool ok = TryStartBenderSleepActedSequence(out string message);
                 if (!ok)
                 {
                     SetStatus("Acted sequence failed", message);
@@ -7155,6 +7360,52 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        private bool TryStartBenderSleepActedSequence(out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Acted sequence start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Acted sequence start blocked: robot is not connected.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{BenderSleepActedSequenceName}'.");
+            StopVoiceHelloReturnTimer(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{BenderSleepActedSequenceName}'.");
+            StopActedSequence(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{BenderSleepActedSequenceName}'.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{BenderSleepActedSequenceName}'.");
+
+            _activeActedSequenceName = BenderSleepActedSequenceName;
+            _actedSequenceCoroutine = StartCoroutine(RunBenderSleepActedSequenceCoroutine());
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "start",
+                $"sequence={BenderSleepActedSequenceName}; animation={BenderSleepLoopingAnimationName}; audio={BenderSleepAudioFileName}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message =
+                $"Acted sequence '{BenderSleepActedSequenceName}' started. It will loop a sleepy standing animation with '{BenderSleepAudioFileName}' until interrupted.";
+            SetStatus("Acted sequence started", message);
+            return true;
+        }
+
         private IEnumerator RunReachyIntroductionActedSequenceCoroutine(string speechText)
         {
             string sequenceName = ReachyIntroductionActedSequenceName;
@@ -7212,6 +7463,26 @@ namespace Reachy.ControlApp
                 0.55f / Mathf.Max(LoopingAnimationMinimumPlaybackSpeedScale, GetLoopingAnimationPlaybackSpeedScale());
             helloPoseDelaySeconds = Mathf.Max(0.15f, helloPoseDelaySeconds);
 
+            // Queue speech before the hello pose sequence so audio starts with the first intro pose.
+            bool queuedSpeech = TryQueueActedSequenceSpeech(
+                speechText,
+                out int baselineSuccessfulTtsCount,
+                out int baselineFailedTtsCount,
+                out string queueMessage);
+            if (!queuedSpeech)
+            {
+                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, queueMessage, shouldReturnToNeutral);
+                yield break;
+            }
+
+            LogRuntimeEvent(
+                "acted-sequence",
+                "tts-queued",
+                $"Queued introduction speech for '{sequenceName}' ({speechText.Length} chars).",
+                "INFO");
+
+            float speechQueuedAt = Time.unscaledTime;
+
             for (int i = 0; i < helloPoseSequence.Count; i++)
             {
                 if (_client == null || !_client.IsConnected)
@@ -7258,30 +7529,10 @@ namespace Reachy.ControlApp
                 yield break;
             }
 
-            bool queuedSpeech = TryQueueActedSequenceSpeech(
-                speechText,
-                out int baselineSuccessfulTtsCount,
-                out int baselineFailedTtsCount,
-                out string queueMessage);
-            if (!queuedSpeech)
-            {
-                StopLoopingAnimation(
-                    updateStatus: false,
-                    reason: $"Interrupted because acted sequence '{sequenceName}' could not queue speech.");
-                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, queueMessage, shouldReturnToNeutral);
-                yield break;
-            }
-
-            LogRuntimeEvent(
-                "acted-sequence",
-                "tts-queued",
-                $"Queued introduction speech for '{sequenceName}' ({speechText.Length} chars).",
-                "INFO");
-
             float speechTimeoutSeconds = GetActedSequenceSpeechTimeoutSeconds(speechText);
-            float speechDeadline = Time.unscaledTime + speechTimeoutSeconds;
+            float speechDeadline = speechQueuedAt + speechTimeoutSeconds;
             float fallbackSpeechCompletionAt =
-                Time.unscaledTime + EstimateActedSequenceSpeechDurationSeconds(speechText);
+                speechQueuedAt + EstimateActedSequenceSpeechDurationSeconds(speechText);
             bool shouldTrackLocalTtsPlayback = ShouldActedSequenceTrackLocalTtsPlayback();
             float nextLocalTtsProbeAt = Time.unscaledTime;
             Task<SidecarProbeResult> localTtsProbeTask = null;
@@ -7402,6 +7653,118 @@ namespace Reachy.ControlApp
                 ttsSucceeded,
                 speechCompletionMessage,
                 shouldReturnToNeutral: true);
+        }
+
+        private IEnumerator RunBenderSleepActedSequenceCoroutine()
+        {
+            string sequenceName = BenderSleepActedSequenceName;
+            AudioClip sleepClip = _benderSleepAudioClip;
+            string audioLoadMessage = string.Empty;
+
+            if (sleepClip == null)
+            {
+                string preparingMessage =
+                    $"Loading '{BenderSleepAudioFileName}' for acted sequence '{sequenceName}'.";
+                LogRuntimeEvent("acted-sequence", "audio-preparing", preparingMessage, "INFO");
+                SetStatus("Acted sequence preparing", preparingMessage);
+
+                yield return LoadBenderSleepAudioClipCoroutine((clip, message) =>
+                {
+                    sleepClip = clip;
+                    audioLoadMessage = message;
+                });
+            }
+
+            if (sleepClip == null)
+            {
+                string blockedMessage = string.IsNullOrWhiteSpace(audioLoadMessage)
+                    ? $"Acted sequence '{sequenceName}' could not load '{BenderSleepAudioFileName}'."
+                    : $"Acted sequence '{sequenceName}' could not load '{BenderSleepAudioFileName}'. {audioLoadMessage}";
+                LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence failed", blockedMessage);
+                yield break;
+            }
+
+            bool startedLoop = TryStartLoopingAnimation(
+                BenderSleepLoopingAnimationName,
+                out string loopMessage,
+                updateStatus: false,
+                stopActedSequence: false);
+            if (!startedLoop)
+            {
+                string blockedMessage =
+                    $"Acted sequence '{sequenceName}' could not start its looping animation. {loopMessage}";
+                LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence failed", blockedMessage);
+                yield break;
+            }
+
+            bool startedAudio = TryStartActedSequenceLoopAudio(sleepClip, out string audioStartMessage);
+            if (!startedAudio)
+            {
+                StopLoopingAnimation(
+                    updateStatus: false,
+                    reason: $"Interrupted because acted sequence '{sequenceName}' could not start its audio.");
+                string blockedMessage =
+                    $"Acted sequence '{sequenceName}' could not start loop audio. {audioStartMessage}";
+                LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence failed", blockedMessage);
+                yield break;
+            }
+
+            LogRuntimeEvent(
+                "acted-sequence",
+                "audio-started",
+                $"Acted sequence '{sequenceName}' started loop audio '{sleepClip.name}'.",
+                "INFO");
+            SetStatus(
+                "Acted sequence started",
+                $"Acted sequence '{sequenceName}' is looping {BenderSleepLoopingAnimationName} with '{BenderSleepAudioFileName}'.");
+
+            while (true)
+            {
+                if (_client == null || !_client.IsConnected)
+                {
+                    StopLoopingAnimation(
+                        updateStatus: false,
+                        reason: $"Interrupted because acted sequence '{sequenceName}' lost robot connection.");
+                    string disconnectedMessage =
+                        $"Acted sequence '{sequenceName}' stopped because the robot is disconnected.";
+                    LogRuntimeEvent("acted-sequence", "stopped", disconnectedMessage, "WARN");
+                    ClearActedSequenceState();
+                    SetStatus("Acted sequence stopped", disconnectedMessage);
+                    yield break;
+                }
+
+                if (!IsLoopingAnimationActive(BenderSleepLoopingAnimationName))
+                {
+                    string stoppedMessage =
+                        $"Acted sequence '{sequenceName}' stopped because its looping animation is no longer running.";
+                    LogRuntimeEvent("acted-sequence", "stopped", stoppedMessage, "WARN");
+                    ClearActedSequenceState();
+                    SetStatus("Acted sequence stopped", stoppedMessage);
+                    yield break;
+                }
+
+                if (_actedSequenceAudioSource != null)
+                {
+                    if (_actedSequenceAudioSource.clip != sleepClip)
+                    {
+                        _actedSequenceAudioSource.clip = sleepClip;
+                    }
+
+                    _actedSequenceAudioSource.loop = true;
+                    if (!_actedSequenceAudioSource.isPlaying)
+                    {
+                        _actedSequenceAudioSource.Play();
+                    }
+                }
+
+                yield return null;
+            }
         }
 
         private IEnumerator CompleteActedSequenceAfterSpeech(
@@ -7608,6 +7971,7 @@ namespace Reachy.ControlApp
 
         private void ClearActedSequenceState()
         {
+            StopActedSequenceLoopAudio(clearClip: false);
             _actedSequenceCoroutine = null;
             _activeActedSequenceName = string.Empty;
             _actedSequenceRequestingTtsSidecar = false;
@@ -7653,6 +8017,342 @@ namespace Reachy.ControlApp
             int wordCount = Math.Max(1, words.Length);
             float estimatedSeconds = (wordCount / 2.5f) + 1.5f;
             return Mathf.Clamp(estimatedSeconds, 2f, 180f);
+        }
+
+        private IEnumerator LoadBenderSleepAudioClipCoroutine(Action<AudioClip, string> onComplete)
+        {
+            if (_benderSleepAudioClip != null)
+            {
+                onComplete?.Invoke(_benderSleepAudioClip, string.Empty);
+                yield break;
+            }
+
+            string audioPath = GetBenderSleepAudioPath();
+            if (!File.Exists(audioPath))
+            {
+                onComplete?.Invoke(null, $"File not found at '{audioPath}'.");
+                yield break;
+            }
+
+            using (UnityWebRequest request = UnityWebRequestMultimedia.GetAudioClip(
+                       new Uri(audioPath).AbsoluteUri,
+                       AudioType.MPEG))
+            {
+                if (request.downloadHandler is DownloadHandlerAudioClip audioHandler)
+                {
+                    audioHandler.streamAudio = false;
+                }
+
+                yield return request.SendWebRequest();
+
+#if UNITY_2020_2_OR_NEWER
+                bool failed = request.result != UnityWebRequest.Result.Success;
+#else
+                bool failed = request.isHttpError || request.isNetworkError;
+#endif
+                if (failed)
+                {
+                    string errorMessage = string.IsNullOrWhiteSpace(request.error)
+                        ? $"Failed to load '{BenderSleepAudioFileName}'."
+                        : request.error;
+                    onComplete?.Invoke(null, errorMessage);
+                    yield break;
+                }
+
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(request);
+                if (clip == null)
+                {
+                    onComplete?.Invoke(null, $"'{BenderSleepAudioFileName}' loaded without clip data.");
+                    yield break;
+                }
+
+                clip.name = Path.GetFileNameWithoutExtension(BenderSleepAudioFileName);
+                _benderSleepAudioClip = clip;
+                onComplete?.Invoke(_benderSleepAudioClip, string.Empty);
+            }
+        }
+
+        private void EnsureActedSequenceAudioSource()
+        {
+            if (_actedSequenceAudioSource != null)
+            {
+                return;
+            }
+
+            AudioSource[] audioSources = GetComponents<AudioSource>();
+            for (int i = 0; i < audioSources.Length; i++)
+            {
+                AudioSource candidate = audioSources[i];
+                if (candidate != null && candidate != _localAiMicTestAudioSource)
+                {
+                    _actedSequenceAudioSource = candidate;
+                    break;
+                }
+            }
+
+            if (_actedSequenceAudioSource == null)
+            {
+                _actedSequenceAudioSource = gameObject.AddComponent<AudioSource>();
+            }
+
+            _actedSequenceAudioSource.playOnAwake = false;
+            _actedSequenceAudioSource.loop = true;
+            _actedSequenceAudioSource.spatialBlend = 0f;
+        }
+
+        private bool TryStartActedSequenceLoopAudio(AudioClip clip, out string message)
+        {
+            message = string.Empty;
+            if (clip == null)
+            {
+                message = "Acted sequence loop audio clip is missing.";
+                return false;
+            }
+
+            EnsureActedSequenceAudioSource();
+            if (_actedSequenceAudioSource == null)
+            {
+                message = "Acted sequence loop audio source is unavailable.";
+                return false;
+            }
+
+            _actedSequenceAudioSource.Stop();
+            _actedSequenceAudioSource.clip = clip;
+            _actedSequenceAudioSource.loop = true;
+            _actedSequenceAudioSource.Play();
+            StartRobotSpeakerAudioMirrorIfAvailable(clip, clip.name, loop: true, interrupt: true);
+            message = $"Started acted sequence audio '{clip.name}'.";
+            return true;
+        }
+
+        private void StartRobotSpeakerAudioMirrorIfAvailable(
+            AudioClip clip,
+            string label,
+            bool loop,
+            bool interrupt)
+        {
+            string endpoint = BuildRobotSpeakerAudioMirrorEndpoint();
+            if (string.IsNullOrWhiteSpace(endpoint) || clip == null)
+            {
+                return;
+            }
+
+            byte[] wavBytes = EncodeAudioClipToWav(clip, out string encodeMessage);
+            if (wavBytes == null || wavBytes.Length == 0)
+            {
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    "audio-mirror-skipped",
+                    $"label={label}; detail={encodeMessage}",
+                    "WARN");
+                return;
+            }
+
+            int requestVersion = ++_robotSpeakerAudioMirrorRequestVersion;
+            StartCoroutine(
+                SendRobotSpeakerAudioMirrorRequestCoroutine(
+                    endpoint,
+                    wavBytes,
+                    label,
+                    loop,
+                    interrupt,
+                    requestVersion));
+        }
+
+        private IEnumerator SendRobotSpeakerAudioMirrorRequestCoroutine(
+            string endpoint,
+            byte[] wavBytes,
+            string label,
+            bool loop,
+            bool interrupt,
+            int requestVersion)
+        {
+            if (requestVersion != _robotSpeakerAudioMirrorRequestVersion)
+            {
+                yield break;
+            }
+
+            string jsonBody = JsonUtility.ToJson(new RobotSpeakerAudioMirrorPayload
+            {
+                audio_base64 = Convert.ToBase64String(wavBytes),
+                format = "wav",
+                interrupt = interrupt,
+                loop = loop,
+                label = label ?? string.Empty
+            });
+            byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+
+            using (var request = new UnityWebRequest(endpoint, UnityWebRequest.kHttpVerbPOST))
+            {
+                request.uploadHandler = new UploadHandlerRaw(bodyBytes);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.timeout = RobotSpeakerAudioMirrorTimeoutSeconds;
+                request.SetRequestHeader("Accept", "application/json");
+                request.SetRequestHeader("Content-Type", "application/json");
+                yield return request.SendWebRequest();
+
+#if UNITY_2020_2_OR_NEWER
+                bool failed = request.result != UnityWebRequest.Result.Success;
+#else
+                bool failed = request.isHttpError || request.isNetworkError;
+#endif
+                if (requestVersion != _robotSpeakerAudioMirrorRequestVersion)
+                {
+                    yield break;
+                }
+
+                string detail = string.IsNullOrWhiteSpace(request.downloadHandler?.text)
+                    ? (string.IsNullOrWhiteSpace(request.error)
+                        ? "Robot speaker audio mirror endpoint accepted the request."
+                        : request.error)
+                    : request.downloadHandler.text.Trim();
+                LogRuntimeEvent(
+                    "robot-speaker",
+                    failed ? "audio-mirror-failed" : "audio-mirror-started",
+                    $"label={label}; loop={loop}; endpoint={endpoint}; detail={detail}",
+                    failed ? "WARN" : "INFO");
+            }
+        }
+
+        private void StopRobotSpeakerAudioMirrorIfAvailable(string reason)
+        {
+            string endpoint = BuildRobotSpeakerAudioStopEndpoint();
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                return;
+            }
+
+            int requestVersion = ++_robotSpeakerAudioMirrorRequestVersion;
+            StartCoroutine(SendRobotSpeakerAudioStopRequestCoroutine(endpoint, reason, requestVersion));
+        }
+
+        private IEnumerator SendRobotSpeakerAudioStopRequestCoroutine(
+            string endpoint,
+            string reason,
+            int requestVersion)
+        {
+            string jsonBody = JsonUtility.ToJson(new RobotSpeakerStopPayload
+            {
+                reason = reason ?? string.Empty
+            });
+            byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+
+            using (var request = new UnityWebRequest(endpoint, UnityWebRequest.kHttpVerbPOST))
+            {
+                request.uploadHandler = new UploadHandlerRaw(bodyBytes);
+                request.downloadHandler = new DownloadHandlerBuffer();
+                request.timeout = Mathf.Max(3, RobotSpeakerAudioMirrorTimeoutSeconds / 2);
+                request.SetRequestHeader("Accept", "application/json");
+                request.SetRequestHeader("Content-Type", "application/json");
+                yield return request.SendWebRequest();
+
+#if UNITY_2020_2_OR_NEWER
+                bool failed = request.result != UnityWebRequest.Result.Success;
+#else
+                bool failed = request.isHttpError || request.isNetworkError;
+#endif
+                if (requestVersion != _robotSpeakerAudioMirrorRequestVersion)
+                {
+                    yield break;
+                }
+
+                if (failed)
+                {
+                    string detail = string.IsNullOrWhiteSpace(request.downloadHandler?.text)
+                        ? (string.IsNullOrWhiteSpace(request.error) ? "Robot speaker stop request failed." : request.error)
+                        : request.downloadHandler.text.Trim();
+                    LogRuntimeEvent(
+                        "robot-speaker",
+                        "audio-mirror-stop-failed",
+                        $"reason={reason}; endpoint={endpoint}; detail={detail}",
+                        "WARN");
+                }
+            }
+        }
+
+        private static byte[] EncodeAudioClipToWav(AudioClip clip, out string message)
+        {
+            message = string.Empty;
+            if (clip == null)
+            {
+                message = "Audio clip is missing.";
+                return null;
+            }
+
+            int sampleCount = Mathf.Max(0, clip.samples);
+            int channels = Mathf.Max(1, clip.channels);
+            int frequency = Mathf.Max(8000, clip.frequency);
+            if (sampleCount <= 0)
+            {
+                message = $"Audio clip '{clip.name}' has no sample data.";
+                return null;
+            }
+
+            float[] samples = new float[sampleCount * channels];
+            if (!clip.GetData(samples, 0))
+            {
+                message = $"Audio clip '{clip.name}' sample data is not readable.";
+                return null;
+            }
+
+            int dataLength = samples.Length * sizeof(short);
+            byte[] wavBytes = new byte[44 + dataLength];
+            using (var stream = new MemoryStream(wavBytes))
+            using (var writer = new BinaryWriter(stream, Encoding.ASCII))
+            {
+                writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+                writer.Write(36 + dataLength);
+                writer.Write(Encoding.ASCII.GetBytes("WAVE"));
+                writer.Write(Encoding.ASCII.GetBytes("fmt "));
+                writer.Write(16);
+                writer.Write((short)1);
+                writer.Write((short)channels);
+                writer.Write(frequency);
+                writer.Write(frequency * channels * sizeof(short));
+                writer.Write((short)(channels * sizeof(short)));
+                writer.Write((short)16);
+                writer.Write(Encoding.ASCII.GetBytes("data"));
+                writer.Write(dataLength);
+
+                for (int i = 0; i < samples.Length; i++)
+                {
+                    float clamped = Mathf.Clamp(samples[i], -1f, 1f);
+                    writer.Write((short)Mathf.RoundToInt(clamped * short.MaxValue));
+                }
+            }
+
+            return wavBytes;
+        }
+
+        private void StopActedSequenceLoopAudio(bool clearClip)
+        {
+            if (_actedSequenceAudioSource == null)
+            {
+                return;
+            }
+
+            if (_actedSequenceAudioSource.isPlaying)
+            {
+                _actedSequenceAudioSource.Stop();
+            }
+
+            StopRobotSpeakerAudioMirrorIfAvailable("Acted sequence loop audio stopped.");
+            _actedSequenceAudioSource.loop = false;
+            if (clearClip)
+            {
+                _actedSequenceAudioSource.clip = null;
+            }
+        }
+
+        private static string GetBenderSleepAudioPath()
+        {
+            string streamingAssetsPath = Path.Combine(Application.streamingAssetsPath, BenderSleepAudioFileName);
+            if (File.Exists(streamingAssetsPath))
+            {
+                return streamingAssetsPath;
+            }
+
+            return Path.Combine(Application.dataPath, BenderSleepAudioFileName);
         }
 
         private string GetReachyIntroductionSequenceText()

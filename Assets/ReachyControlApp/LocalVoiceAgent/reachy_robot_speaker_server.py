@@ -5,6 +5,8 @@ Minimal HTTP TTS server for Reachy 2021 robot speakers.
 Endpoints:
 - GET  /health
 - POST /speak
+- POST /play-audio
+- POST /stop
 
 The Unity app can mirror local AI TTS to this server while keeping local desktop
 audio active through the existing local voice-agent sidecar.
@@ -13,12 +15,15 @@ audio active through the existing local voice-agent sidecar.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
+import os
 import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -32,6 +37,7 @@ class SpeakerState:
         self.lock = threading.Lock()
         self.started_at = time.time()
         self.backend = "uninitialized"
+        self.audio_backend = "unavailable"
         self.speaking = False
         self.last_message = "Robot speaker server idle."
         self.last_error = ""
@@ -39,6 +45,10 @@ class SpeakerState:
     def set_backend(self, backend: str) -> None:
         with self.lock:
             self.backend = backend
+
+    def set_audio_backend(self, backend: str) -> None:
+        with self.lock:
+            self.audio_backend = str(backend or "unavailable").strip() or "unavailable"
 
     def set_speaking(self, speaking: bool) -> None:
         with self.lock:
@@ -60,6 +70,7 @@ class SpeakerState:
             return {
                 "ok": True,
                 "backend": self.backend,
+                "audio_backend": self.audio_backend,
                 "speaking": self.speaking,
                 "last_message": self.last_message,
                 "last_error": self.last_error,
@@ -74,10 +85,11 @@ class RobotSpeakerTTS:
         self.voice_name = (voice_name or "").strip()
         self.state = state
         self.backend_name = ""
+        self.audio_backend_name = "unavailable"
         self._pyttsx3_module = None
         self._active_process = None
         self._active_process_lock = threading.Lock()
-        self.queue: "queue.Queue[tuple[str, bool]]" = queue.Queue(maxsize=100)
+        self.queue: "queue.Queue[dict]" = queue.Queue(maxsize=100)
         self.stop_event = threading.Event()
         self.interrupt_event = threading.Event()
         self.thread: Optional[threading.Thread] = None
@@ -86,11 +98,26 @@ class RobotSpeakerTTS:
         try:
             self.backend_name = self._detect_backend()
             self.state.set_backend(self.backend_name)
-            self.state.set_message(f"Robot speaker backend ready: {self.backend_name}.")
         except Exception as exc:
             self.state.set_error(str(exc))
             logging.error("Robot speaker backend initialization failed: %s", exc)
             return False
+
+        try:
+            self.audio_backend_name = self._detect_audio_backend()
+        except Exception as exc:
+            self.audio_backend_name = "unavailable"
+            logging.warning("Robot speaker audio backend initialization failed: %s", exc)
+
+        self.state.set_audio_backend(self.audio_backend_name)
+        if self.audio_backend_name == "unavailable":
+            self.state.set_message(
+                f"Robot speaker backend ready: {self.backend_name}. Audio mirror unavailable."
+            )
+        else:
+            self.state.set_message(
+                f"Robot speaker backend ready: {self.backend_name}. Audio backend: {self.audio_backend_name}."
+            )
 
         self.thread = threading.Thread(
             target=self._worker,
@@ -105,7 +132,7 @@ class RobotSpeakerTTS:
         self.interrupt_event.set()
         self._terminate_active_process()
         try:
-            self.queue.put_nowait(("", False))
+            self.queue.put_nowait({"kind": "noop"})
         except queue.Full:
             pass
         if self.thread and self.thread.is_alive():
@@ -122,10 +149,60 @@ class RobotSpeakerTTS:
                 self._clear_queue_nonblocking()
                 self._terminate_active_process()
 
-            self.queue.put_nowait((text, interrupt))
+            self.queue.put_nowait(
+                {
+                    "kind": "tts",
+                    "text": text,
+                }
+            )
             return True, f"Speech queued for robot speaker ({self.backend_name})."
         except queue.Full:
             return False, "Robot speaker queue is full."
+
+    def play_audio(
+        self,
+        audio_bytes: bytes,
+        audio_format: str,
+        interrupt: bool,
+        loop: bool,
+        label: str,
+    ) -> tuple[bool, str]:
+        if not audio_bytes:
+            return False, "Audio payload is empty."
+
+        normalized_format = str(audio_format or "wav").strip().lower()
+        if normalized_format not in ("wav", "wave"):
+            return False, f"Unsupported audio format '{normalized_format}'."
+
+        if self.audio_backend_name == "unavailable":
+            return False, "No robot speaker audio playback backend is available."
+
+        try:
+            if interrupt:
+                self.interrupt_event.set()
+                self._clear_queue_nonblocking()
+                self._terminate_active_process()
+
+            self.queue.put_nowait(
+                {
+                    "kind": "audio",
+                    "audio_bytes": bytes(audio_bytes),
+                    "audio_format": normalized_format,
+                    "loop": bool(loop),
+                    "label": str(label or "").strip() or "audio",
+                }
+            )
+            return True, f"Audio queued for robot speaker ({self.audio_backend_name})."
+        except queue.Full:
+            return False, "Robot speaker queue is full."
+
+    def interrupt(self) -> tuple[bool, str]:
+        self.interrupt_event.set()
+        self._clear_queue_nonblocking()
+        self._terminate_active_process()
+        message = "Robot speaker playback interrupted."
+        self.state.set_message(message)
+        return True, message
 
     def _detect_backend(self) -> str:
         preference = self.backend_preference
@@ -154,6 +231,20 @@ class RobotSpeakerTTS:
         raise RuntimeError(
             "No robot speaker TTS backend is available. Install 'espeak' or 'pyttsx3'."
         )
+
+    def _detect_audio_backend(self) -> str:
+        candidates = (
+            ("ffplay", "ffplay"),
+            ("paplay", "paplay"),
+            ("aplay", "aplay"),
+            ("afplay", "afplay"),
+            ("play", "play"),
+        )
+        for backend_name, command_name in candidates:
+            if shutil.which(command_name):
+                return backend_name
+
+        return "unavailable"
 
     def _clear_queue_nonblocking(self) -> None:
         while True:
@@ -277,20 +368,117 @@ class RobotSpeakerTTS:
         except Exception as exc:
             return False, f"Robot speaker playback failed: {exc}"
 
+    def _build_audio_command(self, audio_path: str, loop: bool) -> list[str]:
+        if self.audio_backend_name == "ffplay":
+            command = ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error"]
+            if loop:
+                command.extend(["-loop", "0"])
+            command.append(audio_path)
+            return command
+
+        if self.audio_backend_name == "paplay":
+            return ["paplay", audio_path]
+
+        if self.audio_backend_name == "aplay":
+            return ["aplay", "-q", audio_path]
+
+        if self.audio_backend_name == "afplay":
+            return ["afplay", audio_path]
+
+        if self.audio_backend_name == "play":
+            return ["play", "-q", audio_path]
+
+        raise RuntimeError("No robot speaker audio playback backend is available.")
+
+    def _play_audio_file(self, audio_path: str, loop: bool) -> tuple[bool, str]:
+        if self.audio_backend_name == "unavailable":
+            return False, "No robot speaker audio playback backend is available."
+
+        if self.audio_backend_name == "ffplay":
+            return self._speak_with_subprocess(self._build_audio_command(audio_path, loop))
+
+        while True:
+            ok, message = self._speak_with_subprocess(self._build_audio_command(audio_path, False))
+            if not ok or not loop:
+                if ok and not loop:
+                    return True, "Robot speaker played mirrored audio."
+                return ok, message
+
+            if self.stop_event.is_set():
+                return False, "Robot speaker stopped."
+
+            if self.interrupt_event.is_set():
+                self.interrupt_event.clear()
+                return False, "Robot speaker interrupted."
+
+    def _play_audio_bytes(
+        self,
+        audio_bytes: bytes,
+        audio_format: str,
+        loop: bool,
+    ) -> tuple[bool, str]:
+        normalized_format = str(audio_format or "wav").strip().lower()
+        suffix = ".wav" if normalized_format in ("wav", "wave") else f".{normalized_format}"
+        temp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+                handle.write(audio_bytes)
+                temp_path = handle.name
+
+            return self._play_audio_file(temp_path, loop)
+        except Exception as exc:
+            return False, f"Robot speaker audio playback failed: {exc}"
+        finally:
+            if temp_path:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _is_expected_interrupt(message: str) -> bool:
+        lowered = str(message or "").strip().lower()
+        return "interrupted" in lowered or "stopped" in lowered
+
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
-                text, _interrupt = self.queue.get(timeout=0.2)
+                request = self.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
 
-            if not text:
+            if not request or request.get("kind") == "noop":
                 continue
 
             self.state.set_speaking(True)
             try:
                 if self.interrupt_event.is_set():
                     self.interrupt_event.clear()
+
+                request_kind = str(request.get("kind", "tts")).strip().lower()
+                if request_kind == "audio":
+                    label = str(request.get("label", "audio")).strip() or "audio"
+                    ok, message = self._play_audio_bytes(
+                        bytes(request.get("audio_bytes", b"")),
+                        str(request.get("audio_format", "wav")),
+                        bool(request.get("loop", False)),
+                    )
+                    if ok:
+                        self.state.set_message(
+                            f"{message} AudioBackend={self.audio_backend_name}."
+                        )
+                        logging.info("Robot speaker played audio: %s", label)
+                    elif self._is_expected_interrupt(message):
+                        self.state.set_message(message)
+                        logging.info("%s", message)
+                    else:
+                        self.state.set_error(message)
+                        logging.error("%s", message)
+                    continue
+
+                text = str(request.get("text", "")).strip()
+                if not text:
+                    continue
 
                 if self.backend_name == "espeak":
                     ok, message = self._speak_with_espeak(text)
@@ -302,6 +490,9 @@ class RobotSpeakerTTS:
                 if ok:
                     self.state.set_message(f"{message} Backend={self.backend_name}.")
                     logging.info("Robot speaker spoke: %s", text)
+                elif self._is_expected_interrupt(message):
+                    self.state.set_message(message)
+                    logging.info("%s", message)
                 else:
                     self.state.set_error(message)
                     logging.error("%s", message)
@@ -343,23 +534,78 @@ class RobotSpeakerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/speak":
-            self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": f"Unknown path: {path}"})
+        payload = self._read_json_body()
+
+        if path == "/speak":
+            text = str(payload.get("text", ""))
+            interrupt = bool(payload.get("interrupt", False))
+            ok, message = self.server.app.tts.speak(text, interrupt)
+            status = HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE
+            self._write_json(
+                status,
+                {
+                    "ok": ok,
+                    "message": message,
+                    "backend": self.server.app.tts.backend_name,
+                    "audio_backend": self.server.app.tts.audio_backend_name,
+                },
+            )
             return
 
-        payload = self._read_json_body()
-        text = str(payload.get("text", ""))
-        interrupt = bool(payload.get("interrupt", False))
-        ok, message = self.server.app.tts.speak(text, interrupt)
-        status = HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE
-        self._write_json(
-            status,
-            {
-                "ok": ok,
-                "message": message,
-                "backend": self.server.app.tts.backend_name,
-            },
-        )
+        if path == "/play-audio":
+            encoded_audio = str(payload.get("audio_base64", "")).strip()
+            if not encoded_audio:
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "message": "audio_base64 is required."},
+                )
+                return
+
+            try:
+                audio_bytes = base64.b64decode(encoded_audio, validate=True)
+            except Exception:
+                self._write_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "message": "audio_base64 is not valid base64."},
+                )
+                return
+
+            ok, message = self.server.app.tts.play_audio(
+                audio_bytes=audio_bytes,
+                audio_format=str(payload.get("format", "wav")),
+                interrupt=bool(payload.get("interrupt", False)),
+                loop=bool(payload.get("loop", False)),
+                label=str(payload.get("label", "")),
+            )
+            status = HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE
+            self._write_json(
+                status,
+                {
+                    "ok": ok,
+                    "message": message,
+                    "backend": self.server.app.tts.backend_name,
+                    "audio_backend": self.server.app.tts.audio_backend_name,
+                },
+            )
+            return
+
+        if path == "/stop":
+            stop_reason = str(payload.get("reason", "")).strip()
+            ok, message = self.server.app.tts.interrupt()
+            if stop_reason:
+                logging.info("Robot speaker stop requested: %s", stop_reason)
+            self._write_json(
+                HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE,
+                {
+                    "ok": ok,
+                    "message": message,
+                    "backend": self.server.app.tts.backend_name,
+                    "audio_backend": self.server.app.tts.audio_backend_name,
+                },
+            )
+            return
+
+        self._write_json(HTTPStatus.NOT_FOUND, {"ok": False, "message": f"Unknown path: {path}"})
 
     def log_message(self, format: str, *args) -> None:
         logging.info("%s - %s", self.address_string(), format % args)
