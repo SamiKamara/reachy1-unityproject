@@ -80,10 +80,19 @@ namespace Reachy.ControlApp
         private const string ReachyIntroductionHelloWavePoseName = "Hello Pose D";
         private const string ReachyIntroductionDefaultSpeechText =
             "Hello, I am Reachy, a robot made by Pollen Robotics. My main trick is teleoperation, " +
-            "which means that I can be controlled via a VR headset and used as a pair of hands for remote " +
-            "work and other tasks. However, the students here reprogrammed me to give this presentation, " +
-            "so here I am. Anyway, feel free to ask questions. I will use my very small internal AI, " +
-            "which runs locally on the laptop, and try my best to answer them.";
+            "which means I can be controlled via a VR headset and used as a pair of hands for remote work " +
+            "and other tasks. However, the students here reprogrammed me to give this presentation, so " +
+            "here I am.\n\n" +
+            "You might wonder why my voice sounds kind of bad by today's standards, and why my movements " +
+            "are a bit sluggish. This is because I am running on an entirely standalone and minimalist " +
+            "system that does not depend on external sources. Adding a ChatGPT brain and an ElevenLabs " +
+            "voice would likely take me to a whole new level.\n\n" +
+            "Another notable thing is that I was not originally made for this kind of thing, but I was " +
+            "repurposed for it today. Repurposing things smartly could even lead us to the idea of " +
+            "evolution, and from there to our topic today. I wish I had a smart way to steer this speech " +
+            "in that direction. Anyway, our topic is the future.\n\n" +
+            "We would like you to draw some pictures and write down some thoughts about how you envision " +
+            "the future of robotics. In the name of science and stuff. Pretty please.";
         private const float LoopingAnimationMinimumPlaybackSpeedScale = 0.35f;
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
@@ -790,6 +799,7 @@ namespace Reachy.ControlApp
         private string _manualControllerStatus = "Controller inactive.";
         private string _manualControllerDetectedDevice = "No gamepad detected.";
         private float _nextManualControllerBaseCommandAt;
+        private float _nextManualControllerBaseEventLogAt;
         private float _nextManualControllerJointCommandAt;
         private bool _manualControllerTargetsInitialized;
         private bool _manualControllerBaseWasActiveLastFrame;
@@ -1846,9 +1856,15 @@ namespace Reachy.ControlApp
                     _manualControllerStatus = stopOk
                         ? "Controller: mobile base stopped."
                         : $"Controller base stop failed: {stopMessage}";
+                    LogRuntimeEvent(
+                        "controller-base",
+                        stopOk ? "stop" : "stop-failed",
+                        $"mode={activeMode}; {stopMessage}",
+                        stopOk ? "INFO" : "ERROR");
                     _nextManualControllerBaseCommandAt = Time.unscaledTime + ManualControllerBaseSendIntervalSeconds;
                 }
 
+                _nextManualControllerBaseEventLogAt = 0f;
                 _manualControllerBaseWasActiveLastFrame = false;
                 return;
             }
@@ -1874,6 +1890,20 @@ namespace Reachy.ControlApp
             _manualControllerStatus = ok
                 ? $"Controller base active: {baseMessage}"
                 : $"Controller base command failed: {baseMessage}";
+
+            bool shouldLogBaseCommand = !ok ||
+                                        !_manualControllerBaseWasActiveLastFrame ||
+                                        Time.unscaledTime >= _nextManualControllerBaseEventLogAt;
+            if (shouldLogBaseCommand)
+            {
+                LogRuntimeEvent(
+                    "controller-base",
+                    ok ? "command" : "command-failed",
+                    $"mode={activeMode}; input(forward={forwardInput:F2}, lateral={lateralInput:F2}, turn={turnInput:F2}); " +
+                    $"velocity(x={xVel:F2}, y={yVel:F2}, rot={rotVel:F2}); {baseMessage}",
+                    ok ? "INFO" : "ERROR");
+                _nextManualControllerBaseEventLogAt = Time.unscaledTime + (ok ? 1f : 0.25f);
+            }
 
             _nextManualControllerBaseCommandAt = Time.unscaledTime + ManualControllerBaseSendIntervalSeconds;
             _manualControllerBaseWasActiveLastFrame = true;
@@ -10849,6 +10879,29 @@ namespace Reachy.ControlApp
             LogRuntimeEvent(category, title, detail, severity);
         }
 
+        private void LogMobileBaseAvailabilityProbe(StringBuilder aggregate, ReachyControlMode targetMode)
+        {
+            if (aggregate == null || targetMode != ReachyControlMode.RealRobot || _client == null || !_client.IsConnected)
+            {
+                return;
+            }
+
+            bool probeOk = _client.TryGetMobileBasePresence(out bool present, out string mobilityMessage);
+            string detail = probeOk
+                ? $"Mobile base probe: {mobilityMessage}"
+                : $"Mobile base probe failed: {mobilityMessage}";
+
+            aggregate.AppendLine();
+            aggregate.AppendLine(detail);
+            LogRuntimeEvent(
+                "mobility",
+                probeOk ? "presence-probe" : "presence-probe-failed",
+                detail,
+                probeOk
+                    ? (present ? "INFO" : "WARN")
+                    : "ERROR");
+        }
+
         private void OpenRuntimeLogsFolderInExplorer()
         {
             try
@@ -11066,6 +11119,7 @@ namespace Reachy.ControlApp
                     _autoReconnectScheduled = false;
                     _connectedMode = targetMode;
                     _nextHealthCheckAt = Time.unscaledTime + Mathf.Max(0.5f, healthCheckIntervalSeconds);
+                    LogMobileBaseAvailabilityProbe(aggregate, targetMode);
                     LogConnectionEvent(
                         targetMode,
                         "connect-success",

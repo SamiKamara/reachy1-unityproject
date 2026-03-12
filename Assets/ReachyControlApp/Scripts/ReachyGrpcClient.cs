@@ -21,6 +21,8 @@ namespace Reachy.ControlApp
         private const double MobilityRpcTimeoutSeconds = 1.5;
         private const double RestartRpcTimeoutSeconds = 2.0;
         private const int MotionPreparationSettleDelayMs = 100;
+        private const int DedicatedMobilityPortPrimary = 50061;
+        private const int DedicatedMobilityPortLegacy = 50051;
         private const float DefaultPoseTransitionSpeedScale = 0.6f;
         private const float MinPoseTransitionSpeedScale = 0.05f;
         private const float MaxPoseTransitionSpeedScale = 2.0f;
@@ -37,6 +39,7 @@ namespace Reachy.ControlApp
 
         private Channel _jointChannel;
         private JointService.JointServiceClient _jointClient;
+        private Channel _mobilityChannel;
         private MobilityService.MobilityServiceClient _mobilityClient;
         private MobileBasePresenceService.MobileBasePresenceServiceClient _mobileBasePresenceClient;
         private Channel _cameraChannel;
@@ -44,6 +47,7 @@ namespace Reachy.ControlApp
         private readonly object _cameraLock = new object();
         private string _cameraHost = string.Empty;
         private int _cameraPort;
+        private int _mobilityPort;
         private bool? _cachedMobileBasePresence;
         private bool _mobilityConfiguredForSpeedMode;
         private bool _mobilityServiceUnavailable;
@@ -193,22 +197,11 @@ namespace Reachy.ControlApp
             ConnectedHost = string.Empty;
             ConnectedPort = 0;
             _jointNames.Clear();
-            _cachedMobileBasePresence = null;
-            _mobilityConfiguredForSpeedMode = false;
-            _mobilityServiceUnavailable = false;
-            _mobilityClient = null;
-            _mobileBasePresenceClient = null;
+            ResetMobilityClients();
 
             if (_jointChannel != null)
             {
-                try
-                {
-                    _jointChannel.ShutdownAsync().Wait(1500);
-                }
-                catch
-                {
-                    // Ignore cleanup errors during disconnect.
-                }
+                ShutdownChannelQuietly(_jointChannel);
             }
 
             _jointClient = null;
@@ -488,6 +481,13 @@ namespace Reachy.ControlApp
 
             if (_mobilityServiceUnavailable)
             {
+                if (!HasDedicatedMobilityChannel &&
+                    TryBindDedicatedMobilityEndpoint(out present, out string dedicatedMessage))
+                {
+                    message = dedicatedMessage;
+                    return true;
+                }
+
                 message = "Mobility service is unavailable on the connected endpoint.";
                 return false;
             }
@@ -495,6 +495,13 @@ namespace Reachy.ControlApp
             EnsureMobilityClients();
             if (_mobileBasePresenceClient == null)
             {
+                if (!HasDedicatedMobilityChannel &&
+                    TryBindDedicatedMobilityEndpoint(out present, out string dedicatedMessage))
+                {
+                    message = dedicatedMessage;
+                    return true;
+                }
+
                 message = "Mobile base presence client is unavailable.";
                 return false;
             }
@@ -502,9 +509,16 @@ namespace Reachy.ControlApp
             if (_cachedMobileBasePresence.HasValue)
             {
                 present = _cachedMobileBasePresence.Value;
-                message = present
-                    ? "Connected endpoint reports a mobile base."
-                    : "Connected endpoint reports no mobile base.";
+                if (!present &&
+                    !HasDedicatedMobilityChannel &&
+                    TryBindDedicatedMobilityEndpoint(out bool dedicatedPresent, out string dedicatedMessage))
+                {
+                    present = dedicatedPresent;
+                    message = dedicatedMessage;
+                    return true;
+                }
+
+                message = BuildMobileBasePresenceMessage(present);
                 return true;
             }
 
@@ -515,13 +529,29 @@ namespace Reachy.ControlApp
                     deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
                 present = response != null && response.Presence == true;
                 _cachedMobileBasePresence = present;
-                message = present
-                    ? "Connected endpoint reports a mobile base."
-                    : "Connected endpoint reports no mobile base.";
+
+                if (!present &&
+                    !HasDedicatedMobilityChannel &&
+                    TryBindDedicatedMobilityEndpoint(out bool dedicatedPresent, out string dedicatedMessage))
+                {
+                    present = dedicatedPresent;
+                    message = dedicatedMessage;
+                    return true;
+                }
+
+                message = BuildMobileBasePresenceMessage(present);
                 return true;
             }
             catch (RpcException rpcEx)
             {
+                if (!HasDedicatedMobilityChannel &&
+                    ShouldTryDedicatedMobilityEndpoint(rpcEx.StatusCode) &&
+                    TryBindDedicatedMobilityEndpoint(out present, out string dedicatedMessage))
+                {
+                    message = dedicatedMessage;
+                    return true;
+                }
+
                 if (rpcEx.StatusCode == StatusCode.Unimplemented)
                 {
                     _mobilityServiceUnavailable = true;
@@ -612,6 +642,20 @@ namespace Reachy.ControlApp
             }
             catch (RpcException rpcEx)
             {
+                if (!HasDedicatedMobilityChannel &&
+                    ShouldTryDedicatedMobilityEndpoint(rpcEx.StatusCode) &&
+                    TryBindDedicatedMobilityEndpoint(out bool dedicatedPresent, out string dedicatedMessage))
+                {
+                    if (!dedicatedPresent)
+                    {
+                        message = dedicatedMessage;
+                        return false;
+                    }
+
+                    _mobilityConfiguredForSpeedMode = false;
+                    return SendBaseVelocity(xVel, yVel, rotVel, durationSeconds, out message);
+                }
+
                 if (rpcEx.StatusCode == StatusCode.Unimplemented)
                 {
                     _mobilityServiceUnavailable = true;
@@ -1146,7 +1190,8 @@ namespace Reachy.ControlApp
 
         private void EnsureMobilityClients()
         {
-            if (_jointChannel == null)
+            Channel channel = _mobilityChannel ?? _jointChannel;
+            if (channel == null)
             {
                 _mobilityClient = null;
                 _mobileBasePresenceClient = null;
@@ -1155,12 +1200,143 @@ namespace Reachy.ControlApp
 
             if (_mobilityClient == null)
             {
-                _mobilityClient = new MobilityService.MobilityServiceClient(_jointChannel);
+                _mobilityClient = new MobilityService.MobilityServiceClient(channel);
             }
 
             if (_mobileBasePresenceClient == null)
             {
-                _mobileBasePresenceClient = new MobileBasePresenceService.MobileBasePresenceServiceClient(_jointChannel);
+                _mobileBasePresenceClient = new MobileBasePresenceService.MobileBasePresenceServiceClient(channel);
+            }
+        }
+
+        private bool HasDedicatedMobilityChannel => _mobilityChannel != null;
+
+        private static bool ShouldTryDedicatedMobilityEndpoint(StatusCode statusCode)
+        {
+            return statusCode == StatusCode.Unimplemented ||
+                   statusCode == StatusCode.Unavailable ||
+                   statusCode == StatusCode.Cancelled ||
+                   statusCode == StatusCode.DeadlineExceeded;
+        }
+
+        private string BuildMobileBasePresenceMessage(bool present)
+        {
+            if (HasDedicatedMobilityChannel &&
+                !string.IsNullOrWhiteSpace(ConnectedHost) &&
+                _mobilityPort > 0)
+            {
+                return present
+                    ? $"Dedicated mobility endpoint {ConnectedHost}:{_mobilityPort} reports a mobile base."
+                    : $"Dedicated mobility endpoint {ConnectedHost}:{_mobilityPort} reports no mobile base.";
+            }
+
+            return present
+                ? "Connected endpoint reports a mobile base."
+                : "Connected endpoint reports no mobile base.";
+        }
+
+        private bool TryBindDedicatedMobilityEndpoint(out bool present, out string message)
+        {
+            present = false;
+            message = string.Empty;
+
+            if (!IsConnected || string.IsNullOrWhiteSpace(ConnectedHost))
+            {
+                message = "Not connected.";
+                return false;
+            }
+
+            int[] candidatePorts = { DedicatedMobilityPortPrimary, DedicatedMobilityPortLegacy };
+            string lastFailure = string.Empty;
+            for (int i = 0; i < candidatePorts.Length; i++)
+            {
+                int candidatePort = candidatePorts[i];
+                if (candidatePort <= 0 ||
+                    candidatePort == ConnectedPort ||
+                    (HasDedicatedMobilityChannel && candidatePort == _mobilityPort))
+                {
+                    continue;
+                }
+
+                Channel candidateChannel = null;
+                try
+                {
+                    candidateChannel = new Channel($"{ConnectedHost}:{candidatePort}", ChannelCredentials.Insecure);
+                    var presenceClient = new MobileBasePresenceService.MobileBasePresenceServiceClient(candidateChannel);
+                    MobileBasePresence response = presenceClient.GetMobileBasePresence(
+                        new Empty(),
+                        deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
+
+                    present = response != null && response.Presence == true;
+                    if (_mobilityChannel != null)
+                    {
+                        ShutdownChannelQuietly(_mobilityChannel);
+                    }
+
+                    _mobilityChannel = candidateChannel;
+                    candidateChannel = null;
+                    _mobilityPort = candidatePort;
+                    _mobileBasePresenceClient = presenceClient;
+                    _mobilityClient = new MobilityService.MobilityServiceClient(_mobilityChannel);
+                    _cachedMobileBasePresence = present;
+                    _mobilityConfiguredForSpeedMode = false;
+                    _mobilityServiceUnavailable = false;
+                    message = BuildMobileBasePresenceMessage(present);
+                    return true;
+                }
+                catch (RpcException rpcEx)
+                {
+                    lastFailure = $"{ConnectedHost}:{candidatePort} => {rpcEx.StatusCode}: {rpcEx.Status.Detail}";
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = $"{ConnectedHost}:{candidatePort} => {ex.Message}";
+                }
+                finally
+                {
+                    if (candidateChannel != null)
+                    {
+                        ShutdownChannelQuietly(candidateChannel);
+                    }
+                }
+            }
+
+            message = string.IsNullOrWhiteSpace(lastFailure)
+                ? "Dedicated mobility endpoint probe failed."
+                : $"Dedicated mobility endpoint probe failed. {lastFailure}";
+            return false;
+        }
+
+        private void ResetMobilityClients()
+        {
+            _cachedMobileBasePresence = null;
+            _mobilityConfiguredForSpeedMode = false;
+            _mobilityServiceUnavailable = false;
+            _mobilityClient = null;
+            _mobileBasePresenceClient = null;
+            _mobilityPort = 0;
+
+            if (_mobilityChannel != null)
+            {
+                ShutdownChannelQuietly(_mobilityChannel);
+                _mobilityChannel = null;
+            }
+        }
+
+        private static void ShutdownChannelQuietly(Channel channel)
+        {
+            if (channel == null)
+            {
+                return;
+            }
+
+            try
+            {
+                channel.ShutdownAsync().Wait(1500);
+            }
+            catch
+            {
+                // Ignore cleanup errors during disconnect.
             }
         }
 
