@@ -652,6 +652,7 @@ namespace Reachy.ControlApp
         [SerializeField] private float retryDelaySeconds = 1.0f;
         [SerializeField] private float grpcConnectTimeoutSeconds = 3.0f;
         [SerializeField] private float presetPoseTransitionSpeedScale = 0.6f;
+        [SerializeField] private bool useKeyframePoseSpeedLimit = true;
         [SerializeField] private float postRestartWaitSeconds = 2.5f;
         [SerializeField] private float healthCheckIntervalSeconds = 2.0f;
         [SerializeField] private float reconnectCooldownSeconds = 4.0f;
@@ -1063,7 +1064,7 @@ namespace Reachy.ControlApp
             simulationCameraPort = Mathf.Clamp(simulationCameraPort, 1, 65535);
             robotCameraPort = Mathf.Clamp(robotCameraPort, 1, 65535);
             presetPoseTransitionSpeedScale = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
-            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+            SyncPoseMotionSettingsToClient();
             cameraRefreshIntervalSeconds = Mathf.Max(0.05f, cameraRefreshIntervalSeconds);
             cameraRpcTimeoutSeconds = Mathf.Max(0.2f, cameraRpcTimeoutSeconds);
             localAiAgentPollIntervalSeconds = Mathf.Max(0.1f, localAiAgentPollIntervalSeconds);
@@ -5006,6 +5007,11 @@ namespace Reachy.ControlApp
 
                 case VoiceCommandRouter.VoiceActionKind.StopMotion:
                     bool hadPending = _voiceHasPendingAction;
+                    bool stoppedPacedPoseMotion = _client != null && _client.HasActivePoseMotion;
+                    if (stoppedPacedPoseMotion)
+                    {
+                        _client.CancelActivePoseMotion();
+                    }
                     bool stoppedActedSequence = StopActedSequence(
                         updateStatus: false,
                         reason: "Stopped by voice command.",
@@ -5019,17 +5025,18 @@ namespace Reachy.ControlApp
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Stopped by voice command.");
                     _voiceHasPendingAction = false;
                     _voicePendingAction = default(VoiceCommandRouter.RoutedAction);
-                    message = hadPending || stoppedSequence || stoppedActedSequence || stoppedLoopingAnimation
+                    message = hadPending || stoppedSequence || stoppedActedSequence || stoppedLoopingAnimation || stoppedPacedPoseMotion
                         ? BuildStopAcknowledgementMessage(
                             hadPending,
                             stoppedSequence,
                             stoppedActedSequence,
-                            stoppedLoopingAnimation)
+                            stoppedLoopingAnimation,
+                            stoppedPacedPoseMotion)
                         : "Stop command acknowledged. No explicit robot stop API is available yet.";
                     LogMotionEvent(
                         "voice",
                         "stop-motion",
-                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedActedSequence={stoppedActedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; message={message}",
+                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedActedSequence={stoppedActedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; stoppedPacedPoseMotion={stoppedPacedPoseMotion}; message={message}",
                         success: true,
                         targetsRealRobot: IsRealRobotSessionActive());
                     SetStatus("Voice stop", message);
@@ -5217,6 +5224,7 @@ namespace Reachy.ControlApp
 
             StopCoroutine(_voiceShowMovementCoroutine);
             _voiceShowMovementCoroutine = null;
+            _client?.CancelActivePoseMotion();
             LogRuntimeEvent(
                 "voice",
                 "show-movement-stopped",
@@ -5309,7 +5317,8 @@ namespace Reachy.ControlApp
             bool hadPendingAction,
             bool stoppedShowMovement,
             bool stoppedActedSequence,
-            bool stoppedLoopingAnimation)
+            bool stoppedLoopingAnimation,
+            bool stoppedPacedPoseMotion)
         {
             var stoppedItems = new List<string>();
             if (hadPendingAction)
@@ -5330,6 +5339,11 @@ namespace Reachy.ControlApp
             if (stoppedLoopingAnimation)
             {
                 stoppedItems.Add("looping animation");
+            }
+
+            if (stoppedPacedPoseMotion)
+            {
+                stoppedItems.Add("keyframed pose motion");
             }
 
             if (stoppedItems.Count == 0)
@@ -7911,7 +7925,7 @@ namespace Reachy.ControlApp
 
             presetPoseTransitionSpeedScale = GUILayout.HorizontalSlider(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
             presetPoseTransitionSpeedScale = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
-            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+            SyncPoseMotionSettingsToClient();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Slow");
@@ -7920,6 +7934,17 @@ namespace Reachy.ControlApp
             GUILayout.FlexibleSpace();
             GUILayout.Label("Fast");
             GUILayout.EndHorizontal();
+
+            useKeyframePoseSpeedLimit = GUILayout.Toggle(
+                useKeyframePoseSpeedLimit,
+                "Use keyframe pose speed limiting"
+            );
+            GUILayout.Label(
+                useKeyframePoseSpeedLimit
+                    ? "Generates extra in-between pose targets for slower motion on both simulation and real robot."
+                    : "Uses the original direct speed-limit commands instead."
+            );
+            SyncPoseMotionSettingsToClient();
         }
 
         private void DrawLoopingAnimationsSection()
@@ -8314,7 +8339,8 @@ namespace Reachy.ControlApp
                     "hello",
                     i + 1,
                     helloPoseSequence.Count,
-                    out string poseMessage);
+                    out string poseMessage,
+                    out float poseDurationSeconds);
                 if (!poseOk)
                 {
                     StopLoopingAnimation(
@@ -8327,7 +8353,7 @@ namespace Reachy.ControlApp
                 shouldReturnToNeutral = true;
                 if (i < helloPoseSequence.Count - 1)
                 {
-                    yield return new WaitForSecondsRealtime(helloPoseDelaySeconds);
+                    yield return new WaitForSecondsRealtime(Mathf.Max(helloPoseDelaySeconds, poseDurationSeconds));
                 }
             }
 
@@ -8600,7 +8626,8 @@ namespace Reachy.ControlApp
                     "return-neutral",
                     1,
                     1,
-                    out neutralMessage);
+                    out neutralMessage,
+                    out _);
             }
 
             ClearActedSequenceState();
@@ -8668,11 +8695,11 @@ namespace Reachy.ControlApp
 
                     bool wasConnected = _client.IsConnected;
                     bool targetsRealRobot = IsRealRobotSessionActive();
-                    float speedLimitPercent = Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f) * 100f;
-                    bool ok = _client.SendJointGoals(
+                    bool ok = _client.SendPoseJointGoals(
                         keyframe.JointGoalsDegrees,
-                        speedLimitPercent,
-                        out string motionMessage);
+                        presetPoseTransitionSpeedScale,
+                        out string motionMessage,
+                        out float transitionDurationSeconds);
                     HandlePotentialDisconnectAfterOperation(
                         $"looping animation '{definition.Name}' keyframe {i + 1}",
                         wasConnected);
@@ -8698,6 +8725,7 @@ namespace Reachy.ControlApp
                     }
 
                     float waitSeconds =
+                        transitionDurationSeconds +
                         keyframe.HoldDurationSeconds /
                         Mathf.Max(LoopingAnimationMinimumPlaybackSpeedScale, GetLoopingAnimationPlaybackSpeedScale());
                     if (waitSeconds > 0f)
@@ -8725,6 +8753,7 @@ namespace Reachy.ControlApp
             StopCoroutine(_loopingAnimationCoroutine);
             _loopingAnimationCoroutine = null;
             _activeLoopingAnimationName = string.Empty;
+            _client?.CancelActivePoseMotion();
 
             string message = string.IsNullOrWhiteSpace(reason)
                 ? $"Looping animation '{stoppedAnimationName}' stopped."
@@ -8750,6 +8779,7 @@ namespace Reachy.ControlApp
                 : _activeActedSequenceName;
             StopCoroutine(_actedSequenceCoroutine);
             ClearActedSequenceState();
+            _client?.CancelActivePoseMotion();
 
             if (stopLoopingAnimation)
             {
@@ -9262,9 +9292,11 @@ namespace Reachy.ControlApp
             string phase,
             int stepIndex,
             int stepCount,
-            out string message)
+            out string message,
+            out float scheduledDurationSeconds)
         {
             message = string.Empty;
+            scheduledDurationSeconds = 0f;
             if (_client == null || !_client.IsConnected)
             {
                 message = $"Acted sequence '{sequenceName}' cannot send pose '{poseName}' because the robot is disconnected.";
@@ -9279,12 +9311,12 @@ namespace Reachy.ControlApp
                 $"sequence={sequenceName}; phase={phase}; step={stepIndex}/{stepCount}; pose={poseName}; mode={GetConnectedModeLabel()}",
                 success: true,
                 targetsRealRobot: targetsRealRobot);
-            bool ok = _client.SendPresetPose(poseName, out message);
+            bool ok = _client.SendPresetPose(poseName, out message, out scheduledDurationSeconds);
             HandlePotentialDisconnectAfterOperation($"acted sequence '{sequenceName}' pose '{poseName}'", wasConnected);
             LogMotionEvent(
                 "acted-sequence",
                 "pose-result",
-                $"sequence={sequenceName}; phase={phase}; step={stepIndex}/{stepCount}; pose={poseName}; result={(ok ? "ok" : "failed")}; detail={message}",
+                $"sequence={sequenceName}; phase={phase}; step={stepIndex}/{stepCount}; pose={poseName}; duration={scheduledDurationSeconds:F2}s; result={(ok ? "ok" : "failed")}; detail={message}",
                 success: ok,
                 targetsRealRobot: targetsRealRobot);
             return ok;
@@ -9362,6 +9394,17 @@ namespace Reachy.ControlApp
         private float GetLoopingAnimationPlaybackSpeedScale()
         {
             return Mathf.Clamp(presetPoseTransitionSpeedScale, 0.05f, 2.0f);
+        }
+
+        private void SyncPoseMotionSettingsToClient()
+        {
+            if (_client == null)
+            {
+                return;
+            }
+
+            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+            _client.UseKeyframePoseSpeedLimiter = useKeyframePoseSpeedLimit;
         }
 
         private void DrawAiView(float topY, float logicalMargin, float logicalScreenWidth, float logicalScreenHeight)
@@ -11237,9 +11280,15 @@ namespace Reachy.ControlApp
                 presetPoseTransitionSpeedScale = Mathf.Clamp(parsedPoseSpeedPercent / 100f, 0.05f, 2.0f);
             }
 
-            _client.PoseTransitionSpeedScale = presetPoseTransitionSpeedScale;
+            SyncPoseMotionSettingsToClient();
             GUILayout.Label("(presets + loops)", GUILayout.Width(130f));
             GUILayout.EndHorizontal();
+
+            useKeyframePoseSpeedLimit = GUILayout.Toggle(
+                useKeyframePoseSpeedLimit,
+                "Use keyframe pose speed limiting"
+            );
+            SyncPoseMotionSettingsToClient();
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Post-restart wait", GUILayout.Width(100f));

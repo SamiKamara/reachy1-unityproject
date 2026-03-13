@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
@@ -27,6 +28,12 @@ namespace Reachy.ControlApp
         private const float MinPoseTransitionSpeedScale = 0.05f;
         private const float MaxPoseTransitionSpeedScale = 2.0f;
         private const float DefaultManualJointSpeedLimitPercent = 50.0f;
+        private const float KeyframePacingTopSpeedDegPerSecond = 90.0f;
+        private const float KeyframePacingFastUpdateRateHz = 20.0f;
+        private const float KeyframePacingSlowUpdateRateHz = 8.0f;
+        private const int KeyframePacingMaxGeneratedSteps = 360;
+        private const float KeyframePacingMinimumDeltaDegrees = 0.25f;
+        private const float KeyframePacingMinimumDurationSeconds = 0.05f;
         private const string NeutralArmsPoseName = "Neutral Arms";
         private const string TPoseName = "T-Pose";
         private const string TrayHoldingPoseName = "Tray Holding";
@@ -52,9 +59,14 @@ namespace Reachy.ControlApp
         private bool _mobilityConfiguredForSpeedMode;
         private bool _mobilityServiceUnavailable;
         private float _poseTransitionSpeedScale = DefaultPoseTransitionSpeedScale;
+        private bool _useKeyframePoseSpeedLimiter = true;
         private readonly List<string> _jointNames = new List<string>();
         private readonly List<string> _presetPoseNames = new List<string>();
         private readonly List<PosePreset> _presetPoses = BuildPresetPoseLibrary();
+        private readonly object _jointRpcLock = new object();
+        private readonly object _pacedMotionLock = new object();
+        private int _pacedMotionVersion;
+        private Task _pacedMotionTask;
 
         public bool IsConnected { get; private set; }
         public string ConnectedHost { get; private set; } = string.Empty;
@@ -66,6 +78,28 @@ namespace Reachy.ControlApp
         {
             get => _poseTransitionSpeedScale;
             set => _poseTransitionSpeedScale = ClampPoseTransitionSpeedScale(value);
+        }
+        public bool HasActivePoseMotion
+        {
+            get
+            {
+                lock (_pacedMotionLock)
+                {
+                    return _pacedMotionTask != null && !_pacedMotionTask.IsCompleted;
+                }
+            }
+        }
+        public bool UseKeyframePoseSpeedLimiter
+        {
+            get => _useKeyframePoseSpeedLimiter;
+            set
+            {
+                _useKeyframePoseSpeedLimiter = value;
+                if (!value)
+                {
+                    CancelActivePoseMotion();
+                }
+            }
         }
 
         public struct CameraImageFetchResult
@@ -193,6 +227,7 @@ namespace Reachy.ControlApp
 
         public void Disconnect()
         {
+            CancelActivePoseMotion(waitForStop: true);
             IsConnected = false;
             ConnectedHost = string.Empty;
             ConnectedPort = 0;
@@ -207,6 +242,30 @@ namespace Reachy.ControlApp
             _jointClient = null;
             _jointChannel = null;
             DisconnectCamera();
+        }
+
+        public void CancelActivePoseMotion(bool waitForStop = false)
+        {
+            Task taskToWait = null;
+            lock (_pacedMotionLock)
+            {
+                _pacedMotionVersion++;
+                taskToWait = _pacedMotionTask;
+            }
+
+            if (!waitForStop || taskToWait == null || taskToWait.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                taskToWait.Wait(300);
+            }
+            catch
+            {
+                // Ignore pacing-task shutdown errors during disconnect/cancel.
+            }
         }
 
         public CameraImageFetchResult FetchCameraImage(
@@ -305,10 +364,14 @@ namespace Reachy.ControlApp
 
             try
             {
-                JointsId joints = _jointClient.GetAllJointsId(
-                    new Empty(),
-                    deadline: DateTime.UtcNow.AddSeconds(DefaultRpcTimeoutSeconds)
-                );
+                JointsId joints;
+                lock (_jointRpcLock)
+                {
+                    joints = _jointClient.GetAllJointsId(
+                        new Empty(),
+                        deadline: DateTime.UtcNow.AddSeconds(DefaultRpcTimeoutSeconds)
+                    );
+                }
 
                 _jointNames.Clear();
                 if (joints != null && joints.Names != null)
@@ -340,14 +403,15 @@ namespace Reachy.ControlApp
                 return false;
             }
 
-            var command = new JointsCommand();
-            command.Commands.Add(new JointCommand
-            {
-                Id = new JointId { Name = jointName },
-                GoalPosition = DegreesToRadians(goalDegrees)
-            });
-
-            return SendMotionCommand(command, out message);
+            CancelActivePoseMotion();
+            return SendMotionCommand(
+                BuildJointsCommand(
+                    new Dictionary<string, float>(1, StringComparer.OrdinalIgnoreCase)
+                    {
+                        [jointName] = goalDegrees
+                    },
+                    null),
+                out message);
         }
 
         public bool TryGetJointPositions(
@@ -390,9 +454,13 @@ namespace Reachy.ControlApp
 
             try
             {
-                JointsState response = _jointClient.GetJointsState(
-                    request,
-                    deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds));
+                JointsState response;
+                lock (_jointRpcLock)
+                {
+                    response = _jointClient.GetJointsState(
+                        request,
+                        deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds));
+                }
 
                 if (response == null || response.States == null || response.Ids == null)
                 {
@@ -439,31 +507,16 @@ namespace Reachy.ControlApp
                 return false;
             }
 
-            float normalizedSpeedLimit = ClampManualJointSpeedLimitPercent(speedLimitPercent);
-            var command = new JointsCommand();
-            int validGoalCount = 0;
-            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
-            {
-                if (string.IsNullOrWhiteSpace(goal.Key))
-                {
-                    continue;
-                }
-
-                command.Commands.Add(new JointCommand
-                {
-                    Id = new JointId { Name = goal.Key },
-                    GoalPosition = DegreesToRadians(goal.Value),
-                    SpeedLimit = normalizedSpeedLimit
-                });
-                validGoalCount++;
-            }
-
-            if (validGoalCount <= 0)
+            CancelActivePoseMotion();
+            if (!TryBuildGoalMap(jointGoalsDegrees, out Dictionary<string, float> sanitizedGoals))
             {
                 message = "Joint goal set contains no valid joint names.";
                 return false;
             }
 
+            float normalizedSpeedLimit = ClampManualJointSpeedLimitPercent(speedLimitPercent);
+            int validGoalCount = sanitizedGoals.Count;
+            JointsCommand command = BuildJointsCommand(sanitizedGoals, normalizedSpeedLimit);
             bool ok = SendMotionCommand(command, out string sendMessage);
             message = ok
                 ? $"Sent {validGoalCount} joint goal(s) at {normalizedSpeedLimit:F0}% speed. {sendMessage}"
@@ -691,6 +744,12 @@ namespace Reachy.ControlApp
 
         public bool SendPresetPose(string presetName, out string message)
         {
+            return SendPresetPose(presetName, out message, out _);
+        }
+
+        public bool SendPresetPose(string presetName, out string message, out float scheduledDurationSeconds)
+        {
+            scheduledDurationSeconds = 0f;
             if (!EnsureConnected(out message))
             {
                 return false;
@@ -703,24 +762,48 @@ namespace Reachy.ControlApp
                 return false;
             }
 
-            var command = new JointsCommand();
-            float poseSpeedPercent = ClampPoseTransitionSpeedScale(PoseTransitionSpeedScale) * 100.0f;
+            var goalMap = new Dictionary<string, float>(preset.Goals.Count, StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < preset.Goals.Count; i++)
             {
                 PoseJointGoal goal = preset.Goals[i];
-                command.Commands.Add(new JointCommand
+                if (!string.IsNullOrWhiteSpace(goal.JointName))
                 {
-                    Id = new JointId { Name = goal.JointName },
-                    GoalPosition = DegreesToRadians(goal.GoalDegrees),
-                    SpeedLimit = poseSpeedPercent
-                });
+                    goalMap[goal.JointName] = goal.GoalDegrees;
+                }
             }
 
-            bool ok = SendMotionCommand(command, out string sendMessage);
+            bool ok = SendPoseJointGoalsInternal(
+                preset.Name,
+                goalMap,
+                PoseTransitionSpeedScale,
+                out string sendMessage,
+                out scheduledDurationSeconds);
             message = ok
-                ? $"Preset '{preset.Name}' sent ({preset.Goals.Count} joints, speed {poseSpeedPercent:F0}%). {sendMessage}"
+                ? $"Preset '{preset.Name}' {sendMessage}"
                 : $"Preset '{preset.Name}' failed. {sendMessage}";
             return ok;
+        }
+
+        public bool SendPoseJointGoals(
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float poseSpeedScale,
+            out string message)
+        {
+            return SendPoseJointGoals(jointGoalsDegrees, poseSpeedScale, out message, out _);
+        }
+
+        public bool SendPoseJointGoals(
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float poseSpeedScale,
+            out string message,
+            out float scheduledDurationSeconds)
+        {
+            return SendPoseJointGoalsInternal(
+                "pose motion",
+                jointGoalsDegrees,
+                poseSpeedScale,
+                out message,
+                out scheduledDurationSeconds);
         }
 
         public bool Ping(out string message)
@@ -732,10 +815,13 @@ namespace Reachy.ControlApp
 
             try
             {
-                _jointClient.GetAllJointsId(
-                    new Empty(),
-                    deadline: DateTime.UtcNow.AddSeconds(HealthCheckRpcTimeoutSeconds)
-                );
+                lock (_jointRpcLock)
+                {
+                    _jointClient.GetAllJointsId(
+                        new Empty(),
+                        deadline: DateTime.UtcNow.AddSeconds(HealthCheckRpcTimeoutSeconds)
+                    );
+                }
 
                 message = "Connection healthy.";
                 return true;
@@ -746,6 +832,417 @@ namespace Reachy.ControlApp
                 message = $"Ping failed: {ex.Message}";
                 return false;
             }
+        }
+
+        private bool SendPoseJointGoalsInternal(
+            string motionLabel,
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float poseSpeedScale,
+            out string message,
+            out float scheduledDurationSeconds)
+        {
+            scheduledDurationSeconds = 0f;
+            if (!EnsureConnected(out message))
+            {
+                return false;
+            }
+
+            if (!TryBuildGoalMap(jointGoalsDegrees, out Dictionary<string, float> sanitizedGoals))
+            {
+                message = "Joint goal set contains no valid joint names.";
+                return false;
+            }
+
+            float clampedSpeedScale = ClampPoseTransitionSpeedScale(poseSpeedScale);
+            float requestedSpeedPercent = clampedSpeedScale * 100.0f;
+            if (!UseKeyframePoseSpeedLimiter)
+            {
+                return SendDirectPoseGoals(
+                    motionLabel,
+                    sanitizedGoals,
+                    requestedSpeedPercent,
+                    out message);
+            }
+
+            if (!TryCreateKeyframedMotionPlan(
+                    sanitizedGoals,
+                    clampedSpeedScale,
+                    out KeyframedMotionPlan plan,
+                    out string planMessage))
+            {
+                bool fallbackOk = SendDirectPoseGoals(
+                    motionLabel,
+                    sanitizedGoals,
+                    requestedSpeedPercent,
+                    out string fallbackMessage);
+                message = fallbackOk
+                    ? $"fell back to direct motion at {requestedSpeedPercent:F0}% speed. {planMessage} {fallbackMessage}".Trim()
+                    : $"{planMessage} Direct fallback failed. {fallbackMessage}";
+                return fallbackOk;
+            }
+
+            if (!plan.RequiresScheduling)
+            {
+                bool directOk = SendDirectPoseGoals(
+                    motionLabel,
+                    sanitizedGoals,
+                    100.0f,
+                    out string directMessage);
+                message = directOk
+                    ? $"sent at top speed without extra keyframes. {planMessage} {directMessage}".Trim()
+                    : $"failed while sending top-speed fallback. {planMessage} {directMessage}";
+                return directOk;
+            }
+
+            QueueKeyframedMotion(plan);
+            scheduledDurationSeconds = plan.DurationSeconds;
+            message =
+                $"queued with keyframe pacing ({sanitizedGoals.Count} joints, {plan.GeneratedStepCount} keyframes, " +
+                $"{plan.DurationSeconds:F2}s, requested {requestedSpeedPercent:F0}% speed). {planMessage}";
+            return true;
+        }
+
+        private bool SendDirectPoseGoals(
+            string motionLabel,
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float speedLimitPercent,
+            out string message)
+        {
+            CancelActivePoseMotion();
+
+            float normalizedSpeedLimit = NormalizePoseCommandSpeedLimitPercent(speedLimitPercent);
+            JointsCommand command = BuildJointsCommand(jointGoalsDegrees, normalizedSpeedLimit);
+            bool ok = SendMotionCommand(command, out string sendMessage);
+            message = ok
+                ? $"sent directly ({command.Commands.Count} joints, speed {normalizedSpeedLimit:F0}%). {sendMessage}"
+                : $"Direct {motionLabel} failed. {sendMessage}";
+            return ok;
+        }
+
+        private bool TryCreateKeyframedMotionPlan(
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float poseSpeedScale,
+            out KeyframedMotionPlan plan,
+            out string message)
+        {
+            plan = null;
+            message = string.Empty;
+
+            var requestedJointNames = new List<string>(jointGoalsDegrees.Count);
+            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
+            {
+                requestedJointNames.Add(goal.Key);
+            }
+
+            if (!TryGetJointPositions(
+                    requestedJointNames,
+                    out Dictionary<string, float> currentPositionsDegrees,
+                    out string stateMessage))
+            {
+                message = stateMessage;
+                return false;
+            }
+
+            float effectiveSpeedScale = ClampKeyframePacingSpeedScale(poseSpeedScale);
+            float maxDeltaDegrees = 0.0f;
+            int missingStateCount = 0;
+            string[] jointNames = new string[jointGoalsDegrees.Count];
+            float[] startDegrees = new float[jointGoalsDegrees.Count];
+            float[] targetDegrees = new float[jointGoalsDegrees.Count];
+            int index = 0;
+
+            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
+            {
+                float currentDegrees;
+                if (!currentPositionsDegrees.TryGetValue(goal.Key, out currentDegrees))
+                {
+                    currentDegrees = goal.Value;
+                    missingStateCount++;
+                }
+
+                jointNames[index] = goal.Key;
+                startDegrees[index] = currentDegrees;
+                targetDegrees[index] = goal.Value;
+                float deltaDegrees = Math.Abs(goal.Value - currentDegrees);
+                if (deltaDegrees > maxDeltaDegrees)
+                {
+                    maxDeltaDegrees = deltaDegrees;
+                }
+
+                index++;
+            }
+
+            string summary = BuildKeyframePlanSummary(stateMessage, missingStateCount, maxDeltaDegrees);
+            if (maxDeltaDegrees <= KeyframePacingMinimumDeltaDegrees ||
+                effectiveSpeedScale >= 0.999f)
+            {
+                message = summary;
+                plan = new KeyframedMotionPlan(
+                    new List<JointsCommand>(1)
+                    {
+                        BuildJointsCommand(jointGoalsDegrees, 100.0f)
+                    },
+                    0.0f,
+                    1,
+                    summary);
+                return true;
+            }
+
+            float totalDurationSeconds = (float)Math.Max(
+                KeyframePacingMinimumDurationSeconds,
+                maxDeltaDegrees / (KeyframePacingTopSpeedDegPerSecond * effectiveSpeedScale));
+            float normalizedSpeed = NormalizeKeyframePacingSpeedScale(effectiveSpeedScale);
+            float updateRateHz = LerpFloat(
+                KeyframePacingSlowUpdateRateHz,
+                KeyframePacingFastUpdateRateHz,
+                normalizedSpeed);
+            int stepCount = (int)Math.Ceiling(totalDurationSeconds * updateRateHz);
+            int minimumSmoothStepCount = (int)Math.Ceiling(maxDeltaDegrees / 6.0f);
+            stepCount = Math.Max(2, stepCount);
+            stepCount = Math.Max(stepCount, minimumSmoothStepCount);
+            stepCount = Math.Min(stepCount, KeyframePacingMaxGeneratedSteps);
+
+            var commands = new List<JointsCommand>(stepCount);
+            for (int stepIndex = 1; stepIndex <= stepCount; stepIndex++)
+            {
+                float t = stepIndex / (float)stepCount;
+                var command = new JointsCommand();
+                for (int jointIndex = 0; jointIndex < jointNames.Length; jointIndex++)
+                {
+                    command.Commands.Add(new JointCommand
+                    {
+                        Id = new JointId { Name = jointNames[jointIndex] },
+                        GoalPosition = DegreesToRadians(
+                            LerpFloat(startDegrees[jointIndex], targetDegrees[jointIndex], t)),
+                        SpeedLimit = 100.0f,
+                        Compliant = false
+                    });
+                }
+
+                commands.Add(command);
+            }
+
+            message = summary;
+            plan = new KeyframedMotionPlan(commands, totalDurationSeconds, stepCount, summary);
+            return true;
+        }
+
+        private void QueueKeyframedMotion(KeyframedMotionPlan plan)
+        {
+            if (plan == null || plan.Commands == null || plan.Commands.Count == 0)
+            {
+                return;
+            }
+
+            int motionVersion;
+            lock (_pacedMotionLock)
+            {
+                _pacedMotionVersion++;
+                motionVersion = _pacedMotionVersion;
+            }
+
+            Task task = Task.Run(() => ExecuteKeyframedMotion(plan, motionVersion));
+            lock (_pacedMotionLock)
+            {
+                if (motionVersion == _pacedMotionVersion)
+                {
+                    _pacedMotionTask = task;
+                }
+            }
+        }
+
+        private void ExecuteKeyframedMotion(KeyframedMotionPlan plan, int motionVersion)
+        {
+            try
+            {
+                if (plan == null || plan.Commands == null || plan.Commands.Count == 0)
+                {
+                    return;
+                }
+
+                if (!IsPacedMotionCurrent(motionVersion) || !IsConnected)
+                {
+                    return;
+                }
+
+                PrepareJointsForMotion(plan.Commands[0]);
+                if (!IsPacedMotionCurrent(motionVersion) || !IsConnected)
+                {
+                    return;
+                }
+
+                for (int i = 0; i < plan.Commands.Count; i++)
+                {
+                    if (!IsPacedMotionCurrent(motionVersion) || !IsConnected)
+                    {
+                        return;
+                    }
+
+                    if (!SendJointCommandRaw(plan.Commands[i], out _))
+                    {
+                        return;
+                    }
+
+                    if (i < plan.Commands.Count - 1)
+                    {
+                        SleepForKeyframedMotion(plan.StepDelaySeconds, motionVersion);
+                    }
+                }
+            }
+            finally
+            {
+                lock (_pacedMotionLock)
+                {
+                    if (motionVersion == _pacedMotionVersion)
+                    {
+                        _pacedMotionTask = null;
+                    }
+                }
+            }
+        }
+
+        private void SleepForKeyframedMotion(float delaySeconds, int motionVersion)
+        {
+            int remainingMs = (int)Math.Round(delaySeconds * 1000.0f);
+            while (remainingMs > 0)
+            {
+                if (!IsPacedMotionCurrent(motionVersion) || !IsConnected)
+                {
+                    return;
+                }
+
+                int sleepMs = Math.Min(remainingMs, 20);
+                Thread.Sleep(sleepMs);
+                remainingMs -= sleepMs;
+            }
+        }
+
+        private bool IsPacedMotionCurrent(int motionVersion)
+        {
+            lock (_pacedMotionLock)
+            {
+                return motionVersion == _pacedMotionVersion;
+            }
+        }
+
+        private static bool TryBuildGoalMap(
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            out Dictionary<string, float> sanitizedGoals)
+        {
+            sanitizedGoals = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+            if (jointGoalsDegrees == null)
+            {
+                return false;
+            }
+
+            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
+            {
+                if (string.IsNullOrWhiteSpace(goal.Key))
+                {
+                    continue;
+                }
+
+                sanitizedGoals[goal.Key.Trim()] = goal.Value;
+            }
+
+            return sanitizedGoals.Count > 0;
+        }
+
+        private static JointsCommand BuildJointsCommand(
+            IReadOnlyDictionary<string, float> jointGoalsDegrees,
+            float? speedLimitPercent)
+        {
+            var command = new JointsCommand();
+            if (jointGoalsDegrees == null)
+            {
+                return command;
+            }
+
+            foreach (KeyValuePair<string, float> goal in jointGoalsDegrees)
+            {
+                if (string.IsNullOrWhiteSpace(goal.Key))
+                {
+                    continue;
+                }
+
+                var jointCommand = new JointCommand
+                {
+                    Id = new JointId { Name = goal.Key },
+                    GoalPosition = DegreesToRadians(goal.Value)
+                };
+                if (speedLimitPercent.HasValue)
+                {
+                    jointCommand.SpeedLimit = speedLimitPercent.Value;
+                }
+
+                command.Commands.Add(jointCommand);
+            }
+
+            return command;
+        }
+
+        private static float NormalizePoseCommandSpeedLimitPercent(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+            {
+                return DefaultPoseTransitionSpeedScale * 100.0f;
+            }
+
+            float minimumSpeed = 1.0f;
+            float maximumSpeed = MaxPoseTransitionSpeedScale * 100.0f;
+            if (value < minimumSpeed)
+            {
+                return minimumSpeed;
+            }
+
+            if (value > maximumSpeed)
+            {
+                return maximumSpeed;
+            }
+
+            return value;
+        }
+
+        private static float ClampKeyframePacingSpeedScale(float value)
+        {
+            float clamped = ClampPoseTransitionSpeedScale(value);
+            return clamped > 1.0f ? 1.0f : clamped;
+        }
+
+        private static float NormalizeKeyframePacingSpeedScale(float value)
+        {
+            float clamped = ClampKeyframePacingSpeedScale(value);
+            if (clamped <= MinPoseTransitionSpeedScale)
+            {
+                return 0.0f;
+            }
+
+            return (clamped - MinPoseTransitionSpeedScale) / (1.0f - MinPoseTransitionSpeedScale);
+        }
+
+        private static string BuildKeyframePlanSummary(
+            string stateMessage,
+            int missingStateCount,
+            float maxDeltaDegrees)
+        {
+            var details = new List<string>(3);
+            if (!string.IsNullOrWhiteSpace(stateMessage))
+            {
+                details.Add(stateMessage.Trim());
+            }
+
+            if (missingStateCount > 0)
+            {
+                details.Add($"State missing for {missingStateCount} joint(s); those joints use direct target values.");
+            }
+
+            details.Add($"Max joint delta {maxDeltaDegrees:F1}deg.");
+            return string.Join(" ", details);
+        }
+
+        private static float LerpFloat(float start, float end, float t)
+        {
+            return start + ((end - start) * t);
         }
 
         public bool TrySendRestartSignal(string host, int port, out string message)
@@ -853,10 +1350,14 @@ namespace Reachy.ControlApp
 
             try
             {
-                JointsCommandAck ack = _jointClient.SendJointsCommands(
-                    command,
-                    deadline: DateTime.UtcNow.AddSeconds(DefaultRpcTimeoutSeconds)
-                );
+                JointsCommandAck ack;
+                lock (_jointRpcLock)
+                {
+                    ack = _jointClient.SendJointsCommands(
+                        command,
+                        deadline: DateTime.UtcNow.AddSeconds(DefaultRpcTimeoutSeconds)
+                    );
+                }
 
                 if (ack != null && ack.Success == true)
                 {
@@ -1028,10 +1529,13 @@ namespace Reachy.ControlApp
 
             try
             {
-                return _jointClient.GetJointsState(
-                    request,
-                    deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds)
-                );
+                lock (_jointRpcLock)
+                {
+                    return _jointClient.GetJointsState(
+                        request,
+                        deadline: DateTime.UtcNow.AddSeconds(MotionPreparationRpcTimeoutSeconds)
+                    );
+                }
             }
             catch (RpcException rpcEx)
             {
@@ -1422,10 +1926,14 @@ namespace Reachy.ControlApp
                 _jointClient = new JointService.JointServiceClient(_jointChannel);
                 EnsureMobilityClients();
 
-                JointsId joints = _jointClient.GetAllJointsId(
-                    new Empty(),
-                    deadline: DateTime.UtcNow.AddSeconds(timeoutSeconds)
-                );
+                JointsId joints;
+                lock (_jointRpcLock)
+                {
+                    joints = _jointClient.GetAllJointsId(
+                        new Empty(),
+                        deadline: DateTime.UtcNow.AddSeconds(timeoutSeconds)
+                    );
+                }
 
                 _jointNames.Clear();
                 if (joints != null && joints.Names != null)
@@ -1731,6 +2239,28 @@ namespace Reachy.ControlApp
 
             public bool? Compliant { get; }
             public float? PresentPosition { get; }
+        }
+
+        private sealed class KeyframedMotionPlan
+        {
+            public KeyframedMotionPlan(
+                List<JointsCommand> commands,
+                float durationSeconds,
+                int generatedStepCount,
+                string summary)
+            {
+                Commands = commands ?? new List<JointsCommand>();
+                DurationSeconds = durationSeconds;
+                GeneratedStepCount = generatedStepCount;
+                Summary = summary ?? string.Empty;
+            }
+
+            public List<JointsCommand> Commands { get; }
+            public float DurationSeconds { get; }
+            public int GeneratedStepCount { get; }
+            public string Summary { get; }
+            public bool RequiresScheduling => Commands.Count > 1 && DurationSeconds > 0.0f;
+            public float StepDelaySeconds => Commands.Count > 0 ? DurationSeconds / Commands.Count : 0.0f;
         }
     }
 }
