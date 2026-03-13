@@ -34,6 +34,7 @@ The `ReachyControlApp` now includes a local AI panel backed by `Assets/ReachyCon
 - Safety controls for confirmation flow, duplicate suppression, transcript gating, safe numeric parsing, and joint range rejection
 - Push-to-talk or always-listening modes
 - Microphone selection plus hold-to-record mic test playback
+- Online AI mode can auto-switch STT to OpenAI Transcribe when an `OPENAI_API_KEY` is available, with local Vosk as the fallback
 - Local TTS feedback with optional mirroring to a small robot-speaker HTTP service on the Reachy computer, with runtime probing/logging and a `8099` TTS-only fallback if a voice sidecar is running on the robot
 - Local help responses through a rule-based backend or optional `llama_cpp`
 - UI actions to load/save Unity voice config and sync/load the sidecar config

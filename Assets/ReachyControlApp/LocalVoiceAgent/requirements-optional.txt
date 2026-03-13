@@ -1,7 +1,7 @@
 # Optional dependencies for local voice sidecar.
 # The sidecar runs without these packages in fallback mode.
 
-# Offline STT (optional)
+# Microphone capture for STT plus offline Vosk support (optional)
 vosk>=0.3.45
 sounddevice>=0.4.6
 

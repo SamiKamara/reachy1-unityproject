@@ -1,6 +1,6 @@
 {
   "ai_mode": "local",
-  "stt_backend": "vosk",
+  "stt_backend": "auto",
   "model_path": ".local_voice_models/vosk-model-small-en-us-0.15",
   "intent_confidence_threshold": 0.78,
   "transcript_default_confidence": 0.85,

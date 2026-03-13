@@ -117,8 +117,10 @@ namespace Reachy.ControlApp
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private const string DefaultOnlineAiModel = "gpt-5.4";
+        private const string DefaultOnlineAiTranscriptionModel = "gpt-4o-mini-transcribe";
         private const string DefaultOnlineAiBaseUrl = "https://api.openai.com/v1";
         private const string DefaultOnlineAiApiKeyEnvVar = "OPENAI_API_KEY";
+        private const string ManagedVoiceSttBackend = "auto";
         private static readonly string[] DefaultSidecarKnownPoses =
         {
             "Neutral Arms",
@@ -1068,7 +1070,7 @@ namespace Reachy.ControlApp
         private sealed class VoiceAgentConfig
         {
             public string ai_mode = "local";
-            public string stt_backend = "vosk";
+            public string stt_backend = ManagedVoiceSttBackend;
             public string model_path = string.Empty;
             public float intent_confidence_threshold = VoiceCommandRouter.DefaultConfidenceThreshold;
             public float transcript_default_confidence = 0.85f;
@@ -1140,7 +1142,7 @@ namespace Reachy.ControlApp
             public string bind_host = "127.0.0.1";
             public int bind_port = 8099;
             public string ai_mode = "local";
-            public string stt_backend = "vosk";
+            public string stt_backend = ManagedVoiceSttBackend;
             public string stt_model_path = "../../../.local_voice_models/vosk-model-small-en-us-0.15";
             public int stt_sample_rate_hz = 16000;
             public float transcript_default_confidence = 0.85f;
@@ -1177,6 +1179,7 @@ namespace Reachy.ControlApp
             public float joint_max_degrees = 180f;
             public bool online_ai_enabled = false;
             public string online_ai_model = DefaultOnlineAiModel;
+            public string online_ai_transcription_model = DefaultOnlineAiTranscriptionModel;
             public string online_ai_api_key_env_var = DefaultOnlineAiApiKeyEnvVar;
             public string online_ai_base_url = DefaultOnlineAiBaseUrl;
             public float online_ai_timeout_seconds = 15f;
@@ -3081,7 +3084,7 @@ namespace Reachy.ControlApp
                 {
                     QueueVoiceFeedback(
                         IsOnlineAiModeSelected()
-                            ? "Online AI agent is now active. Keep speech local and configure your own OpenAI API key before testing."
+                            ? "Online AI agent is now active. OpenAI Transcribe will be used automatically when your OpenAI API key is available."
                             : LocalAiAgentActivationAnnouncement,
                         interrupt: false,
                         bypassRateLimit: true);
@@ -5138,6 +5141,11 @@ namespace Reachy.ControlApp
         private string GetCurrentAiModeConfigValue()
         {
             return aiMode == AiMode.Online ? "online" : "local";
+        }
+
+        private string GetManagedVoiceSttBackend()
+        {
+            return ManagedVoiceSttBackend;
         }
 
         private bool IsOnlineAiModeSelected()
@@ -7407,6 +7415,7 @@ namespace Reachy.ControlApp
                 onlineAiMaxOutputTokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
 
                 config.ai_mode = GetCurrentAiModeConfigValue();
+                config.stt_backend = GetManagedVoiceSttBackend();
                 config.intent_confidence_threshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
                 config.transcript_default_confidence = Mathf.Clamp01(localAiAgentTranscriptConfidence);
                 config.transcript_parser_enabled = localAiAgentEnableTranscriptParser;
@@ -7572,7 +7581,6 @@ namespace Reachy.ControlApp
                 localAiAgentJointMinDegrees = normalizedJointMin;
                 localAiAgentJointMaxDegrees = normalizedJointMax;
 
-                string voiceConfigSttBackend = string.Empty;
                 string voiceConfigSttModelPath = string.Empty;
                 try
                 {
@@ -7585,7 +7593,6 @@ namespace Reachy.ControlApp
                             VoiceAgentConfig voiceConfig = JsonUtility.FromJson<VoiceAgentConfig>(voiceJson);
                             if (voiceConfig != null)
                             {
-                                voiceConfigSttBackend = (voiceConfig.stt_backend ?? string.Empty).Trim().ToLowerInvariant();
                                 voiceConfigSttModelPath = (voiceConfig.model_path ?? string.Empty).Trim();
                             }
                         }
@@ -7599,14 +7606,7 @@ namespace Reachy.ControlApp
                 config.intent_confidence_threshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
                 config.transcript_default_confidence = Mathf.Clamp01(localAiAgentTranscriptConfidence);
                 config.ai_mode = GetCurrentAiModeConfigValue();
-                if (!string.IsNullOrWhiteSpace(voiceConfigSttBackend))
-                {
-                    config.stt_backend = voiceConfigSttBackend;
-                }
-                else if (string.IsNullOrWhiteSpace(config.stt_backend))
-                {
-                    config.stt_backend = "vosk";
-                }
+                config.stt_backend = GetManagedVoiceSttBackend();
                 string normalizedSttModelPath = !string.IsNullOrWhiteSpace(voiceConfigSttModelPath)
                     ? voiceConfigSttModelPath
                     : BuildUiHelpModelPathFromSidecar(config.stt_model_path, sidecarConfigPath);
@@ -7641,6 +7641,9 @@ namespace Reachy.ControlApp
                 config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
                     ? DefaultOnlineAiModel
                     : onlineAiModel.Trim();
+                config.online_ai_transcription_model = string.IsNullOrWhiteSpace(config.online_ai_transcription_model)
+                    ? DefaultOnlineAiTranscriptionModel
+                    : config.online_ai_transcription_model.Trim();
                 config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
                 config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
                     ? DefaultOnlineAiBaseUrl
@@ -10491,7 +10494,7 @@ namespace Reachy.ControlApp
             }
 
             GUILayout.Label(IsOnlineAiModeSelected()
-                ? "Online mode keeps STT/TTS local while the sidecar calls the OpenAI API for structured replies."
+                ? "Online mode uses OpenAI for replies and automatically switches STT to OpenAI Transcribe when an API key is available."
                 : "Voice endpoint, parser safety, listening, and microphone controls.");
 
             float bodyHeight = Mathf.Max(60f, area.height - 80f);

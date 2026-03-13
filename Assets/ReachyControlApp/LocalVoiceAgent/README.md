@@ -31,7 +31,7 @@ prefer it automatically (self-contained dependency setup).
 ## Optional dependencies
 The sidecar runs without extra packages.
 
-To enable offline STT (`vosk`) and local TTS (`pyttsx3`), install optional packages:
+To enable microphone STT (`openai_transcribe` or local `vosk`) and local TTS (`pyttsx3`), install optional packages:
 ```powershell
 pip install -r ./requirements-optional.txt
 ```
@@ -42,15 +42,20 @@ pip install --upgrade --prefer-binary llama-cpp-python --extra-index-url https:/
 ```
 
 Default config is now hands-free oriented:
-- `stt_backend` defaults to `vosk`
+- `stt_backend` defaults to `auto`
 - `tts_backend` defaults to `pyttsx3`
 - Unity default voice config enables local help model
 
-With dependencies + Vosk model available, enabling Local AI in Unity is enough for spoken `help` query/response flow.
+`auto` resolves like this:
+- `online` AI mode + OpenAI API key available: use `openai_transcribe`
+- otherwise: use local `vosk`
+
+With `sounddevice` installed, online mode can use OpenAI Transcribe without the Vosk model. With `sounddevice` + the Vosk model available, local/offline STT also works.
 
 Then set config values:
-- `stt_backend`: `"vosk"`
+- `stt_backend`: `"auto"`, `"openai_transcribe"`, or `"vosk"`
 - `stt_model_path`: path to your Vosk model directory (default: `../../../.local_voice_models/vosk-model-small-en-us-0.15`)
+- `online_ai_transcription_model`: OpenAI transcription model (default: `gpt-4o-mini-transcribe`)
 - `tts_backend`: `"pyttsx3"`
 - `start_listening_enabled`: `true/false` (default listening mode before Unity toggles `/listening`)
 - `min_transcript_chars` / `min_transcript_words`: ignore very short final transcripts

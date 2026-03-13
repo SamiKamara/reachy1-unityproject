@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ import re
 import sys
 import threading
 import time
+import wave
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,6 +84,7 @@ ONLINE_ALLOWED_INTENTS = (
     "stop_motion",
 )
 DEFAULT_ONLINE_AI_MODEL = "gpt-5.4"
+DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
 DEFAULT_ONLINE_AI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 
@@ -570,7 +573,7 @@ def load_config(path: Path) -> dict:
         "bind_host": "127.0.0.1",
         "bind_port": 8099,
         "ai_mode": "local",
-        "stt_backend": "vosk",
+        "stt_backend": "auto",
         "stt_model_path": "../../../.local_voice_models/vosk-model-small-en-us-0.15",
         "stt_sample_rate_hz": 16000,
         "transcript_default_confidence": 0.85,
@@ -607,6 +610,7 @@ def load_config(path: Path) -> dict:
         "joint_max_degrees": 180.0,
         "online_ai_enabled": False,
         "online_ai_model": DEFAULT_ONLINE_AI_MODEL,
+        "online_ai_transcription_model": DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL,
         "online_ai_api_key_env_var": DEFAULT_ONLINE_AI_API_KEY_ENV_VAR,
         "online_ai_base_url": DEFAULT_ONLINE_AI_BASE_URL,
         "online_ai_timeout_seconds": 15.0,
@@ -617,6 +621,11 @@ def load_config(path: Path) -> dict:
         "online_ai_require_motion_confirmation": False,
         "online_ai_show_api_key_help_on_first_open": True,
         "online_ai_last_api_key_check_ok": False,
+        "openai_transcribe_min_clip_seconds": 0.55,
+        "openai_transcribe_max_clip_seconds": 8.0,
+        "openai_transcribe_silence_seconds": 0.8,
+        "openai_transcribe_pre_roll_seconds": 0.25,
+        "openai_transcribe_rms_threshold": 520,
     }
     config["_config_dir"] = str(path.parent.resolve())
 
@@ -636,7 +645,7 @@ def load_config(path: Path) -> dict:
     config["ai_mode"] = str(config.get("ai_mode", "local")).strip().lower() or "local"
     if config["ai_mode"] not in ("local", "online"):
         config["ai_mode"] = "local"
-    config["stt_backend"] = str(config.get("stt_backend", "none")).strip().lower()
+    config["stt_backend"] = normalize_stt_backend(config.get("stt_backend", "auto"))
     config["tts_backend"] = str(config.get("tts_backend", "none")).strip().lower()
     config["stt_sample_rate_hz"] = max(8000, int(config.get("stt_sample_rate_hz", 16000)))
     config["transcript_default_confidence"] = max(0.0, min(1.0, float(config.get("transcript_default_confidence", 0.85))))
@@ -696,6 +705,9 @@ def load_config(path: Path) -> dict:
     config["online_ai_enabled"] = parse_bool(config.get("online_ai_enabled"), False)
     config["online_ai_model"] = (
         str(config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL)
+    config["online_ai_transcription_model"] = (
+        str(config.get("online_ai_transcription_model", DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL)).strip()
+        or DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL)
     config["online_ai_api_key_env_var"] = (
         str(config.get("online_ai_api_key_env_var", DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)).strip()
         or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
@@ -726,12 +738,79 @@ def load_config(path: Path) -> dict:
     config["online_ai_last_api_key_check_ok"] = parse_bool(
         config.get("online_ai_last_api_key_check_ok"),
         False)
+    config["openai_transcribe_min_clip_seconds"] = max(
+        0.2,
+        min(6.0, float(config.get("openai_transcribe_min_clip_seconds", 0.55))))
+    config["openai_transcribe_max_clip_seconds"] = max(
+        config["openai_transcribe_min_clip_seconds"],
+        min(20.0, float(config.get("openai_transcribe_max_clip_seconds", 8.0))))
+    config["openai_transcribe_silence_seconds"] = max(
+        0.2,
+        min(4.0, float(config.get("openai_transcribe_silence_seconds", 0.8))))
+    config["openai_transcribe_pre_roll_seconds"] = max(
+        0.0,
+        min(2.0, float(config.get("openai_transcribe_pre_roll_seconds", 0.25))))
+    config["openai_transcribe_rms_threshold"] = max(
+        80,
+        min(5000, int(config.get("openai_transcribe_rms_threshold", 520))))
     if config["joint_min_degrees"] > config["joint_max_degrees"]:
         low = config["joint_max_degrees"]
         high = config["joint_min_degrees"]
         config["joint_min_degrees"] = low
         config["joint_max_degrees"] = high
     return config
+
+
+def normalize_stt_backend(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in ("", "default"):
+        return "auto"
+    if normalized in ("auto", "vosk", "openai_transcribe", "none"):
+        return normalized
+    return "auto"
+
+
+def resolve_effective_stt_backend(config: dict, api_key_available: bool) -> str:
+    requested = normalize_stt_backend(config.get("stt_backend", "auto"))
+    if requested in ("none", "vosk", "openai_transcribe"):
+        return requested
+
+    use_online_mode = str(config.get("ai_mode", "local")).strip().lower() == "online"
+    online_enabled = parse_bool(config.get("online_ai_enabled"), False)
+    if use_online_mode and online_enabled and api_key_available:
+        return "openai_transcribe"
+    return "vosk"
+
+
+def build_openai_audio_transcriptions_endpoint(base_url: str) -> str:
+    trimmed = str(base_url or "").strip().rstrip("/")
+    if not trimmed:
+        trimmed = DEFAULT_ONLINE_AI_BASE_URL
+    if trimmed.endswith("/audio/transcriptions"):
+        return trimmed
+    if trimmed.endswith("/v1"):
+        return f"{trimmed}/audio/transcriptions"
+    return f"{trimmed}/v1/audio/transcriptions"
+
+
+def pcm16_rms(chunk: bytes) -> float:
+    if not chunk:
+        return 0.0
+
+    try:
+        samples = memoryview(chunk).cast("h")
+    except Exception:
+        return 0.0
+
+    count = len(samples)
+    if count <= 0:
+        return 0.0
+
+    total = 0.0
+    for sample in samples:
+        value = int(sample)
+        total += float(value * value)
+    return (total / float(count)) ** 0.5
 
 
 def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
@@ -1604,19 +1683,173 @@ class TTS:
                         pass
 
 
+class DisabledSTT:
+    def __init__(self, config: dict, state: State, requested_backend: str) -> None:
+        self.config = config
+        self.state = state
+        self.requested_backend = requested_backend
+        self.backend_name = "none"
+
+    def start(self) -> None:
+        self.state.set_runtime(False, False, self.backend_name)
+        if self.requested_backend == "none":
+            self.state.log("info", "STT disabled (stt_backend='none').")
+        else:
+            self.state.log("warn", f"STT backend '{self.requested_backend}' resolved to 'none'.")
+
+    def stop(self) -> None:
+        pass
+
+
+class MicrophoneSTTBase:
+    def __init__(
+        self,
+        config: dict,
+        state: State,
+        parser: Parser,
+        online_orchestrator: "OnlineAIOrchestrator",
+        *,
+        backend_name: str,
+        thread_name: str,
+    ) -> None:
+        self.config = config
+        self.state = state
+        self.parser = parser
+        self.online_orchestrator = online_orchestrator
+        self.backend_name = backend_name
+        self.thread_name = thread_name
+        self.stop_event = threading.Event()
+        self.thread = None
+
+    def start(self) -> None:
+        self.thread = threading.Thread(target=self._run, daemon=True, name=self.thread_name)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+    @staticmethod
+    def _drain_audio_queue(audio_q: "queue.Queue[bytes]") -> int:
+        drained = 0
+        while True:
+            try:
+                audio_q.get_nowait()
+                drained += 1
+            except queue.Empty:
+                return drained
+
+    @staticmethod
+    def _is_virtual_input_name(name: str) -> bool:
+        lowered = (name or "").strip().lower()
+        if not lowered:
+            return False
+
+        virtual_tokens = (
+            "virtual",
+            "stereo mix",
+            "vb-audio",
+            "voicemeeter",
+            "cable output",
+            "cable input",
+            "loopback",
+            "what u hear",
+            "wave out",
+            "wave out mix",
+            "monitor",
+            "obs",
+            "ndi",
+            "blackhole",
+            "soundflower",
+            "sunflower",
+        )
+        return any(tok in lowered for tok in virtual_tokens)
+
+    def _score_input_device(
+        self,
+        device_name: str,
+        preferred_name: str,
+        prefer_non_virtual: bool,
+    ) -> int:
+        lowered = (device_name or "").strip().lower()
+        score = 0
+        is_virtual = self._is_virtual_input_name(lowered)
+        if prefer_non_virtual:
+            score += -220 if is_virtual else 120
+        elif is_virtual:
+            score -= 40
+
+        preferred = (preferred_name or "").strip().lower()
+        if preferred:
+            if lowered == preferred:
+                score += 900
+            elif preferred in lowered or lowered in preferred:
+                score += 320
+
+        if "headset" in lowered:
+            score += 30
+        if "microphone" in lowered or "mic" in lowered:
+            score += 20
+        if "array" in lowered:
+            score += 8
+        return score
+
+    def _select_input_device(self, sd_module) -> tuple[int | None, str, str]:
+        try:
+            devices = sd_module.query_devices()
+        except Exception as exc:
+            return None, "", f"Audio device query failed: {exc}"
+
+        candidates: list[tuple[int, str]] = []
+        for idx, device in enumerate(devices):
+            try:
+                max_input = int(device.get("max_input_channels", 0))
+            except Exception:
+                max_input = 0
+            if max_input <= 0:
+                continue
+            name = str(device.get("name", "")).strip() or f"input_{idx}"
+            candidates.append((idx, name))
+
+        if not candidates:
+            return None, "", "No audio input devices available."
+
+        preferred_name = str(self.config.get("audio_input_device_name", "")).strip()
+        prefer_non_virtual = parse_bool(
+            self.config.get("prefer_non_virtual_input_device"),
+            True)
+
+        best_index = None
+        best_name = ""
+        best_score = -10**9
+        for idx, name in candidates:
+            score = self._score_input_device(name, preferred_name, prefer_non_virtual)
+            if best_index is None or score > best_score:
+                best_index = idx
+                best_name = name
+                best_score = score
+
+        return best_index, best_name, ""
+
+    def _run(self) -> None:
+        raise NotImplementedError
+
+
 class VoskSTT:
     def __init__(self, config: dict, state: State, parser: Parser, online_orchestrator: OnlineAIOrchestrator) -> None:
         self.config = config
         self.state = state
         self.parser = parser
         self.online_orchestrator = online_orchestrator
-        self.enabled = str(config["stt_backend"]) == "vosk"
+        self.backend_name = "vosk"
+        self.enabled = True
         self.stop_event = threading.Event()
         self.thread = None
 
     def start(self) -> None:
         if not self.enabled:
-            self.state.set_runtime(False, False, str(self.config["stt_backend"]))
+            self.state.set_runtime(False, False, self.backend_name)
             self.state.log("info", "STT disabled (set stt_backend to 'vosk' to enable).")
             return
         self.thread = threading.Thread(target=self._run, daemon=True, name="vosk-stt")
@@ -1857,6 +2090,337 @@ class VoskSTT:
         finally:
             self.state.set_runtime(False, False, "vosk")
             self.state.log("warn", "Vosk STT worker stopped.")
+
+
+class OpenAITranscribeSTT(MicrophoneSTTBase):
+    def __init__(self, config: dict, state: State, parser: Parser, online_orchestrator: "OnlineAIOrchestrator") -> None:
+        super().__init__(
+            config,
+            state,
+            parser,
+            online_orchestrator,
+            backend_name="openai_transcribe",
+            thread_name="openai-transcribe-stt",
+        )
+
+    def _run(self) -> None:
+        try:
+            import sounddevice as sd  # type: ignore
+        except Exception as exc:
+            self.state.set_runtime(False, False, "none")
+            self.state.log("error", f"sounddevice unavailable; OpenAI STT disabled: {exc}")
+            return
+
+        api_key, env_var = self._read_openai_api_key()
+        if not api_key:
+            self.state.set_runtime(False, False, "none")
+            self.state.log(
+                "error",
+                f"OpenAI STT requires the API key env var '{env_var}' to be available.",
+            )
+            return
+
+        selected_device_index, selected_device_name, select_err = self._select_input_device(sd)
+        if selected_device_index is None:
+            self.state.set_runtime(False, False, "none")
+            self.state.log("error", f"Failed to select input device: {select_err}")
+            return
+        self.state.set_selected_input_device(selected_device_index, selected_device_name)
+
+        sample_rate = int(self.config.get("stt_sample_rate_hz", 16000))
+        blocksize = 1600
+        chunk_duration_seconds = float(blocksize) / float(sample_rate)
+        silence_seconds = float(self.config.get("openai_transcribe_silence_seconds", 0.8))
+        min_clip_seconds = float(self.config.get("openai_transcribe_min_clip_seconds", 0.55))
+        max_clip_seconds = float(self.config.get("openai_transcribe_max_clip_seconds", 8.0))
+        rms_threshold = float(self.config.get("openai_transcribe_rms_threshold", 520))
+        pre_roll_seconds = float(self.config.get("openai_transcribe_pre_roll_seconds", 0.25))
+        pre_roll_chunk_count = max(0, int(round(pre_roll_seconds / max(chunk_duration_seconds, 0.001))))
+        pre_roll_chunks = deque(maxlen=max(1, pre_roll_chunk_count or 1))
+        active_chunks: list[bytes] = []
+        active_duration_seconds = 0.0
+        trailing_silence_seconds = 0.0
+        speech_active = False
+
+        audio_q = queue.Queue(maxsize=120)
+
+        def reset_segment() -> None:
+            nonlocal active_chunks, active_duration_seconds, trailing_silence_seconds, speech_active
+            active_chunks = []
+            active_duration_seconds = 0.0
+            trailing_silence_seconds = 0.0
+            speech_active = False
+            pre_roll_chunks.clear()
+
+        def callback(indata, _frames, _time_info, status):
+            if status:
+                self.state.log("warn", f"Audio callback status: {status}")
+            try:
+                audio_q.put_nowait(bytes(indata))
+            except queue.Full:
+                pass
+
+        self.state.set_runtime(True, self.state.is_listening_enabled(), self.backend_name)
+        self.state.log(
+            "info",
+            f"OpenAI STT worker started (device [{selected_device_index}] {selected_device_name}).")
+
+        try:
+            with sd.RawInputStream(
+                device=selected_device_index,
+                samplerate=sample_rate,
+                blocksize=blocksize,
+                dtype="int16",
+                channels=1,
+                callback=callback,
+            ):
+                last_listening_state = None
+                tts_gate_active = False
+                while not self.stop_event.is_set():
+                    try:
+                        chunk = audio_q.get(timeout=0.25)
+                    except queue.Empty:
+                        listening_enabled = self.state.is_listening_enabled() and not self.state.is_tts_speaking()
+                        if listening_enabled != last_listening_state:
+                            self.state.set_runtime(True, listening_enabled, self.backend_name)
+                            last_listening_state = listening_enabled
+                        continue
+
+                    tts_speaking = self.state.is_tts_speaking()
+                    if tts_speaking:
+                        if last_listening_state is not False:
+                            self.state.set_runtime(True, False, self.backend_name)
+                            last_listening_state = False
+                        if not tts_gate_active:
+                            tts_gate_active = True
+                            self.state.clear_pending_partial()
+                            reset_segment()
+                            self._drain_audio_queue(audio_q)
+                            self.state.log("info", "STT input gated while TTS is speaking.")
+                        continue
+                    if tts_gate_active:
+                        tts_gate_active = False
+                        reset_segment()
+                        self._drain_audio_queue(audio_q)
+                        self.state.log("info", "STT input resumed after TTS completed.")
+
+                    listening_enabled = self.state.is_listening_enabled()
+                    if listening_enabled != last_listening_state:
+                        self.state.set_runtime(True, listening_enabled, self.backend_name)
+                        last_listening_state = listening_enabled
+
+                    if not listening_enabled:
+                        reset_segment()
+                        continue
+
+                    rms = pcm16_rms(chunk)
+                    is_speech_chunk = rms >= rms_threshold
+
+                    if speech_active:
+                        active_chunks.append(chunk)
+                        active_duration_seconds += chunk_duration_seconds
+                        trailing_silence_seconds = 0.0 if is_speech_chunk else (
+                            trailing_silence_seconds + chunk_duration_seconds)
+                    else:
+                        if pre_roll_chunk_count > 0:
+                            pre_roll_chunks.append(chunk)
+                        if not is_speech_chunk:
+                            continue
+                        speech_active = True
+                        active_chunks = list(pre_roll_chunks) if pre_roll_chunk_count > 0 else []
+                        active_chunks.append(chunk)
+                        active_duration_seconds = chunk_duration_seconds * float(len(active_chunks))
+                        trailing_silence_seconds = 0.0
+
+                    clip_ready = (
+                        active_duration_seconds >= max_clip_seconds or
+                        trailing_silence_seconds >= silence_seconds
+                    )
+                    if not clip_ready:
+                        continue
+
+                    clip_duration_seconds = active_duration_seconds
+                    clip_audio = b"".join(active_chunks)
+                    reset_segment()
+
+                    if clip_duration_seconds < min_clip_seconds or not clip_audio:
+                        continue
+
+                    try:
+                        transcript = self._transcribe_clip(clip_audio, sample_rate)
+                    except Exception as exc:
+                        error_message = str(exc).strip() or "Unknown OpenAI transcription error."
+                        friendly = OnlineAIOrchestrator._summarize_online_request_error(error_message)
+                        self.state.log("error", f"OpenAI transcription failed: {friendly}")
+                        continue
+
+                    if not transcript:
+                        continue
+
+                    self.state.process_transcript(
+                        transcript,
+                        float(self.config["transcript_default_confidence"]),
+                        True,
+                        self.parser,
+                        self.online_orchestrator,
+                    )
+        except Exception as exc:
+            self.state.log("error", f"OpenAI transcription runtime failed: {exc}")
+        finally:
+            self.state.set_runtime(False, False, self.backend_name)
+            self.state.log("warn", "OpenAI STT worker stopped.")
+
+    def _read_openai_api_key(self) -> tuple[str, str]:
+        api_key_found, env_var = self.state.refresh_online_key_status()
+        if not api_key_found:
+            return "", env_var
+        return os.environ.get(env_var, "").strip(), env_var
+
+    def _transcribe_clip(self, pcm_audio: bytes, sample_rate_hz: int) -> str:
+        api_key, env_var = self._read_openai_api_key()
+        if not api_key:
+            raise RuntimeError(f"OpenAI API key env var '{env_var}' is missing.")
+
+        wav_audio = self._encode_wav_bytes(pcm_audio, sample_rate_hz)
+        endpoint = build_openai_audio_transcriptions_endpoint(
+            str(self.config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)))
+        model = (
+            str(
+                self.config.get(
+                    "online_ai_transcription_model",
+                    DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL,
+                )
+            ).strip()
+            or DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL
+        )
+        prompt = self._build_transcription_prompt()
+        request_fields = {
+            "model": model,
+            "response_format": "json",
+        }
+        if prompt:
+            request_fields["prompt"] = prompt
+
+        body, boundary = self._build_multipart_body(
+            request_fields,
+            file_field_name="file",
+            file_name="reachy_mic.wav",
+            file_bytes=wav_audio,
+            file_content_type="audio/wav",
+        )
+        timeout_seconds = float(self.config.get("online_ai_timeout_seconds", 15.0))
+        request = urllib_request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or str(exc)
+            raise RuntimeError(f"HTTP {exc.code}: {detail}")
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Network error: {exc.reason}")
+
+        if not raw.strip():
+            return ""
+
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return raw.strip()
+
+        return str(payload.get("text", "") or "").strip()
+
+    def _build_transcription_prompt(self) -> str:
+        known_poses = [str(item).strip() for item in self.config.get("known_poses", []) if str(item).strip()]
+        known_joints = [str(item).strip() for item in self.config.get("known_joints", []) if str(item).strip()]
+        if not known_poses and not known_joints:
+            return ""
+
+        pose_text = ", ".join(known_poses[:12])
+        joint_text = ", ".join(known_joints[:24])
+        parts = ["Transcribe Reachy robot control speech exactly."]
+        if pose_text:
+            parts.append(f"Known pose names: {pose_text}.")
+        if joint_text:
+            parts.append(f"Known joint names: {joint_text}.")
+        return " ".join(parts)
+
+    @staticmethod
+    def _encode_wav_bytes(pcm_audio: bytes, sample_rate_hz: int) -> bytes:
+        with io.BytesIO() as buffer:
+            with wave.open(buffer, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate_hz)
+                wav_file.writeframes(pcm_audio)
+            return buffer.getvalue()
+
+    @staticmethod
+    def _build_multipart_body(
+        fields: dict[str, str],
+        *,
+        file_field_name: str,
+        file_name: str,
+        file_bytes: bytes,
+        file_content_type: str,
+    ) -> tuple[bytes, str]:
+        boundary = f"----ReachyBoundary{int(time.time() * 1000)}"
+        body = bytearray()
+
+        for key, value in fields.items():
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+            body.extend(str(value).encode("utf-8"))
+            body.extend(b"\r\n")
+
+        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(
+            f'Content-Disposition: form-data; name="{file_field_name}"; filename="{file_name}"\r\n'.encode("utf-8")
+        )
+        body.extend(f"Content-Type: {file_content_type}\r\n\r\n".encode("utf-8"))
+        body.extend(file_bytes)
+        body.extend(b"\r\n")
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+        return bytes(body), boundary
+
+
+def build_stt_runtime(
+    config: dict,
+    state: State,
+    parser: Parser,
+    online_orchestrator: "OnlineAIOrchestrator",
+):
+    requested_backend = normalize_stt_backend(config.get("stt_backend", "auto"))
+    api_key_available, env_var = state.refresh_online_key_status()
+    effective_backend = resolve_effective_stt_backend(config, api_key_available)
+    state.set_runtime(False, False, effective_backend)
+
+    if requested_backend == "auto":
+        resolution_reason = (
+            f"online AI is active and API key '{env_var}' is available"
+            if effective_backend == "openai_transcribe"
+            else "local fallback is active"
+        )
+        state.log("info", f"STT backend auto-resolved to '{effective_backend}' because {resolution_reason}.")
+
+    if effective_backend == "vosk":
+        return VoskSTT(config, state, parser, online_orchestrator)
+    if effective_backend == "openai_transcribe":
+        return OpenAITranscribeSTT(config, state, parser, online_orchestrator)
+    return DisabledSTT(config, state, requested_backend)
 
 
 class OnlineAIOrchestrator:
@@ -2554,7 +3118,7 @@ class App:
         self.parser = Parser(config)
         self.online = OnlineAIOrchestrator(config, self.state)
         self.tts = TTS(config, self.state)
-        self.stt = VoskSTT(config, self.state, self.parser, self.online)
+        self.stt = build_stt_runtime(config, self.state, self.parser, self.online)
         self.help_responder = LocalHelpResponder(config, self.state)
 
     def start(self) -> None:
@@ -2563,7 +3127,7 @@ class App:
         self.state.log(
             "info",
             f"Local sidecar ready on {self.config['bind_host']}:{self.config['bind_port']} "
-            f"(stt={self.config['stt_backend']}, tts={self.config['tts_backend']}, "
+            f"(stt={self.state.stt_backend}, requested_stt={self.config['stt_backend']}, tts={self.config['tts_backend']}, "
             f"help={self.help_responder.backend}, ai_mode={self.config.get('ai_mode', 'local')}).",
         )
 
