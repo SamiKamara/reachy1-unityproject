@@ -24,7 +24,9 @@ namespace Reachy.ControlApp
             RejectPending = 9,
             ShowMovement = 10,
             Hello = 11,
-            WhoAreYou = 12
+            WhoAreYou = 12,
+            SetCustomPose = 13,
+            PlayMotionSequence = 14
         }
 
         public struct RoutedAction
@@ -33,6 +35,9 @@ namespace Reachy.ControlApp
             public string PoseName;
             public string JointName;
             public float JointDegrees;
+            public float SpeedScale;
+            public VoiceAgentJointTarget[] JointTargets;
+            public VoiceAgentMotionStep[] MotionSteps;
             public bool RequiresConfirmation;
             public string Summary;
         }
@@ -103,6 +108,30 @@ namespace Reachy.ControlApp
                     action.JointDegrees = intent.joint_degrees;
                     action.Summary = $"Move joint '{action.JointName}' to {action.JointDegrees:F1} deg.";
                     break;
+                case "set_custom_pose":
+                    if (intent.joint_targets == null || intent.joint_targets.Length <= 0)
+                    {
+                        message = "Set-custom-pose intent is missing joint targets.";
+                        return false;
+                    }
+
+                    action.Kind = VoiceActionKind.SetCustomPose;
+                    action.JointTargets = intent.joint_targets;
+                    action.SpeedScale = intent.speed_scale;
+                    action.Summary = $"Set custom pose ({intent.joint_targets.Length} joint targets).";
+                    break;
+                case "play_motion_sequence":
+                    if (intent.motion_steps == null || intent.motion_steps.Length <= 0)
+                    {
+                        message = "Play-motion-sequence intent is missing steps.";
+                        return false;
+                    }
+
+                    action.Kind = VoiceActionKind.PlayMotionSequence;
+                    action.MotionSteps = intent.motion_steps;
+                    action.SpeedScale = intent.speed_scale;
+                    action.Summary = $"Play motion sequence ({intent.motion_steps.Length} steps).";
+                    break;
                 case "show_movement":
                     action.Kind = VoiceActionKind.ShowMovement;
                     action.Summary = "Show movement sequence: 3 random poses at 4-second intervals.";
@@ -143,6 +172,8 @@ namespace Reachy.ControlApp
 
             bool motionIntentRequiringConfirm = action.Kind == VoiceActionKind.SetPose ||
                 action.Kind == VoiceActionKind.MoveJoint ||
+                action.Kind == VoiceActionKind.SetCustomPose ||
+                action.Kind == VoiceActionKind.PlayMotionSequence ||
                 action.Kind == VoiceActionKind.ShowMovement;
             action.RequiresConfirmation = motionIntentRequiringConfirm || intent.requires_confirmation || lowConfidence;
             if (action.Kind == VoiceActionKind.StopMotion)

@@ -129,7 +129,12 @@ namespace Reachy.ControlApp
             "Hello Pose A",
             "Hello Pose B",
             "Hello Pose C",
-            "Hello Pose D"
+            "Hello Pose D",
+            "Left Hand Up",
+            "Left Hand Wave",
+            "Right Hand Up",
+            "Right Hand Wave",
+            "Hands Up"
         };
         private static readonly string[] DefaultSidecarKnownJoints =
         {
@@ -830,6 +835,8 @@ namespace Reachy.ControlApp
         private Coroutine _loopingAnimationCoroutine;
         private string _activeLoopingAnimationName = string.Empty;
         private Coroutine _voiceShowMovementCoroutine;
+        private Coroutine _voiceMotionSequenceCoroutine;
+        private string _activeVoiceMotionSequenceName = string.Empty;
         private Coroutine _voiceHelloReturnCoroutine;
         private float _uiScale = 1f;
         private string _windowedWidthText;
@@ -1330,6 +1337,7 @@ namespace Reachy.ControlApp
             StopActedSequence(updateStatus: false, reason: "UI destroyed", stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "UI destroyed");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "UI destroyed");
+            StopVoiceMotionSequence(updateStatus: false, reason: "UI destroyed");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "UI destroyed");
 
             _cameraFetchTask = null;
@@ -1357,6 +1365,7 @@ namespace Reachy.ControlApp
         {
             StopActedSequence(updateStatus: false, reason: "Application quit", stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Application quit");
+            StopVoiceMotionSequence(updateStatus: false, reason: "Application quit");
             CleanupAllSidecarsOnShutdown("application quit");
             ShutdownRuntimeLogSession("OnApplicationQuit");
         }
@@ -1410,6 +1419,7 @@ namespace Reachy.ControlApp
                         _client.Disconnect();
                         StopActedSequence(updateStatus: false, reason: "Connection lost.", stopLoopingAnimation: false);
                         StopLoopingAnimation(updateStatus: false, reason: "Connection lost.");
+                        StopVoiceMotionSequence(updateStatus: false, reason: "Connection lost.");
                         ReachyControlMode reconnectMode = _connectedMode ?? mode;
                         _connectedMode = null;
                         if (!_manualDisconnect)
@@ -3418,10 +3428,13 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            if (isOnlineIntent && routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint &&
+            if (isOnlineIntent &&
+                (routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint ||
+                 routedAction.Kind == VoiceCommandRouter.VoiceActionKind.SetCustomPose ||
+                 routedAction.Kind == VoiceCommandRouter.VoiceActionKind.PlayMotionSequence) &&
                 !onlineAiAllowDirectJointCommands)
             {
-                _voiceLastActionResult = "Online AI joint commands are disabled in the operator settings.";
+                _voiceLastActionResult = "Online AI joint-based commands are disabled in the operator settings.";
                 return;
             }
 
@@ -3529,12 +3542,69 @@ namespace Reachy.ControlApp
         {
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}|{1}|{2}|{3:F3}|{4}",
+                "{0}|{1}|{2}|{3:F3}|{4:F3}|{5}|{6}|{7}",
                 action.Kind,
                 action.PoseName ?? string.Empty,
                 action.JointName ?? string.Empty,
                 action.JointDegrees,
+                action.SpeedScale,
+                BuildVoiceJointTargetsFingerprint(action.JointTargets),
+                BuildVoiceMotionStepsFingerprint(action.MotionSteps),
                 action.RequiresConfirmation);
+        }
+
+        private static string BuildVoiceJointTargetsFingerprint(IReadOnlyList<VoiceAgentJointTarget> jointTargets)
+        {
+            if (jointTargets == null || jointTargets.Count <= 0)
+            {
+                return string.Empty;
+            }
+
+            var parts = new List<string>(jointTargets.Count);
+            for (int i = 0; i < jointTargets.Count; i++)
+            {
+                VoiceAgentJointTarget jointTarget = jointTargets[i];
+                if (jointTarget == null || string.IsNullOrWhiteSpace(jointTarget.joint_name))
+                {
+                    continue;
+                }
+
+                parts.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}:{1:F3}",
+                    jointTarget.joint_name.Trim(),
+                    jointTarget.joint_degrees));
+            }
+
+            return parts.Count <= 0 ? string.Empty : string.Join(";", parts);
+        }
+
+        private static string BuildVoiceMotionStepsFingerprint(IReadOnlyList<VoiceAgentMotionStep> motionSteps)
+        {
+            if (motionSteps == null || motionSteps.Count <= 0)
+            {
+                return string.Empty;
+            }
+
+            var parts = new List<string>(motionSteps.Count);
+            for (int i = 0; i < motionSteps.Count; i++)
+            {
+                VoiceAgentMotionStep motionStep = motionSteps[i];
+                if (motionStep == null)
+                {
+                    continue;
+                }
+
+                parts.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}:{1:F3}:{2:F3}:{3}",
+                    motionStep.label ?? string.Empty,
+                    motionStep.hold_seconds,
+                    motionStep.speed_scale,
+                    BuildVoiceJointTargetsFingerprint(motionStep.joint_targets)));
+            }
+
+            return parts.Count <= 0 ? string.Empty : string.Join("|", parts);
         }
 
         private void ConfirmPendingVoiceAction(bool queueFeedback = true)
@@ -5303,6 +5373,8 @@ namespace Reachy.ControlApp
         {
             return kind == VoiceCommandRouter.VoiceActionKind.SetPose ||
                 kind == VoiceCommandRouter.VoiceActionKind.MoveJoint ||
+                kind == VoiceCommandRouter.VoiceActionKind.SetCustomPose ||
+                kind == VoiceCommandRouter.VoiceActionKind.PlayMotionSequence ||
                 kind == VoiceCommandRouter.VoiceActionKind.ShowMovement ||
                 kind == VoiceCommandRouter.VoiceActionKind.Hello;
         }
@@ -5793,6 +5865,7 @@ namespace Reachy.ControlApp
                         stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Disconnected by voice command.");
+                    StopVoiceMotionSequence(updateStatus: false, reason: "Disconnected by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Disconnected by voice command.");
                     ReachyControlMode disconnectedMode = _connectedMode ?? mode;
                     _manualDisconnect = true;
@@ -5840,6 +5913,7 @@ namespace Reachy.ControlApp
                         stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
+                    StopVoiceMotionSequence(updateStatus: false, reason: "Interrupted by set_pose command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_pose command.");
                     bool setPoseTargetsRealRobot = IsRealRobotSessionActive();
                     LogMotionEvent(
@@ -5877,6 +5951,7 @@ namespace Reachy.ControlApp
                         stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
+                    StopVoiceMotionSequence(updateStatus: false, reason: "Interrupted by move_joint command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by move_joint command.");
                     bool moveJointTargetsRealRobot = IsRealRobotSessionActive();
                     LogMotionEvent(
@@ -5900,6 +5975,12 @@ namespace Reachy.ControlApp
                     SetStatus(jointOk ? "Voice joint command sent" : "Voice joint command failed", message);
                     return jointOk;
 
+                case VoiceCommandRouter.VoiceActionKind.SetCustomPose:
+                    return TryExecuteVoiceCustomPose(action, out message);
+
+                case VoiceCommandRouter.VoiceActionKind.PlayMotionSequence:
+                    return TryStartVoiceMotionSequence(action, out message);
+
                 case VoiceCommandRouter.VoiceActionKind.ShowMovement:
                     return TryStartVoiceShowMovementSequence(out message);
 
@@ -5917,6 +5998,7 @@ namespace Reachy.ControlApp
                         stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by hello command.");
+                    StopVoiceMotionSequence(updateStatus: false, reason: "Interrupted by hello command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Restarted by hello command.");
                     bool helloTargetsRealRobot = IsRealRobotSessionActive();
                     LogMotionEvent(
@@ -5972,13 +6054,17 @@ namespace Reachy.ControlApp
                     bool stoppedSequence = StopVoiceShowMovementSequence(
                         updateStatus: false,
                         reason: "Stopped by voice command.");
+                    bool stoppedMotionSequence = StopVoiceMotionSequence(
+                        updateStatus: false,
+                        reason: "Stopped by voice command.");
                     StopVoiceHelloReturnTimer(updateStatus: false, reason: "Stopped by voice command.");
                     _voiceHasPendingAction = false;
                     _voicePendingAction = default(VoiceCommandRouter.RoutedAction);
-                    message = hadPending || stoppedSequence || stoppedActedSequence || stoppedLoopingAnimation || stoppedPacedPoseMotion
+                    message = hadPending || stoppedSequence || stoppedMotionSequence || stoppedActedSequence || stoppedLoopingAnimation || stoppedPacedPoseMotion
                         ? BuildStopAcknowledgementMessage(
                             hadPending,
                             stoppedSequence,
+                            stoppedMotionSequence,
                             stoppedActedSequence,
                             stoppedLoopingAnimation,
                             stoppedPacedPoseMotion)
@@ -5986,7 +6072,7 @@ namespace Reachy.ControlApp
                     LogMotionEvent(
                         "voice",
                         "stop-motion",
-                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedActedSequence={stoppedActedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; stoppedPacedPoseMotion={stoppedPacedPoseMotion}; message={message}",
+                        $"hadPending={hadPending}; stoppedSequence={stoppedSequence}; stoppedMotionSequence={stoppedMotionSequence}; stoppedActedSequence={stoppedActedSequence}; stoppedLoopingAnimation={stoppedLoopingAnimation}; stoppedPacedPoseMotion={stoppedPacedPoseMotion}; message={message}",
                         success: true,
                         targetsRealRobot: IsRealRobotSessionActive());
                     SetStatus("Voice stop", message);
@@ -5996,6 +6082,128 @@ namespace Reachy.ControlApp
                     message = "Voice action is not implemented.";
                     return false;
             }
+        }
+
+        private bool TryExecuteVoiceCustomPose(VoiceCommandRouter.RoutedAction action, out string message)
+        {
+            message = string.Empty;
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Custom pose command blocked: robot is not connected.";
+                LogRuntimeEvent("voice", "custom-pose-blocked", message, "WARN");
+                return false;
+            }
+
+            if (!TryBuildVoiceJointGoalMap(action.JointTargets, out Dictionary<string, float> jointGoals, out string goalMessage))
+            {
+                message = $"Custom pose command blocked: {goalMessage}";
+                LogRuntimeEvent("voice", "custom-pose-blocked", message, "WARN");
+                return false;
+            }
+
+            StopActedSequence(
+                updateStatus: false,
+                reason: "Interrupted by set_custom_pose command.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(updateStatus: false, reason: "Interrupted by set_custom_pose command.");
+            StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by set_custom_pose command.");
+            StopVoiceMotionSequence(updateStatus: false, reason: "Interrupted by set_custom_pose command.");
+            StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by set_custom_pose command.");
+
+            float speedScale = ResolveVoiceMotionSpeedScale(action.SpeedScale);
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "voice",
+                "custom-pose-attempt",
+                $"jointCount={jointGoals.Count}; speedScale={speedScale.ToString("F2", CultureInfo.InvariantCulture)}; summary={action.Summary}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+            bool wasConnected = _client.IsConnected;
+            bool poseOk = _client.SendPoseJointGoals(
+                jointGoals,
+                speedScale,
+                out string poseMessage,
+                out float scheduledDurationSeconds);
+            HandlePotentialDisconnectAfterOperation("voice custom pose", wasConnected);
+            LogMotionEvent(
+                "voice",
+                "custom-pose-result",
+                $"jointCount={jointGoals.Count}; speedScale={speedScale.ToString("F2", CultureInfo.InvariantCulture)}; duration={scheduledDurationSeconds.ToString("F2", CultureInfo.InvariantCulture)}; result={(poseOk ? "ok" : "failed")}; detail={poseMessage}",
+                success: poseOk,
+                targetsRealRobot: targetsRealRobot);
+            message = poseOk
+                ? $"Voice custom pose sent ({jointGoals.Count} joints). {poseMessage}"
+                : $"Voice custom pose failed. {poseMessage}";
+            SetStatus(poseOk ? "Voice custom pose sent" : "Voice custom pose failed", message);
+            return poseOk;
+        }
+
+        private bool TryStartVoiceMotionSequence(VoiceCommandRouter.RoutedAction action, out string message)
+        {
+            message = string.Empty;
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Motion sequence command blocked: robot is not connected.";
+                LogRuntimeEvent("voice", "motion-sequence-blocked", message, "WARN");
+                return false;
+            }
+
+            if (action.MotionSteps == null || action.MotionSteps.Length <= 0)
+            {
+                message = "Motion sequence command blocked: no steps were provided.";
+                LogRuntimeEvent("voice", "motion-sequence-blocked", message, "WARN");
+                return false;
+            }
+
+            int validStepCount = 0;
+            for (int i = 0; i < action.MotionSteps.Length; i++)
+            {
+                VoiceAgentMotionStep step = action.MotionSteps[i];
+                if (step == null)
+                {
+                    continue;
+                }
+
+                if (!TryBuildVoiceJointGoalMap(step.joint_targets, out _, out _))
+                {
+                    continue;
+                }
+
+                validStepCount++;
+            }
+
+            if (validStepCount <= 0)
+            {
+                message = "Motion sequence command blocked: no valid joint targets were found in any step.";
+                LogRuntimeEvent("voice", "motion-sequence-blocked", message, "WARN");
+                return false;
+            }
+
+            StopActedSequence(
+                updateStatus: false,
+                reason: "Interrupted by play_motion_sequence command.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(updateStatus: false, reason: "Interrupted by play_motion_sequence command.");
+            StopVoiceShowMovementSequence(updateStatus: false, reason: "Interrupted by play_motion_sequence command.");
+            StopVoiceMotionSequence(updateStatus: false, reason: "Restarted by play_motion_sequence command.");
+            StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by play_motion_sequence command.");
+
+            _activeVoiceMotionSequenceName = BuildVoiceMotionSequenceName(action.MotionSteps);
+            _voiceMotionSequenceCoroutine = StartCoroutine(
+                VoiceMotionSequenceCoroutine(
+                    _activeVoiceMotionSequenceName,
+                    action.MotionSteps,
+                    action.SpeedScale));
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "voice",
+                "motion-sequence-start",
+                $"sequence={_activeVoiceMotionSequenceName}; stepCount={action.MotionSteps.Length}; validStepCount={validStepCount}; summary={action.Summary}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+            message = $"Started voice motion sequence '{_activeVoiceMotionSequenceName}' ({validStepCount} valid steps).";
+            SetStatus("Voice motion sequence started", message);
+            return true;
         }
 
         private bool TryStartVoiceShowMovementSequence(out string message)
@@ -6022,6 +6230,7 @@ namespace Reachy.ControlApp
                 stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Interrupted by show movement command.");
             StopVoiceShowMovementSequence(updateStatus: false, reason: "Restarted by show movement command.");
+            StopVoiceMotionSequence(updateStatus: false, reason: "Interrupted by show movement command.");
             StopVoiceHelloReturnTimer(updateStatus: false, reason: "Interrupted by show movement command.");
             List<string> selectedPoses = BuildRandomPoseSequence(availablePoses, VoiceShowMovementPoseCount);
             if (selectedPoses.Count == 0)
@@ -6043,6 +6252,229 @@ namespace Reachy.ControlApp
                 $"Started show movement: {selectedPoses.Count} random poses with {VoiceShowMovementIntervalSeconds:F0}s spacing.";
             SetStatus("Voice show movement", message);
             return true;
+        }
+
+        private static bool TryBuildVoiceJointGoalMap(
+            IReadOnlyList<VoiceAgentJointTarget> jointTargets,
+            out Dictionary<string, float> jointGoals,
+            out string message)
+        {
+            jointGoals = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+            message = string.Empty;
+            if (jointTargets == null || jointTargets.Count <= 0)
+            {
+                message = "no joint targets were provided";
+                return false;
+            }
+
+            for (int i = 0; i < jointTargets.Count; i++)
+            {
+                VoiceAgentJointTarget jointTarget = jointTargets[i];
+                if (jointTarget == null || string.IsNullOrWhiteSpace(jointTarget.joint_name))
+                {
+                    continue;
+                }
+
+                jointGoals[jointTarget.joint_name.Trim()] = jointTarget.joint_degrees;
+            }
+
+            if (jointGoals.Count <= 0)
+            {
+                message = "all joint targets were empty";
+                return false;
+            }
+
+            return true;
+        }
+
+        private float ResolveVoiceMotionSpeedScale(float requestedSpeedScale)
+        {
+            if (float.IsNaN(requestedSpeedScale) || float.IsInfinity(requestedSpeedScale) || requestedSpeedScale <= 0f)
+            {
+                return GetLoopingAnimationPlaybackSpeedScale();
+            }
+
+            return Mathf.Clamp(requestedSpeedScale, 0.05f, 2.0f);
+        }
+
+        private float ResolveVoiceMotionStepSpeedScale(float requestedStepSpeedScale, float fallbackSequenceSpeedScale)
+        {
+            if (!float.IsNaN(requestedStepSpeedScale) &&
+                !float.IsInfinity(requestedStepSpeedScale) &&
+                requestedStepSpeedScale > 0f)
+            {
+                return Mathf.Clamp(requestedStepSpeedScale, 0.05f, 2.0f);
+            }
+
+            return ResolveVoiceMotionSpeedScale(fallbackSequenceSpeedScale);
+        }
+
+        private static string BuildVoiceMotionSequenceName(IReadOnlyList<VoiceAgentMotionStep> motionSteps)
+        {
+            if (motionSteps != null)
+            {
+                for (int i = 0; i < motionSteps.Count; i++)
+                {
+                    VoiceAgentMotionStep motionStep = motionSteps[i];
+                    if (motionStep != null && !string.IsNullOrWhiteSpace(motionStep.label))
+                    {
+                        return motionStep.label.Trim();
+                    }
+                }
+            }
+
+            return "Voice motion sequence";
+        }
+
+        private static string BuildVoiceMotionStepLabel(VoiceAgentMotionStep motionStep, int stepIndex)
+        {
+            if (motionStep != null && !string.IsNullOrWhiteSpace(motionStep.label))
+            {
+                return motionStep.label.Trim();
+            }
+
+            return $"Step {stepIndex}";
+        }
+
+        private IEnumerator VoiceMotionSequenceCoroutine(
+            string sequenceName,
+            IReadOnlyList<VoiceAgentMotionStep> motionSteps,
+            float defaultSpeedScale)
+        {
+            string safeSequenceName = string.IsNullOrWhiteSpace(sequenceName)
+                ? "Voice motion sequence"
+                : sequenceName.Trim();
+            if (motionSteps == null || motionSteps.Count <= 0)
+            {
+                _voiceMotionSequenceCoroutine = null;
+                _activeVoiceMotionSequenceName = string.Empty;
+                yield break;
+            }
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            float finalWaitSeconds = 0f;
+            for (int i = 0; i < motionSteps.Count; i++)
+            {
+                VoiceAgentMotionStep motionStep = motionSteps[i];
+                if (motionStep == null)
+                {
+                    continue;
+                }
+
+                if (_client == null || !_client.IsConnected)
+                {
+                    string disconnectedMessage = $"Voice motion sequence '{safeSequenceName}' stopped because the robot is disconnected.";
+                    LogRuntimeEvent("voice", "motion-sequence-stopped", disconnectedMessage, "WARN");
+                    SetStatus("Voice motion sequence stopped", disconnectedMessage);
+                    _voiceMotionSequenceCoroutine = null;
+                    _activeVoiceMotionSequenceName = string.Empty;
+                    yield break;
+                }
+
+                if (!TryBuildVoiceJointGoalMap(motionStep.joint_targets, out Dictionary<string, float> jointGoals, out string goalMessage))
+                {
+                    string invalidStepMessage =
+                        $"Voice motion sequence '{safeSequenceName}' stopped on step {i + 1}: {goalMessage}.";
+                    LogRuntimeEvent("voice", "motion-sequence-invalid-step", invalidStepMessage, "WARN");
+                    SetStatus("Voice motion sequence failed", invalidStepMessage);
+                    _voiceMotionSequenceCoroutine = null;
+                    _activeVoiceMotionSequenceName = string.Empty;
+                    yield break;
+                }
+
+                string stepLabel = BuildVoiceMotionStepLabel(motionStep, i + 1);
+                float speedScale = ResolveVoiceMotionStepSpeedScale(motionStep.speed_scale, defaultSpeedScale);
+                bool wasConnected = _client.IsConnected;
+                LogMotionEvent(
+                    "voice",
+                    "motion-sequence-step-attempt",
+                    $"sequence={safeSequenceName}; step={i + 1}/{motionSteps.Count}; label={stepLabel}; jointCount={jointGoals.Count}; speedScale={speedScale.ToString("F2", CultureInfo.InvariantCulture)}",
+                    success: true,
+                    targetsRealRobot: targetsRealRobot);
+                bool stepOk = _client.SendPoseJointGoals(
+                    jointGoals,
+                    speedScale,
+                    out string stepMessage,
+                    out float scheduledDurationSeconds);
+                HandlePotentialDisconnectAfterOperation(
+                    $"voice motion sequence '{safeSequenceName}' step {i + 1}",
+                    wasConnected);
+                LogMotionEvent(
+                    "voice",
+                    "motion-sequence-step-result",
+                    $"sequence={safeSequenceName}; step={i + 1}/{motionSteps.Count}; label={stepLabel}; jointCount={jointGoals.Count}; duration={scheduledDurationSeconds.ToString("F2", CultureInfo.InvariantCulture)}; result={(stepOk ? "ok" : "failed")}; detail={stepMessage}",
+                    success: stepOk,
+                    targetsRealRobot: targetsRealRobot);
+                if (!stepOk)
+                {
+                    string failedMessage =
+                        $"Voice motion sequence '{safeSequenceName}' failed on step {i + 1}/{motionSteps.Count}. {stepMessage}";
+                    SetStatus("Voice motion sequence failed", failedMessage);
+                    _voiceMotionSequenceCoroutine = null;
+                    _activeVoiceMotionSequenceName = string.Empty;
+                    yield break;
+                }
+
+                string progressMessage =
+                    $"Voice motion sequence '{safeSequenceName}' step {i + 1}/{motionSteps.Count} sent ({stepLabel}). {stepMessage}";
+                SetStatus("Voice motion sequence running", progressMessage);
+                float waitSeconds = Mathf.Max(
+                    0.05f,
+                    Mathf.Max(
+                        Mathf.Clamp(motionStep.hold_seconds, 0.05f, 8.0f),
+                        scheduledDurationSeconds));
+                if (i < motionSteps.Count - 1)
+                {
+                    yield return new WaitForSecondsRealtime(waitSeconds);
+                }
+                else
+                {
+                    finalWaitSeconds = waitSeconds;
+                }
+            }
+
+            if (finalWaitSeconds > 0f)
+            {
+                yield return new WaitForSecondsRealtime(finalWaitSeconds);
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                string disconnectedBeforeNeutralMessage =
+                    $"Voice motion sequence '{safeSequenceName}' completed, but return to '{VoiceHelloReturnPoseName}' was skipped because the robot is disconnected.";
+                LogRuntimeEvent("voice", "motion-sequence-return-neutral-skipped", disconnectedBeforeNeutralMessage, "WARN");
+                _voiceMotionSequenceCoroutine = null;
+                _activeVoiceMotionSequenceName = string.Empty;
+                SetStatus("Voice motion sequence completed", disconnectedBeforeNeutralMessage);
+                yield break;
+            }
+
+            bool neutralWasConnected = _client.IsConnected;
+            LogMotionEvent(
+                "voice",
+                "motion-sequence-return-neutral-attempt",
+                $"sequence={safeSequenceName}; pose={VoiceHelloReturnPoseName}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+            bool neutralOk = _client.SendNeutralArmsPreset(out string neutralMessage);
+            HandlePotentialDisconnectAfterOperation(
+                $"voice motion sequence '{safeSequenceName}' return to neutral",
+                neutralWasConnected);
+            LogMotionEvent(
+                "voice",
+                "motion-sequence-return-neutral-result",
+                $"sequence={safeSequenceName}; pose={VoiceHelloReturnPoseName}; result={(neutralOk ? "ok" : "failed")}; detail={neutralMessage}",
+                success: neutralOk,
+                targetsRealRobot: targetsRealRobot);
+            _voiceMotionSequenceCoroutine = null;
+            _activeVoiceMotionSequenceName = string.Empty;
+            string completedMessage = neutralOk
+                ? $"Voice motion sequence '{safeSequenceName}' completed ({motionSteps.Count} steps) and returned to '{VoiceHelloReturnPoseName}'."
+                : $"Voice motion sequence '{safeSequenceName}' completed ({motionSteps.Count} steps), but returning to '{VoiceHelloReturnPoseName}' failed. {neutralMessage}";
+            LogRuntimeEvent("voice", "motion-sequence-complete", completedMessage, neutralOk ? "INFO" : "WARN");
+            SetStatus(
+                neutralOk ? "Voice motion sequence completed" : "Voice motion sequence completed with neutral return failure",
+                completedMessage);
         }
 
         private IEnumerator VoiceShowMovementSequenceCoroutine(IReadOnlyList<string> poseNames)
@@ -6193,6 +6625,40 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        private bool StopVoiceMotionSequence(bool updateStatus, string reason)
+        {
+            if (_voiceMotionSequenceCoroutine == null)
+            {
+                return false;
+            }
+
+            string stoppedSequenceName = string.IsNullOrWhiteSpace(_activeVoiceMotionSequenceName)
+                ? "Voice motion sequence"
+                : _activeVoiceMotionSequenceName;
+            StopCoroutine(_voiceMotionSequenceCoroutine);
+            _voiceMotionSequenceCoroutine = null;
+            _activeVoiceMotionSequenceName = string.Empty;
+            _client?.CancelActivePoseMotion();
+            LogRuntimeEvent(
+                "voice",
+                "motion-sequence-stopped",
+                string.IsNullOrWhiteSpace(reason)
+                    ? $"Voice motion sequence '{stoppedSequenceName}' stopped."
+                    : $"Voice motion sequence '{stoppedSequenceName}' stopped. {reason}",
+                "WARN");
+
+            if (updateStatus)
+            {
+                string finalReason = string.IsNullOrWhiteSpace(reason)
+                    ? $"Voice motion sequence '{stoppedSequenceName}' stopped."
+                    : $"Voice motion sequence '{stoppedSequenceName}' stopped: {reason}";
+                _voiceLastActionResult = finalReason;
+                SetStatus("Voice motion sequence stopped", finalReason);
+            }
+
+            return true;
+        }
+
         private IEnumerator VoiceHelloReturnToNeutralCoroutine(float delaySeconds)
         {
             float safeDelay = Mathf.Max(0f, delaySeconds);
@@ -6266,6 +6732,7 @@ namespace Reachy.ControlApp
         private static string BuildStopAcknowledgementMessage(
             bool hadPendingAction,
             bool stoppedShowMovement,
+            bool stoppedMotionSequence,
             bool stoppedActedSequence,
             bool stoppedLoopingAnimation,
             bool stoppedPacedPoseMotion)
@@ -6279,6 +6746,11 @@ namespace Reachy.ControlApp
             if (stoppedShowMovement)
             {
                 stoppedItems.Add("show movement sequence");
+            }
+
+            if (stoppedMotionSequence)
+            {
+                stoppedItems.Add("voice motion sequence");
             }
 
             if (stoppedActedSequence)
@@ -6325,6 +6797,8 @@ namespace Reachy.ControlApp
             if (action.Kind != VoiceCommandRouter.VoiceActionKind.ConnectRobot &&
                 action.Kind != VoiceCommandRouter.VoiceActionKind.SetPose &&
                 action.Kind != VoiceCommandRouter.VoiceActionKind.MoveJoint &&
+                action.Kind != VoiceCommandRouter.VoiceActionKind.SetCustomPose &&
+                action.Kind != VoiceCommandRouter.VoiceActionKind.PlayMotionSequence &&
                 action.Kind != VoiceCommandRouter.VoiceActionKind.ShowMovement &&
                 action.Kind != VoiceCommandRouter.VoiceActionKind.Hello)
             {
@@ -12650,6 +13124,7 @@ namespace Reachy.ControlApp
                         reason: "Disconnected by UI button.",
                         stopLoopingAnimation: false);
                     StopLoopingAnimation(updateStatus: false, reason: "Disconnected by UI button.");
+                    StopVoiceMotionSequence(updateStatus: false, reason: "Disconnected by UI button.");
                     _client.Disconnect();
                     _connectedMode = null;
                     LogConnectionEvent(disconnectedMode, "manual-disconnect", "Disconnected by UI button.");

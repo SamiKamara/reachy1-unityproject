@@ -30,6 +30,7 @@ import re
 import sys
 import threading
 import time
+import unicodedata
 import wave
 from collections import deque
 from http import HTTPStatus
@@ -48,6 +49,11 @@ DEFAULT_POSES = [
     "Hello Pose B",
     "Hello Pose C",
     "Hello Pose D",
+    "Left Hand Up",
+    "Left Hand Wave",
+    "Right Hand Up",
+    "Right Hand Wave",
+    "Hands Up",
 ]
 
 DEFAULT_JOINTS = [
@@ -79,7 +85,9 @@ ONLINE_ALLOWED_INTENTS = (
     "connect_robot",
     "disconnect_robot",
     "set_pose",
+    "set_custom_pose",
     "move_joint",
+    "play_motion_sequence",
     "show_movement",
     "stop_motion",
 )
@@ -87,7 +95,113 @@ DEFAULT_ONLINE_AI_MODEL = "gpt-5.4"
 DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
 DEFAULT_ONLINE_AI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS = 480
 DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS = ["en", "fi"]
+DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS = len(DEFAULT_JOINTS)
+DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS = 8
+DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP = len(DEFAULT_JOINTS)
+DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS = 0.15
+DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS = 4.0
+SEMANTIC_ASSIST_POSE_NAMES = [
+    "Left Hand Up",
+    "Left Hand Wave",
+    "Right Hand Up",
+    "Right Hand Wave",
+    "Hands Up",
+]
+SEMANTIC_LEFT_SIDE_HINTS = [
+    "left",
+    "vasen",
+    "vasenta",
+    "vasemman",
+    "vasemmalla",
+]
+SEMANTIC_RIGHT_SIDE_HINTS = [
+    "right",
+    "oikea",
+    "oikean",
+    "oikeaa",
+    "oikealla",
+]
+SEMANTIC_BOTH_SIDE_HINTS = [
+    "both",
+    "molemmat",
+    "molempia",
+    "kummatkin",
+    "kahdella",
+]
+SEMANTIC_SINGULAR_LIMB_HINTS = [
+    "hand",
+    "arm",
+    "kasi",
+    "kaden",
+]
+SEMANTIC_PLURAL_LIMB_HINTS = [
+    "hands",
+    "arms",
+    "kadet",
+    "kasia",
+]
+SEMANTIC_RAISE_TOKEN_HINTS = [
+    "raise",
+    "lift",
+    "up",
+    "hold",
+    "nosta",
+    "ylos",
+]
+SEMANTIC_RAISE_PHRASE_HINTS = [
+    "raise hand",
+    "raise arm",
+    "raise your hand",
+    "raise your arm",
+    "lift hand",
+    "lift arm",
+    "hand up",
+    "arm up",
+    "hands up",
+    "arms up",
+    "put your hand up",
+    "hold your hand up",
+    "nosta kasi",
+    "nosta kasi ylos",
+    "nosta kadet",
+    "nosta kadet ylos",
+    "kasi ylos",
+    "kadet ylos",
+]
+SEMANTIC_WAVE_TOKEN_HINTS = [
+    "wave",
+    "waving",
+    "heiluta",
+    "vilkuta",
+    "moikkaa",
+    "tervehdi",
+    "greet",
+]
+SEMANTIC_WAVE_PHRASE_HINTS = [
+    "wave hand",
+    "wave your hand",
+    "wave arm",
+    "wave to me",
+    "heiluta kasi",
+]
+SEMANTIC_QUESTION_TOKEN_HINTS = [
+    "what",
+    "how",
+    "why",
+    "which",
+    "who",
+    "when",
+    "where",
+    "mika",
+    "mita",
+    "miten",
+    "miksi",
+    "kuka",
+    "milloin",
+    "missa",
+]
 
 DEFAULT_SHOW_MOVEMENT_SYNONYMS = [
     "show movement",
@@ -383,11 +497,25 @@ SHORT_LONE_HELP_FALLBACK_MAX_CHARS = 8
 
 
 def normalize(text: str) -> str:
-    return "".join(ch.lower() for ch in (text or "") if ch.isalnum())
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return "".join(
+        ch.lower()
+        for ch in decomposed
+        if not unicodedata.combining(ch) and ch.isalnum()
+    )
 
 
 def tokenize(text: str) -> list[str]:
-    return [tok for tok in re.split(r"[^a-zA-Z0-9_]+", (text or "").lower()) if tok]
+    return [tok for tok in re.split(r"[^\w]+", (text or "").lower(), flags=re.UNICODE) if tok]
+
+
+def build_normalized_hint_set(values: list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for value in values:
+        token = normalize(str(value))
+        if token:
+            normalized.add(token)
+    return normalized
 
 
 def contains_word_sequence(words: list[str], sequence: list[str]) -> bool:
@@ -427,6 +555,16 @@ CONNECT_ROBOT_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_CONNECT_ROBOT_S
 STATUS_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_STATUS_SYNONYMS)
 MOVE_JOINT_TRIGGER_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_MOVE_JOINT_TRIGGER_SYNONYMS)
 SET_POSE_TRIGGER_TOKEN_SETS = build_token_sets_from_phrases(DEFAULT_SET_POSE_TRIGGER_SYNONYMS)
+SEMANTIC_LEFT_SIDE_HINT_SET = build_normalized_hint_set(SEMANTIC_LEFT_SIDE_HINTS)
+SEMANTIC_RIGHT_SIDE_HINT_SET = build_normalized_hint_set(SEMANTIC_RIGHT_SIDE_HINTS)
+SEMANTIC_BOTH_SIDE_HINT_SET = build_normalized_hint_set(SEMANTIC_BOTH_SIDE_HINTS)
+SEMANTIC_SINGULAR_LIMB_HINT_SET = build_normalized_hint_set(SEMANTIC_SINGULAR_LIMB_HINTS)
+SEMANTIC_PLURAL_LIMB_HINT_SET = build_normalized_hint_set(SEMANTIC_PLURAL_LIMB_HINTS)
+SEMANTIC_RAISE_TOKEN_HINT_SET = build_normalized_hint_set(SEMANTIC_RAISE_TOKEN_HINTS)
+SEMANTIC_RAISE_PHRASE_HINT_SET = build_normalized_hint_set(SEMANTIC_RAISE_PHRASE_HINTS)
+SEMANTIC_WAVE_TOKEN_HINT_SET = build_normalized_hint_set(SEMANTIC_WAVE_TOKEN_HINTS)
+SEMANTIC_WAVE_PHRASE_HINT_SET = build_normalized_hint_set(SEMANTIC_WAVE_PHRASE_HINTS)
+SEMANTIC_QUESTION_TOKEN_HINT_SET = build_normalized_hint_set(SEMANTIC_QUESTION_TOKEN_HINTS)
 
 
 def transcript_mentions_known_joint(compact_transcript: str, known_joints: list[str]) -> bool:
@@ -618,10 +756,17 @@ def load_config(path: Path) -> dict:
         "online_ai_timeout_seconds": 15.0,
         "openai_transcribe_language_hints": list(DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS),
         "online_ai_temperature": 0.2,
-        "online_ai_max_output_tokens": 180,
+        "online_ai_max_output_tokens": DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS,
         "online_ai_system_prompt": "You are Reachy's online conversational AI.",
         "online_ai_allow_direct_joint_commands": True,
         "online_ai_require_motion_confirmation": False,
+        "online_ai_allow_custom_pose_commands": True,
+        "online_ai_allow_motion_sequence_commands": True,
+        "online_ai_custom_pose_max_joints": DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS,
+        "online_ai_motion_sequence_max_steps": DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS,
+        "online_ai_motion_sequence_max_joints_per_step": DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP,
+        "online_ai_motion_sequence_min_hold_seconds": DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS,
+        "online_ai_motion_sequence_max_hold_seconds": DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS,
         "online_ai_show_api_key_help_on_first_open": True,
         "online_ai_last_api_key_check_ok": False,
         "openai_transcribe_min_clip_seconds": 0.55,
@@ -744,7 +889,7 @@ def load_config(path: Path) -> dict:
         min(2.0, float(config.get("online_ai_temperature", 0.2))))
     config["online_ai_max_output_tokens"] = max(
         32,
-        min(2048, int(config.get("online_ai_max_output_tokens", 180))))
+        min(2048, int(config.get("online_ai_max_output_tokens", DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS))))
     config["online_ai_system_prompt"] = (
         str(config.get("online_ai_system_prompt", "You are Reachy's online conversational AI.")).strip()
         or "You are Reachy's online conversational AI.")
@@ -754,6 +899,27 @@ def load_config(path: Path) -> dict:
     config["online_ai_require_motion_confirmation"] = parse_bool(
         config.get("online_ai_require_motion_confirmation"),
         False)
+    config["online_ai_allow_custom_pose_commands"] = parse_bool(
+        config.get("online_ai_allow_custom_pose_commands"),
+        True)
+    config["online_ai_allow_motion_sequence_commands"] = parse_bool(
+        config.get("online_ai_allow_motion_sequence_commands"),
+        True)
+    config["online_ai_custom_pose_max_joints"] = max(
+        1,
+        min(len(config["known_joints"]), int(config.get("online_ai_custom_pose_max_joints", DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS))))
+    config["online_ai_motion_sequence_max_steps"] = max(
+        1,
+        min(32, int(config.get("online_ai_motion_sequence_max_steps", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS))))
+    config["online_ai_motion_sequence_max_joints_per_step"] = max(
+        1,
+        min(len(config["known_joints"]), int(config.get("online_ai_motion_sequence_max_joints_per_step", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP))))
+    config["online_ai_motion_sequence_min_hold_seconds"] = max(
+        0.05,
+        min(5.0, float(config.get("online_ai_motion_sequence_min_hold_seconds", DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS))))
+    config["online_ai_motion_sequence_max_hold_seconds"] = max(
+        config["online_ai_motion_sequence_min_hold_seconds"],
+        min(10.0, float(config.get("online_ai_motion_sequence_max_hold_seconds", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS))))
     config["online_ai_show_api_key_help_on_first_open"] = parse_bool(
         config.get("online_ai_show_api_key_help_on_first_open"),
         True)
@@ -1152,6 +1318,9 @@ class Parser:
             "pose_name": "",
             "joint_name": "",
             "joint_degrees": 0.0,
+            "speed_scale": 0.0,
+            "joint_targets": [],
+            "motion_steps": [],
             "confidence": confidence,
             "requires_confirmation": requires_confirmation,
             "reply_text": "",
@@ -1388,6 +1557,9 @@ class State:
             "pose_name": str(payload.get("pose_name", "")).strip(),
             "joint_name": str(payload.get("joint_name", "")).strip(),
             "joint_degrees": float(payload.get("joint_degrees", 0.0) or 0.0),
+            "speed_scale": float(payload.get("speed_scale", 0.0) or 0.0),
+            "joint_targets": payload.get("joint_targets", []) if isinstance(payload.get("joint_targets", []), list) else [],
+            "motion_steps": payload.get("motion_steps", []) if isinstance(payload.get("motion_steps", []), list) else [],
             "confidence": max(0.0, min(1.0, float(payload.get("confidence", 0.95) or 0.95))),
             "requires_confirmation": bool(payload.get("requires_confirmation", False)),
             "reply_text": str(payload.get("reply_text", "")).strip(),
@@ -2637,7 +2809,16 @@ class OnlineAIOrchestrator:
             ), f"online_http_error: {error_message}"
 
         normalized_intent, message = self._validate_and_normalize(transcript, resolved_confidence, payload)
-        normalized_intent["source_backend"] = self.source_backend
+        semantic_override, semantic_message = self._try_build_semantic_motion_intent(
+            transcript,
+            resolved_confidence,
+        )
+        if semantic_override is not None and self._should_override_with_semantic_motion(normalized_intent):
+            normalized_intent = semantic_override
+            message = semantic_message
+
+        normalized_intent["source_backend"] = (
+            str(normalized_intent.get("source_backend", "")).strip() or self.source_backend)
         normalized_intent["source_mode"] = "online"
         self.state.record_online_response(
             reply_text=normalized_intent.get("reply_text", ""),
@@ -2646,7 +2827,7 @@ class OnlineAIOrchestrator:
             response_summary=message,
             http_error="",
             latency_ms=latency_ms,
-            source_backend=self.source_backend,
+            source_backend=normalized_intent.get("source_backend", self.source_backend),
         )
         return normalized_intent, message
 
@@ -2780,6 +2961,12 @@ class OnlineAIOrchestrator:
         if error_code == "invalid_json_schema":
             return "The app sent an invalid structured-output schema. Restart the sidecar after updating the app."
 
+        if "hit max_output_tokens and was truncated" in lowered_message:
+            return (
+                "The structured online reply was cut off by the output token limit. "
+                "The sidecar now retries with a larger budget, but if this keeps happening, "
+                "raise online_ai_max_output_tokens or keep improvised sequences shorter.")
+
         raw_text = str(error_message or "").strip().lower()
         if raw_text.startswith("network error:") or "name or service not known" in raw_text or "timed out" in raw_text:
             return "The request could not reach OpenAI. Check internet access, the base URL, and any proxy settings, then try again."
@@ -2841,6 +3028,184 @@ class OnlineAIOrchestrator:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned.rstrip(" .")
 
+    def _semantic_motion_assist_enabled(self) -> bool:
+        return parse_bool(self.config.get("online_ai_enable_motion_assist"), True)
+
+    def _get_online_known_pose_names(self) -> list[str]:
+        known_poses = [str(item).strip() for item in self.config.get("known_poses", []) if str(item).strip()]
+        normalized_known = {normalize(item) for item in known_poses}
+        for pose_name in SEMANTIC_ASSIST_POSE_NAMES:
+            if normalize(pose_name) not in normalized_known:
+                known_poses.append(pose_name)
+                normalized_known.add(normalize(pose_name))
+        return known_poses if known_poses else list(DEFAULT_POSES)
+
+    @staticmethod
+    def _compact_contains_any(compact_text: str, compact_hints: set[str]) -> bool:
+        if not compact_text or not compact_hints:
+            return False
+        for hint in compact_hints:
+            if hint and hint in compact_text:
+                return True
+        return False
+
+    def _build_semantic_motion_assist_catalog(self) -> list[dict]:
+        return [
+            {
+                "request_family": "raise hand or arm",
+                "examples": ["raise your hand", "raise left hand", "nosta kasi ylos"],
+                "default_pose": "Right Hand Up",
+                "left_pose": "Left Hand Up",
+                "right_pose": "Right Hand Up",
+                "both_pose": "Hands Up",
+                "default_side_if_unspecified": "right",
+            },
+            {
+                "request_family": "wave or greeting gesture",
+                "examples": ["wave", "wave your hand", "heiluta kasi"],
+                "default_pose": "Right Hand Wave",
+                "left_pose": "Left Hand Wave",
+                "right_pose": "Right Hand Wave",
+                "default_side_if_unspecified": "right",
+            },
+        ]
+
+    @staticmethod
+    def _should_override_with_semantic_motion(intent: dict) -> bool:
+        if not isinstance(intent, dict):
+            return True
+
+        intent_name = str(intent.get("intent", "")).strip().lower()
+        validation_status = str(intent.get("validation_status", "")).strip().lower()
+        if intent_name in ("none", "move_joint"):
+            return True
+        if validation_status and validation_status != "validated":
+            return True
+        return False
+
+    def _try_build_semantic_motion_intent(
+        self,
+        transcript: str,
+        confidence: float,
+    ) -> tuple[dict | None, str]:
+        if not self._semantic_motion_assist_enabled():
+            return None, "semantic_motion_assist_disabled"
+
+        text = str(transcript or "").strip()
+        if not text:
+            return None, "semantic_motion_assist_empty_transcript"
+
+        words = tokenize(text)
+        if not words:
+            return None, "semantic_motion_assist_no_tokens"
+
+        compact = normalize(text)
+        normalized_tokens = {normalize(word) for word in words if normalize(word)}
+        if normalized_tokens & SEMANTIC_QUESTION_TOKEN_HINT_SET:
+            return None, "semantic_motion_assist_question_context"
+
+        if transcript_mentions_known_joint(compact, list(self.config.get("known_joints", []))):
+            return None, "semantic_motion_assist_explicit_joint_name"
+
+        if extract_joint_number(
+            text,
+            safe_mode=parse_bool(self.config.get("safe_numeric_parsing"), True),
+            require_target_token=parse_bool(self.config.get("require_target_token_for_joint"), False),
+        ) is not None:
+            return None, "semantic_motion_assist_numeric_target"
+
+        if normalized_tokens & {"joint", "motor", "moottori", "servo", "degree", "degrees", "deg"}:
+            return None, "semantic_motion_assist_joint_specific"
+
+        mentions_left = bool(normalized_tokens & SEMANTIC_LEFT_SIDE_HINT_SET)
+        mentions_right = bool(normalized_tokens & SEMANTIC_RIGHT_SIDE_HINT_SET)
+        mentions_both = bool(normalized_tokens & SEMANTIC_BOTH_SIDE_HINT_SET)
+        mentions_singular_limb = bool(normalized_tokens & SEMANTIC_SINGULAR_LIMB_HINT_SET)
+        mentions_plural_limbs = bool(normalized_tokens & SEMANTIC_PLURAL_LIMB_HINT_SET)
+        mentions_limb = mentions_singular_limb or mentions_plural_limbs
+
+        has_wave = bool(normalized_tokens & SEMANTIC_WAVE_TOKEN_HINT_SET) or self._compact_contains_any(
+            compact,
+            SEMANTIC_WAVE_PHRASE_HINT_SET,
+        )
+        has_raise = bool(normalized_tokens & SEMANTIC_RAISE_TOKEN_HINT_SET) or self._compact_contains_any(
+            compact,
+            SEMANTIC_RAISE_PHRASE_HINT_SET,
+        )
+
+        family = ""
+        if has_wave:
+            family = "wave"
+        elif has_raise and mentions_limb:
+            family = "raise"
+
+        if not family:
+            return None, "semantic_motion_assist_no_match"
+
+        if family == "wave" and mentions_both:
+            return None, "semantic_motion_assist_wave_both_ambiguous"
+
+        side = "right"
+        if mentions_both or (family == "raise" and mentions_plural_limbs):
+            side = "both"
+        elif mentions_left and not mentions_right:
+            side = "left"
+        elif mentions_right and not mentions_left:
+            side = "right"
+        elif family == "raise" and mentions_plural_limbs:
+            side = "both"
+
+        pose_name = ""
+        reply_text = ""
+        if family == "wave":
+            if side == "left":
+                pose_name = "Left Hand Wave"
+                reply_text = "Waving with the left hand."
+            else:
+                pose_name = "Right Hand Wave"
+                reply_text = "Waving with the right hand."
+        elif family == "raise":
+            if side == "both":
+                pose_name = "Hands Up"
+                reply_text = "Raising both hands."
+            elif side == "left":
+                pose_name = "Left Hand Up"
+                reply_text = "Raising the left hand."
+            else:
+                pose_name = "Right Hand Up"
+                reply_text = "Raising the right hand."
+
+        resolved_pose = self._resolve_name(pose_name, self._get_online_known_pose_names())
+        if not resolved_pose:
+            return None, f"semantic_motion_assist_pose_not_found:{pose_name}"
+
+        intent = {
+            "type": "robot_command",
+            "intent": "set_pose",
+            "pose_name": resolved_pose,
+            "joint_name": "",
+            "joint_degrees": 0.0,
+            "confidence": max(0.0, min(1.0, confidence if confidence > 0.0 else 0.85)),
+            "requires_confirmation": parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False,
+            ),
+            "reply_text": reply_text,
+            "spoken_text": text,
+            "source_backend": "semantic_motion_assist",
+            "source_mode": "online",
+            "validation_status": "semantic_motion_assist",
+            "validation_message": (
+                f"Mapped an underspecified {family} request to preset pose '{resolved_pose}' "
+                f"using side='{side}'."
+            ),
+            "transcript_is_final": True,
+        }
+        return intent, (
+            f"Semantic motion assist mapped '{text}' to preset pose '{resolved_pose}' "
+            f"(family={family}, side={side})."
+        )
+
     def _request_online_turn(self, api_key: str, transcript: str, connection_test: bool = False) -> dict:
         system_prompt = self._build_system_prompt()
         user_payload = {
@@ -2857,18 +3222,47 @@ class OnlineAIOrchestrator:
             "allow_direct_joint_commands": parse_bool(
                 self.config.get("online_ai_allow_direct_joint_commands"),
                 True),
-            "known_poses": list(self.config.get("known_poses", [])),
+            "known_poses": self._get_online_known_pose_names(),
             "known_joints": list(self.config.get("known_joints", [])),
             "joint_degree_limits": {
                 "default_min": float(self.config.get("joint_min_degrees", -180.0)),
                 "default_max": float(self.config.get("joint_max_degrees", 180.0)),
             },
             "allowed_action_intents": list(ONLINE_ALLOWED_INTENTS),
+            "semantic_motion_assist": {
+                "enabled": self._semantic_motion_assist_enabled(),
+                "prefer_preset_pose_for_vague_arm_or_hand_requests": True,
+                "default_single_side_if_unspecified": "right",
+                "catalog": self._build_semantic_motion_assist_catalog(),
+            },
+            "custom_motion_capabilities": {
+                "allow_custom_pose_commands": parse_bool(
+                    self.config.get("online_ai_allow_custom_pose_commands"),
+                    True,
+                ),
+                "allow_motion_sequence_commands": parse_bool(
+                    self.config.get("online_ai_allow_motion_sequence_commands"),
+                    True,
+                ),
+                "custom_pose_max_joints": int(self.config.get("online_ai_custom_pose_max_joints", DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS)),
+                "motion_sequence_max_steps": int(self.config.get("online_ai_motion_sequence_max_steps", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS)),
+                "motion_sequence_max_joints_per_step": int(self.config.get("online_ai_motion_sequence_max_joints_per_step", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP)),
+                "motion_sequence_hold_seconds_range": {
+                    "min": float(self.config.get("online_ai_motion_sequence_min_hold_seconds", DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS)),
+                    "max": float(self.config.get("online_ai_motion_sequence_max_hold_seconds", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS)),
+                },
+                "recommended_use_cases": [
+                    "dance",
+                    "celebrate",
+                    "point around",
+                    "improvise a short motion",
+                ],
+            },
         }
         request_payload = {
             "model": str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL,
             "temperature": float(self.config.get("online_ai_temperature", 0.2)),
-            "max_output_tokens": int(self.config.get("online_ai_max_output_tokens", 180)),
+            "max_output_tokens": int(self.config.get("online_ai_max_output_tokens", DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS)),
             "input": [
                 {
                     "role": "system",
@@ -2901,6 +3295,60 @@ class OnlineAIOrchestrator:
 
         endpoint = self._build_responses_endpoint()
         timeout_seconds = float(self.config.get("online_ai_timeout_seconds", 15.0))
+        max_output_tokens = int(request_payload["max_output_tokens"])
+        response_payload: dict | None = None
+        response_text = ""
+        for attempt_index in range(2):
+            request_payload["max_output_tokens"] = max_output_tokens
+            raw = self._post_online_request(endpoint, api_key, timeout_seconds, request_payload)
+            response_payload = json.loads(raw)
+            response_text = self._extract_response_text(response_payload)
+            if not response_text:
+                if attempt_index == 0 and self._should_retry_structured_output(
+                    response_payload,
+                    response_text,
+                    None,
+                    max_output_tokens,
+                ):
+                    retry_tokens = self._get_retry_max_output_tokens(max_output_tokens)
+                    if retry_tokens > max_output_tokens:
+                        self.state.log(
+                            "warn",
+                            f"Online AI structured output was incomplete at {max_output_tokens} output tokens; retrying with {retry_tokens}.",
+                        )
+                        max_output_tokens = retry_tokens
+                        continue
+                raise RuntimeError("Online AI response did not contain structured text output.")
+
+            try:
+                return json.loads(response_text)
+            except Exception as exc:
+                if attempt_index == 0 and self._should_retry_structured_output(
+                    response_payload,
+                    response_text,
+                    exc,
+                    max_output_tokens,
+                ):
+                    retry_tokens = self._get_retry_max_output_tokens(max_output_tokens)
+                    if retry_tokens > max_output_tokens:
+                        self.state.log(
+                            "warn",
+                            f"Online AI structured output looked truncated at {max_output_tokens} output tokens; retrying with {retry_tokens}.",
+                        )
+                        max_output_tokens = retry_tokens
+                        continue
+
+                if self._response_hit_max_output_tokens(response_payload) or self._looks_like_truncated_json_output(response_text):
+                    raise RuntimeError(
+                        "Structured online response hit max_output_tokens and was truncated. "
+                        f"Current limit={max_output_tokens}.")
+                raise RuntimeError(f"Structured online response was not valid JSON: {exc}")
+
+        raise RuntimeError(
+            "Structured online response could not be completed within the configured token budget.")
+
+    @staticmethod
+    def _post_online_request(endpoint: str, api_key: str, timeout_seconds: float, request_payload: dict) -> str:
         body = json.dumps(request_payload, ensure_ascii=True).encode("utf-8")
         request = urllib_request.Request(
             endpoint,
@@ -2914,7 +3362,7 @@ class OnlineAIOrchestrator:
 
         try:
             with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
-                raw = response.read().decode("utf-8")
+                return response.read().decode("utf-8")
         except urllib_error.HTTPError as exc:
             error_body = ""
             try:
@@ -2925,16 +3373,6 @@ class OnlineAIOrchestrator:
             raise RuntimeError(f"HTTP {exc.code}: {detail}")
         except urllib_error.URLError as exc:
             raise RuntimeError(f"Network error: {exc.reason}")
-
-        response_payload = json.loads(raw)
-        response_text = self._extract_response_text(response_payload)
-        if not response_text:
-            raise RuntimeError("Online AI response did not contain structured text output.")
-
-        try:
-            return json.loads(response_text)
-        except Exception as exc:
-            raise RuntimeError(f"Structured online response was not valid JSON: {exc}")
 
     def _build_system_prompt(self) -> str:
         operator_prompt = (
@@ -2947,10 +3385,21 @@ class OnlineAIOrchestrator:
             "- Return valid JSON only.\n"
             "- Keep spoken output in reply_text.\n"
             "- Put one robot action in action.intent.\n"
-            "- Always include action.pose_name, action.joint_name, and action.joint_degrees; use null when a field does not apply.\n"
+            "- Always include action.pose_name, action.joint_name, action.joint_degrees, action.speed_scale, action.joint_targets, and action.motion_steps; use null or [] when a field does not apply.\n"
             "- Use intent 'none' when no robot action is needed.\n"
             "- Never invent pose names or joint names.\n"
             "- Never emit actions outside the provided allowlists.\n"
+            "- Prefer set_pose for vague full-arm or hand gestures; use move_joint only when the operator names a specific joint or exact degree target.\n"
+            "- Do not ask whether the operator means a pose or a motor unless the command is genuinely unsafe or conflicting.\n"
+            "- When a single hand or arm is requested without a side, default to the right side.\n"
+            "- For natural requests like 'raise your hand', 'raise left hand', 'wave', or 'hands up', choose the closest matching preset pose yourself.\n"
+            "- Useful preset mappings include Left Hand Up, Right Hand Up, Hands Up, Left Hand Wave, and Right Hand Wave.\n"
+            "- Use intent 'set_custom_pose' when you need a one-off pose that combines multiple joints and no preset pose fits.\n"
+            "- Use intent 'play_motion_sequence' for open-ended motions like dancing, celebrating, or improvised gesturing.\n"
+            "- For play_motion_sequence, keep reply_text to a short acknowledgement such as 'Okay, I'll do that.' instead of narrating the movement.\n"
+            "- For dances or improvised motions, default to 3 or 4 steps with about 2 to 4 joint targets per step unless the operator explicitly asks for a longer routine.\n"
+            "- Keep motion step labels extremely short, or set them to null when they do not add value.\n"
+            "- Keep custom poses and sequences compact and purposeful instead of returning extremely long choreographies.\n"
             "- If unsure, use intent 'none' and ask a clarifying question in reply_text.\n"
             "- If direct joint commands are not allowed, do not emit move_joint.\n"
             "- Keep reply_text concise and operator-facing.\n"
@@ -2958,6 +3407,29 @@ class OnlineAIOrchestrator:
 
     @staticmethod
     def _build_response_schema() -> dict:
+        joint_target_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "joint_name": {"type": "string"},
+                "joint_degrees": {"type": "number"},
+            },
+            "required": ["joint_name", "joint_degrees"],
+        }
+        motion_step_schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "label": {"type": ["string", "null"]},
+                "hold_seconds": {"type": ["number", "null"]},
+                "speed_scale": {"type": ["number", "null"]},
+                "joint_targets": {
+                    "type": "array",
+                    "items": joint_target_schema,
+                },
+            },
+            "required": ["label", "hold_seconds", "speed_scale", "joint_targets"],
+        }
         return {
             "type": "object",
             "additionalProperties": False,
@@ -2975,12 +3447,88 @@ class OnlineAIOrchestrator:
                         "pose_name": {"type": ["string", "null"]},
                         "joint_name": {"type": ["string", "null"]},
                         "joint_degrees": {"type": ["number", "null"]},
+                        "speed_scale": {"type": ["number", "null"]},
+                        "joint_targets": {
+                            "type": ["array", "null"],
+                            "items": joint_target_schema,
+                        },
+                        "motion_steps": {
+                            "type": ["array", "null"],
+                            "items": motion_step_schema,
+                        },
                     },
-                    "required": ["intent", "pose_name", "joint_name", "joint_degrees"],
+                    "required": [
+                        "intent",
+                        "pose_name",
+                        "joint_name",
+                        "joint_degrees",
+                        "speed_scale",
+                        "joint_targets",
+                        "motion_steps",
+                    ],
                 },
             },
             "required": ["reply_text", "confidence", "action"],
         }
+
+    @staticmethod
+    def _get_retry_max_output_tokens(current_max_output_tokens: int) -> int:
+        current = max(32, int(current_max_output_tokens or DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS))
+        return min(2048, max(current * 2, current + 192, DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS))
+
+    @staticmethod
+    def _response_hit_max_output_tokens(response_payload: dict | None) -> bool:
+        if not isinstance(response_payload, dict):
+            return False
+
+        incomplete_details = response_payload.get("incomplete_details")
+        reason = ""
+        if isinstance(incomplete_details, dict):
+            reason = str(incomplete_details.get("reason", "") or "").strip().lower()
+
+        status = str(response_payload.get("status", "") or "").strip().lower()
+        if "max_output_tokens" in reason:
+            return True
+        return status == "incomplete" and not reason
+
+    @staticmethod
+    def _looks_like_truncated_json_output(response_text: str) -> bool:
+        text = str(response_text or "").rstrip()
+        if not text:
+            return False
+
+        if text.count("{") > text.count("}"):
+            return True
+        if text.count("[") > text.count("]"):
+            return True
+        if text.endswith((",", ":", "\\", "\"")):
+            return True
+        if text.startswith("{") and not text.endswith("}"):
+            return True
+        if text.startswith("[") and not text.endswith("]"):
+            return True
+        return False
+
+    def _should_retry_structured_output(
+        self,
+        response_payload: dict | None,
+        response_text: str,
+        parse_error: Exception | None,
+        current_max_output_tokens: int,
+    ) -> bool:
+        if self._get_retry_max_output_tokens(current_max_output_tokens) <= current_max_output_tokens:
+            return False
+
+        if self._response_hit_max_output_tokens(response_payload):
+            return True
+
+        if parse_error is None:
+            return False
+
+        error_text = str(parse_error or "").strip().lower()
+        if "unterminated string" in error_text or "unexpected end" in error_text:
+            return self._looks_like_truncated_json_output(response_text)
+        return False
 
     def _build_responses_endpoint(self) -> str:
         base_url = str(self.config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)).strip()
@@ -3031,6 +3579,169 @@ class OnlineAIOrchestrator:
 
         return "\n".join(fragment for fragment in fragments if fragment).strip()
 
+    def _normalize_speed_scale(self, value, *, allow_zero_default: bool) -> tuple[float | None, str]:
+        if value is None:
+            return (0.0 if allow_zero_default else None), ""
+
+        try:
+            speed_scale = float(value)
+        except Exception:
+            return None, "speed_scale was not numeric."
+
+        if allow_zero_default and speed_scale <= 0.0:
+            return 0.0, ""
+
+        if speed_scale < 0.05 or speed_scale > 2.0:
+            return None, "speed_scale must stay within [0.05, 2.0]."
+
+        return speed_scale, ""
+
+    def _normalize_joint_targets(
+        self,
+        targets_value,
+        *,
+        max_targets: int,
+        validation_prefix: str,
+    ) -> tuple[list[dict] | None, str]:
+        if not isinstance(targets_value, list):
+            return None, f"{validation_prefix} must be an array."
+
+        if len(targets_value) <= 0:
+            return None, f"{validation_prefix} must contain at least one joint target."
+
+        if len(targets_value) > max_targets:
+            return None, f"{validation_prefix} exceeds the configured limit of {max_targets} targets."
+
+        joint_min = float(self.config.get("joint_min_degrees", -180.0))
+        joint_max = float(self.config.get("joint_max_degrees", 180.0))
+        ordered_keys: list[str] = []
+        normalized_by_key: dict[str, dict] = {}
+        for idx, item in enumerate(targets_value):
+            if not isinstance(item, dict):
+                return None, f"{validation_prefix}[{idx}] must be an object."
+
+            joint_name = self._coerce_optional_text(item.get("joint_name"))
+            resolved_joint = self._resolve_name(joint_name, self.config.get("known_joints", []))
+            if not resolved_joint:
+                return None, f"{validation_prefix}[{idx}] uses unknown joint '{joint_name}'."
+
+            try:
+                joint_degrees = float(item.get("joint_degrees"))
+            except Exception:
+                return None, f"{validation_prefix}[{idx}].joint_degrees was not numeric."
+
+            if joint_degrees < joint_min or joint_degrees > joint_max:
+                return None, (
+                    f"{validation_prefix}[{idx}] target {joint_degrees:.1f} is outside "
+                    f"[{joint_min:.1f}, {joint_max:.1f}] deg.")
+
+            key = normalize(resolved_joint)
+            if key not in normalized_by_key:
+                ordered_keys.append(key)
+            normalized_by_key[key] = {
+                "joint_name": resolved_joint,
+                "joint_degrees": float(joint_degrees),
+            }
+
+        normalized_targets = [normalized_by_key[key] for key in ordered_keys]
+        if len(normalized_targets) <= 0:
+            return None, f"{validation_prefix} did not contain any valid joint targets."
+
+        return normalized_targets, ""
+
+    def _normalize_motion_steps(
+        self,
+        steps_value,
+        *,
+        default_speed_scale: float,
+    ) -> tuple[list[dict] | None, str]:
+        if not isinstance(steps_value, list):
+            return None, "motion_steps must be an array."
+
+        if len(steps_value) <= 0:
+            return None, "motion_steps must contain at least one step."
+
+        max_steps = int(self.config.get("online_ai_motion_sequence_max_steps", DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS))
+        if len(steps_value) > max_steps:
+            return None, f"motion_steps exceeds the configured limit of {max_steps} steps."
+
+        max_joints_per_step = int(
+            self.config.get(
+                "online_ai_motion_sequence_max_joints_per_step",
+                DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP,
+            )
+        )
+        min_hold = float(
+            self.config.get(
+                "online_ai_motion_sequence_min_hold_seconds",
+                DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS,
+            )
+        )
+        max_hold = float(
+            self.config.get(
+                "online_ai_motion_sequence_max_hold_seconds",
+                DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS,
+            )
+        )
+
+        normalized_steps: list[dict] = []
+        for idx, item in enumerate(steps_value):
+            if not isinstance(item, dict):
+                return None, f"motion_steps[{idx}] must be an object."
+
+            joint_targets, error_message = self._normalize_joint_targets(
+                item.get("joint_targets"),
+                max_targets=max_joints_per_step,
+                validation_prefix=f"motion_steps[{idx}].joint_targets",
+            )
+            if joint_targets is None:
+                return None, error_message
+
+            raw_speed_scale = item.get("speed_scale", default_speed_scale)
+            if raw_speed_scale is None:
+                raw_speed_scale = default_speed_scale
+
+            speed_scale, error_message = self._normalize_speed_scale(
+                raw_speed_scale,
+                allow_zero_default=True,
+            )
+            if speed_scale is None:
+                return None, f"motion_steps[{idx}].{error_message}"
+
+            hold_seconds_value = item.get("hold_seconds", None)
+            if hold_seconds_value is None:
+                hold_seconds = max(min_hold, 0.45)
+            else:
+                try:
+                    hold_seconds = float(hold_seconds_value)
+                except Exception:
+                    return None, f"motion_steps[{idx}].hold_seconds was not numeric."
+
+            if hold_seconds < min_hold or hold_seconds > max_hold:
+                return None, (
+                    f"motion_steps[{idx}].hold_seconds={hold_seconds:.2f} is outside "
+                    f"[{min_hold:.2f}, {max_hold:.2f}] seconds.")
+
+            normalized_steps.append({
+                "label": self._coerce_optional_text(item.get("label")),
+                "hold_seconds": float(hold_seconds),
+                "speed_scale": float(speed_scale),
+                "joint_targets": joint_targets,
+            })
+
+        return normalized_steps, ""
+
+    @staticmethod
+    def _normalize_online_reply_text(intent_name: str, reply_text: str) -> str:
+        normalized_intent = str(intent_name or "").strip().lower()
+        normalized_reply = str(reply_text or "").strip()
+        if normalized_intent == "play_motion_sequence":
+            return "Okay, I'll do that."
+
+        if normalized_reply:
+            return normalized_reply
+        return "I am ready."
+
     def _validate_and_normalize(
         self,
         transcript: str,
@@ -3073,12 +3784,17 @@ class OnlineAIOrchestrator:
                 validation_message=f"Unsupported action intent '{intent_name}'.",
             ), f"Online AI response rejected: unsupported action intent '{intent_name}'."
 
+        reply_text = self._normalize_online_reply_text(intent_name, reply_text)
+
         normalized = {
             "type": "robot_command",
             "intent": intent_name,
             "pose_name": "",
             "joint_name": "",
             "joint_degrees": 0.0,
+            "speed_scale": 0.0,
+            "joint_targets": [],
+            "motion_steps": [],
             "confidence": max(0.0, min(1.0, float(payload.get("confidence", confidence) or confidence))),
             "requires_confirmation": False,
             "reply_text": reply_text,
@@ -3092,7 +3808,7 @@ class OnlineAIOrchestrator:
 
         if intent_name == "set_pose":
             pose_name = self._coerce_optional_text(action.get("pose_name"))
-            resolved_pose = self._resolve_name(pose_name, self.config.get("known_poses", []))
+            resolved_pose = self._resolve_name(pose_name, self._get_online_known_pose_names())
             if not resolved_pose:
                 return self._build_safe_reply_intent(
                     transcript,
@@ -3161,6 +3877,109 @@ class OnlineAIOrchestrator:
                 self.config.get("online_ai_require_motion_confirmation"),
                 False)
 
+        if intent_name == "set_custom_pose":
+            if not parse_bool(self.config.get("online_ai_allow_direct_joint_commands"), True):
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "Direct online joint commands are disabled, so I did not move.",
+                    validation_status="joint_commands_disabled",
+                    validation_message="online_ai_allow_direct_joint_commands is false.",
+                ), "Online AI response rejected: direct joint commands are disabled."
+
+            if not parse_bool(self.config.get("online_ai_allow_custom_pose_commands"), True):
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "Online AI custom poses are disabled, so I did not move.",
+                    validation_status="custom_pose_disabled",
+                    validation_message="online_ai_allow_custom_pose_commands is false.",
+                ), "Online AI response rejected: custom poses are disabled."
+
+            joint_targets, error_message = self._normalize_joint_targets(
+                action.get("joint_targets"),
+                max_targets=int(self.config.get("online_ai_custom_pose_max_joints", DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS)),
+                validation_prefix="joint_targets",
+            )
+            if joint_targets is None:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate that custom pose safely, so I did not move.",
+                    validation_status="invalid_custom_pose",
+                    validation_message=error_message,
+                ), f"Online AI response rejected: {error_message}"
+
+            speed_scale, error_message = self._normalize_speed_scale(
+                action.get("speed_scale"),
+                allow_zero_default=True,
+            )
+            if speed_scale is None:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate the custom pose speed safely, so I did not move.",
+                    validation_status="invalid_custom_pose_speed",
+                    validation_message=error_message,
+                ), f"Online AI response rejected: {error_message}"
+
+            normalized["joint_targets"] = joint_targets
+            normalized["speed_scale"] = float(speed_scale)
+            normalized["requires_confirmation"] = parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False)
+
+        if intent_name == "play_motion_sequence":
+            if not parse_bool(self.config.get("online_ai_allow_direct_joint_commands"), True):
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "Direct online joint commands are disabled, so I did not move.",
+                    validation_status="joint_commands_disabled",
+                    validation_message="online_ai_allow_direct_joint_commands is false.",
+                ), "Online AI response rejected: direct joint commands are disabled."
+
+            if not parse_bool(self.config.get("online_ai_allow_motion_sequence_commands"), True):
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "Online AI motion sequences are disabled, so I did not move.",
+                    validation_status="motion_sequence_disabled",
+                    validation_message="online_ai_allow_motion_sequence_commands is false.",
+                ), "Online AI response rejected: motion sequences are disabled."
+
+            default_speed_scale, error_message = self._normalize_speed_scale(
+                action.get("speed_scale"),
+                allow_zero_default=True,
+            )
+            if default_speed_scale is None:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate the motion sequence speed safely, so I did not move.",
+                    validation_status="invalid_motion_sequence_speed",
+                    validation_message=error_message,
+                ), f"Online AI response rejected: {error_message}"
+
+            motion_steps, error_message = self._normalize_motion_steps(
+                action.get("motion_steps"),
+                default_speed_scale=float(default_speed_scale),
+            )
+            if motion_steps is None:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate that motion sequence safely, so I did not move.",
+                    validation_status="invalid_motion_sequence",
+                    validation_message=error_message,
+                ), f"Online AI response rejected: {error_message}"
+
+            normalized["speed_scale"] = float(default_speed_scale)
+            normalized["motion_steps"] = motion_steps
+            normalized["requires_confirmation"] = parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False)
+
         if intent_name == "show_movement":
             normalized["requires_confirmation"] = parse_bool(
                 self.config.get("online_ai_require_motion_confirmation"),
@@ -3212,6 +4031,9 @@ class OnlineAIOrchestrator:
             "pose_name": "",
             "joint_name": "",
             "joint_degrees": 0.0,
+            "speed_scale": 0.0,
+            "joint_targets": [],
+            "motion_steps": [],
             "confidence": max(0.0, min(1.0, confidence if confidence > 0.0 else 0.85)),
             "requires_confirmation": False,
             "reply_text": str(reply_text or "").strip(),

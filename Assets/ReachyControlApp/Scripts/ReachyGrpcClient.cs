@@ -41,6 +41,11 @@ namespace Reachy.ControlApp
         private const string HelloPoseWaveName = "Hello Pose B";
         private const string HelloPoseRightName = "Hello Pose C";
         private const string HelloPoseRightWaveName = "Hello Pose D";
+        private const string LeftHandUpPoseName = "Left Hand Up";
+        private const string LeftHandWavePoseName = "Left Hand Wave";
+        private const string RightHandUpPoseName = "Right Hand Up";
+        private const string RightHandWavePoseName = "Right Hand Wave";
+        private const string HandsUpPoseName = "Hands Up";
         private const float Deg2Rad = (float)(Math.PI / 180.0);
         private const float Rad2Deg = (float)(180.0 / Math.PI);
 
@@ -2179,6 +2184,116 @@ namespace Reachy.ControlApp
                         new PoseJointGoal("l_elbow_pitch", 0.0f),
                         new PoseJointGoal("l_forearm_yaw", 0.0f),
                         new PoseJointGoal("l_wrist_pitch", 0.0f),
+                        new PoseJointGoal("l_wrist_roll", 0.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    LeftHandUpPoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", 0.0f),
+                        new PoseJointGoal("r_shoulder_roll", 0.0f),
+                        new PoseJointGoal("r_arm_yaw", 0.0f),
+                        new PoseJointGoal("r_elbow_pitch", 0.0f),
+                        new PoseJointGoal("r_forearm_yaw", 0.0f),
+                        new PoseJointGoal("r_wrist_pitch", 0.0f),
+                        new PoseJointGoal("r_wrist_roll", 0.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -85.0f),
+                        new PoseJointGoal("l_shoulder_roll", 30.0f),
+                        new PoseJointGoal("l_arm_yaw", 10.0f),
+                        new PoseJointGoal("l_elbow_pitch", -80.0f),
+                        new PoseJointGoal("l_forearm_yaw", 25.0f),
+                        new PoseJointGoal("l_wrist_pitch", 20.0f),
+                        new PoseJointGoal("l_wrist_roll", 0.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    LeftHandWavePoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", 0.0f),
+                        new PoseJointGoal("r_shoulder_roll", 0.0f),
+                        new PoseJointGoal("r_arm_yaw", 0.0f),
+                        new PoseJointGoal("r_elbow_pitch", 0.0f),
+                        new PoseJointGoal("r_forearm_yaw", 0.0f),
+                        new PoseJointGoal("r_wrist_pitch", 0.0f),
+                        new PoseJointGoal("r_wrist_roll", 0.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -78.0f),
+                        new PoseJointGoal("l_shoulder_roll", 35.0f),
+                        new PoseJointGoal("l_arm_yaw", 15.0f),
+                        new PoseJointGoal("l_elbow_pitch", -115.0f),
+                        new PoseJointGoal("l_forearm_yaw", 40.0f),
+                        new PoseJointGoal("l_wrist_pitch", 30.0f),
+                        new PoseJointGoal("l_wrist_roll", 18.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    RightHandUpPoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -85.0f),
+                        new PoseJointGoal("r_shoulder_roll", -30.0f),
+                        new PoseJointGoal("r_arm_yaw", -10.0f),
+                        new PoseJointGoal("r_elbow_pitch", -80.0f),
+                        new PoseJointGoal("r_forearm_yaw", -25.0f),
+                        new PoseJointGoal("r_wrist_pitch", 20.0f),
+                        new PoseJointGoal("r_wrist_roll", 0.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", 0.0f),
+                        new PoseJointGoal("l_shoulder_roll", 0.0f),
+                        new PoseJointGoal("l_arm_yaw", 0.0f),
+                        new PoseJointGoal("l_elbow_pitch", 0.0f),
+                        new PoseJointGoal("l_forearm_yaw", 0.0f),
+                        new PoseJointGoal("l_wrist_pitch", 0.0f),
+                        new PoseJointGoal("l_wrist_roll", 0.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    RightHandWavePoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -78.0f),
+                        new PoseJointGoal("r_shoulder_roll", -35.0f),
+                        new PoseJointGoal("r_arm_yaw", -15.0f),
+                        new PoseJointGoal("r_elbow_pitch", -115.0f),
+                        new PoseJointGoal("r_forearm_yaw", -40.0f),
+                        new PoseJointGoal("r_wrist_pitch", 30.0f),
+                        new PoseJointGoal("r_wrist_roll", -18.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", 0.0f),
+                        new PoseJointGoal("l_shoulder_roll", 0.0f),
+                        new PoseJointGoal("l_arm_yaw", 0.0f),
+                        new PoseJointGoal("l_elbow_pitch", 0.0f),
+                        new PoseJointGoal("l_forearm_yaw", 0.0f),
+                        new PoseJointGoal("l_wrist_pitch", 0.0f),
+                        new PoseJointGoal("l_wrist_roll", 0.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                    }
+                ),
+                new PosePreset(
+                    HandsUpPoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -85.0f),
+                        new PoseJointGoal("r_shoulder_roll", -30.0f),
+                        new PoseJointGoal("r_arm_yaw", -10.0f),
+                        new PoseJointGoal("r_elbow_pitch", -80.0f),
+                        new PoseJointGoal("r_forearm_yaw", -25.0f),
+                        new PoseJointGoal("r_wrist_pitch", 20.0f),
+                        new PoseJointGoal("r_wrist_roll", 0.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -85.0f),
+                        new PoseJointGoal("l_shoulder_roll", 30.0f),
+                        new PoseJointGoal("l_arm_yaw", 10.0f),
+                        new PoseJointGoal("l_elbow_pitch", -80.0f),
+                        new PoseJointGoal("l_forearm_yaw", 25.0f),
+                        new PoseJointGoal("l_wrist_pitch", 20.0f),
                         new PoseJointGoal("l_wrist_roll", 0.0f),
                         new PoseJointGoal("l_gripper", 0.0f),
                     }

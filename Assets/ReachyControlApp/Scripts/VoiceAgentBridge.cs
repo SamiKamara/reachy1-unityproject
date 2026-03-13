@@ -10,6 +10,22 @@ using UnityEngine;
 namespace Reachy.ControlApp
 {
     [Serializable]
+    public sealed class VoiceAgentJointTarget
+    {
+        public string joint_name = string.Empty;
+        public float joint_degrees;
+    }
+
+    [Serializable]
+    public sealed class VoiceAgentMotionStep
+    {
+        public string label = string.Empty;
+        public float hold_seconds = 0.5f;
+        public float speed_scale = 0.6f;
+        public VoiceAgentJointTarget[] joint_targets = Array.Empty<VoiceAgentJointTarget>();
+    }
+
+    [Serializable]
     public sealed class VoiceAgentIntent
     {
         public string type = string.Empty;
@@ -17,6 +33,9 @@ namespace Reachy.ControlApp
         public string pose_name = string.Empty;
         public string joint_name = string.Empty;
         public float joint_degrees;
+        public float speed_scale = 0.6f;
+        public VoiceAgentJointTarget[] joint_targets = Array.Empty<VoiceAgentJointTarget>();
+        public VoiceAgentMotionStep[] motion_steps = Array.Empty<VoiceAgentMotionStep>();
         public float confidence = 1.0f;
         public bool requires_confirmation;
         public string reply_text = string.Empty;
@@ -554,6 +573,9 @@ namespace Reachy.ControlApp
                     pose_name = intent.pose_name ?? string.Empty,
                     joint_name = intent.joint_name ?? string.Empty,
                     joint_degrees = intent.joint_degrees,
+                    speed_scale = intent.speed_scale,
+                    joint_targets = intent.joint_targets ?? Array.Empty<VoiceAgentJointTarget>(),
+                    motion_steps = intent.motion_steps ?? Array.Empty<VoiceAgentMotionStep>(),
                     confidence = intent.confidence,
                     requires_confirmation = intent.requires_confirmation,
                     reply_text = intent.reply_text ?? string.Empty,
