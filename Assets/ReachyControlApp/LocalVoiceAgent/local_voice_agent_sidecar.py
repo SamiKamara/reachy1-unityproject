@@ -87,6 +87,7 @@ DEFAULT_ONLINE_AI_MODEL = "gpt-5.4"
 DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
 DEFAULT_ONLINE_AI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS = ["en", "fi"]
 
 DEFAULT_SHOW_MOVEMENT_SYNONYMS = [
     "show movement",
@@ -612,8 +613,10 @@ def load_config(path: Path) -> dict:
         "online_ai_model": DEFAULT_ONLINE_AI_MODEL,
         "online_ai_transcription_model": DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL,
         "online_ai_api_key_env_var": DEFAULT_ONLINE_AI_API_KEY_ENV_VAR,
+        "online_ai_api_key_file_path": "",
         "online_ai_base_url": DEFAULT_ONLINE_AI_BASE_URL,
         "online_ai_timeout_seconds": 15.0,
+        "openai_transcribe_language_hints": list(DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS),
         "online_ai_temperature": 0.2,
         "online_ai_max_output_tokens": 180,
         "online_ai_system_prompt": "You are Reachy's online conversational AI.",
@@ -711,12 +714,31 @@ def load_config(path: Path) -> dict:
     config["online_ai_api_key_env_var"] = (
         str(config.get("online_ai_api_key_env_var", DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)).strip()
         or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
+    config["online_ai_api_key_file_path"] = (
+        str(config.get("online_ai_api_key_file_path", "") or "").strip())
     config["online_ai_base_url"] = (
         str(config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)).strip()
         or DEFAULT_ONLINE_AI_BASE_URL)
     config["online_ai_timeout_seconds"] = max(
         3.0,
         min(120.0, float(config.get("online_ai_timeout_seconds", 15.0))))
+    raw_language_hints = config.get(
+        "openai_transcribe_language_hints",
+        DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS,
+    )
+    if not isinstance(raw_language_hints, list):
+        raw_language_hints = DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS
+    normalized_language_hints: list[str] = []
+    for item in raw_language_hints:
+        normalized = str(item or "").strip().lower()
+        if not normalized or normalized in normalized_language_hints:
+            continue
+        normalized_language_hints.append(normalized)
+    config["openai_transcribe_language_hints"] = (
+        normalized_language_hints
+        if normalized_language_hints
+        else list(DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS)
+    )
     config["online_ai_temperature"] = max(
         0.0,
         min(2.0, float(config.get("online_ai_temperature", 0.2))))
@@ -856,6 +878,74 @@ def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
     if config_dir:
         return (Path(config_dir) / candidate).resolve()
     return (Path.cwd() / candidate).resolve()
+
+
+def discover_project_root(start_path: str) -> Path | None:
+    text = str(start_path or "").strip()
+    if not text:
+        return None
+
+    try:
+        cursor = Path(text).resolve()
+    except Exception:
+        cursor = Path(text)
+
+    for _ in range(0, 8):
+        if (cursor / "Assets" / "ReachyControlApp").exists():
+            return cursor
+        parent = cursor.parent
+        if parent == cursor:
+            break
+        cursor = parent
+
+    return None
+
+
+def build_default_online_api_key_store_path(config: dict) -> Path:
+    config_dir = str(config.get("_config_dir", "")).strip()
+    project_root = discover_project_root(config_dir)
+    if project_root is not None:
+        return project_root / "UserSettings" / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json"
+
+    local_app_data = str(os.environ.get("LOCALAPPDATA", "") or "").strip()
+    if local_app_data:
+        return Path(local_app_data) / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json"
+
+    return Path.home() / ".reachy_control_app" / "secrets" / "online_ai_api_key.json"
+
+
+def resolve_online_api_key_store_path(config: dict) -> Path:
+    raw_path = str(config.get("online_ai_api_key_file_path", "") or "").strip()
+    if raw_path:
+        return resolve_config_relative_path(config, raw_path)
+    return build_default_online_api_key_store_path(config)
+
+
+def load_online_api_key_from_store(config: dict, env_var: str) -> str:
+    path = resolve_online_api_key_store_path(config)
+    if not path.exists():
+        return ""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        return ""
+
+    if not isinstance(payload, dict):
+        return ""
+
+    stored_env_var = str(payload.get("env_var", "") or "").strip() or env_var
+    if stored_env_var != env_var:
+        return ""
+
+    return str(payload.get("api_key", "") or "").strip()
+
+
+def build_missing_online_api_key_message(env_var: str) -> str:
+    return (
+        "OpenAI API key is missing. "
+        f"Save it in the app's local secret store or set env var '{env_var}'."
+    )
 
 
 class Parser:
@@ -1136,7 +1226,11 @@ class State:
         env_var = (
             str(self.config.get("online_ai_api_key_env_var", self.online_api_key_env_var)).strip()
             or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
-        key_value = os.environ.get(env_var, "")
+        key_value = str(os.environ.get(env_var, "") or "").strip()
+        if not key_value:
+            key_value = load_online_api_key_from_store(self.config, env_var)
+            if key_value:
+                os.environ[env_var] = key_value
         found = bool(str(key_value or "").strip())
         with self.lock:
             self.online_api_key_env_var = env_var
@@ -2116,7 +2210,7 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
             self.state.set_runtime(False, False, "none")
             self.state.log(
                 "error",
-                f"OpenAI STT requires the API key env var '{env_var}' to be available.",
+                f"OpenAI STT requires an API key in the local secret store or env var '{env_var}'.",
             )
             return
 
@@ -2279,7 +2373,7 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
     def _transcribe_clip(self, pcm_audio: bytes, sample_rate_hz: int) -> str:
         api_key, env_var = self._read_openai_api_key()
         if not api_key:
-            raise RuntimeError(f"OpenAI API key env var '{env_var}' is missing.")
+            raise RuntimeError(build_missing_online_api_key_message(env_var))
 
         wav_audio = self._encode_wav_bytes(pcm_audio, sample_rate_hz)
         endpoint = build_openai_audio_transcriptions_endpoint(
@@ -2344,14 +2438,33 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
         return str(payload.get("text", "") or "").strip()
 
     def _build_transcription_prompt(self) -> str:
+        language_hints = [
+            str(item).strip().lower()
+            for item in self.config.get("openai_transcribe_language_hints", [])
+            if str(item).strip()
+        ]
         known_poses = [str(item).strip() for item in self.config.get("known_poses", []) if str(item).strip()]
         known_joints = [str(item).strip() for item in self.config.get("known_joints", []) if str(item).strip()]
-        if not known_poses and not known_joints:
+        if not language_hints and not known_poses and not known_joints:
             return ""
 
         pose_text = ", ".join(known_poses[:12])
         joint_text = ", ".join(known_joints[:24])
         parts = ["Transcribe Reachy robot control speech exactly."]
+        if language_hints:
+            language_names: list[str] = []
+            for code in language_hints[:4]:
+                if code == "en":
+                    language_names.append("English")
+                elif code == "fi":
+                    language_names.append("Finnish")
+                else:
+                    language_names.append(code)
+            languages_text = ", ".join(language_names)
+            parts.append(
+                f"The spoken language is most likely {languages_text}. "
+                "Prefer those languages when the audio is ambiguous and do not translate."
+            )
         if pose_text:
             parts.append(f"Known pose names: {pose_text}.")
         if joint_text:
@@ -2479,9 +2592,9 @@ class OnlineAIOrchestrator:
         api_key_found, env_var = self.state.refresh_online_key_status()
         api_key = os.environ.get(env_var, "").strip()
         if not api_key_found or not api_key:
-            message = f"OpenAI API key env var '{env_var}' is missing."
+            message = build_missing_online_api_key_message(env_var)
             self.state.record_online_response(
-                reply_text="I cannot use online AI until the OpenAI API key is available in the configured environment variable.",
+                reply_text="I cannot use online AI until the OpenAI API key is available in the app's local secret store or configured environment variable.",
                 validation_result="missing_api_key",
                 validation_failure=message,
                 response_summary=message,
@@ -2492,7 +2605,7 @@ class OnlineAIOrchestrator:
             return self._build_safe_reply_intent(
                 transcript,
                 resolved_confidence,
-                "I cannot use online AI until the OpenAI API key is available in the configured environment variable.",
+                "I cannot use online AI until the OpenAI API key is available in the app's local secret store or configured environment variable.",
                 validation_status="missing_api_key",
                 validation_message=message,
             ), message
@@ -2563,7 +2676,7 @@ class OnlineAIOrchestrator:
             }
 
         if not api_key_found or not api_key:
-            message = f"OpenAI API key env var '{env_var}' is missing."
+            message = build_missing_online_api_key_message(env_var)
             self.state.record_online_connection_test(False, message, model=model)
             return {
                 "ok": False,
@@ -2658,7 +2771,7 @@ class OnlineAIOrchestrator:
 
         if error_code in ("invalid_api_key", "incorrect_api_key_provided") or status_code == 401:
             return (
-                "The OpenAI API key was rejected. Save a valid API key to the configured env var, "
+                "The OpenAI API key was rejected. Save a valid API key to the local secret store or configured env var, "
                 "restart the sidecar, and try again.")
 
         if error_code == "model_not_found" or "does not exist" in lowered_message or "not available" in lowered_message:

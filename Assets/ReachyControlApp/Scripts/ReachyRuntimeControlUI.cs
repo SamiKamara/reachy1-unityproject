@@ -1181,13 +1181,23 @@ namespace Reachy.ControlApp
             public string online_ai_model = DefaultOnlineAiModel;
             public string online_ai_transcription_model = DefaultOnlineAiTranscriptionModel;
             public string online_ai_api_key_env_var = DefaultOnlineAiApiKeyEnvVar;
+            public string online_ai_api_key_file_path = string.Empty;
             public string online_ai_base_url = DefaultOnlineAiBaseUrl;
             public float online_ai_timeout_seconds = 15f;
+            public string[] openai_transcribe_language_hints = { "en", "fi" };
             public float online_ai_temperature = 0.2f;
             public int online_ai_max_output_tokens = 180;
             public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
             public bool online_ai_allow_direct_joint_commands = true;
             public bool online_ai_require_motion_confirmation = false;
+        }
+
+        [Serializable]
+        private sealed class StoredOnlineApiKeySecret
+        {
+            public string env_var = DefaultOnlineAiApiKeyEnvVar;
+            public string api_key = string.Empty;
+            public string saved_utc = string.Empty;
         }
 
         private void Awake()
@@ -1286,6 +1296,12 @@ namespace Reachy.ControlApp
                 startupVoiceConfigMessage.IndexOf("not found", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 _voiceLastParserMessage = startupVoiceConfigMessage;
+            }
+            if (TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out string storedApiKeyMessage))
+            {
+                _onlineAiApiKeyStatus = $"available from local secret store ({GetSanitizedOnlineAiApiKeyEnvVarName()})";
+                onlineAiLastApiKeyCheckOk = true;
+                _onlineAiLastConnectionTestResult = storedApiKeyMessage;
             }
             EnsurePreferredMicrophoneDevice();
             EnsureMicTestAudioSource();
@@ -2403,12 +2419,6 @@ namespace Reachy.ControlApp
         }
 
         private static bool CanUseWindowsXInput()
-        {
-            return Application.platform == RuntimePlatform.WindowsEditor ||
-                   Application.platform == RuntimePlatform.WindowsPlayer;
-        }
-
-        private static bool CanPersistUserEnvironmentVariable()
         {
             return Application.platform == RuntimePlatform.WindowsEditor ||
                    Application.platform == RuntimePlatform.WindowsPlayer;
@@ -3824,6 +3834,7 @@ namespace Reachy.ControlApp
             string logLevel = string.IsNullOrWhiteSpace(localAiAgentSidecarLogLevel)
                 ? "warning"
                 : localAiAgentSidecarLogLevel.Trim().ToLowerInvariant();
+            TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out _);
             bool preferBundledVenvFirst = localAiAgentEnableLocalHelpModel &&
                 string.Equals(
                     NormalizeHelpModelBackend(localAiAgentHelpModelBackend),
@@ -5131,6 +5142,131 @@ namespace Reachy.ControlApp
             return trimmed;
         }
 
+        private static bool IsReachyProjectRootPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            return Directory.Exists(Path.Combine(path, "Assets", "ReachyControlApp"));
+        }
+
+        private string GetOnlineAiApiKeySecretStorePath()
+        {
+            string projectRoot = GetProjectRootPath();
+            if (IsReachyProjectRootPath(projectRoot))
+            {
+                return Path.Combine(
+                    projectRoot,
+                    "UserSettings",
+                    "ReachyControlApp",
+                    "Secrets",
+                    "online_ai_api_key.json");
+            }
+
+            return Path.Combine(
+                Application.persistentDataPath,
+                "ReachyControlApp",
+                "Secrets",
+                "online_ai_api_key.json");
+        }
+
+        private bool TryReadStoredOnlineAiApiKeySecret(
+            out string secret,
+            out string envVarName,
+            out string storePath,
+            out string message)
+        {
+            secret = string.Empty;
+            envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
+            storePath = GetOnlineAiApiKeySecretStorePath();
+            message = string.Empty;
+
+            if (!File.Exists(storePath))
+            {
+                message = $"Local API key store not found at '{storePath}'.";
+                return false;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(storePath, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    message = $"Local API key store is empty: '{storePath}'.";
+                    return false;
+                }
+
+                StoredOnlineApiKeySecret payload = JsonUtility.FromJson<StoredOnlineApiKeySecret>(json);
+                if (payload == null)
+                {
+                    message = $"Local API key store is invalid: '{storePath}'.";
+                    return false;
+                }
+
+                string storedEnvVarName = string.IsNullOrWhiteSpace(payload.env_var)
+                    ? envVarName
+                    : payload.env_var.Trim();
+                if (!string.Equals(storedEnvVarName, envVarName, StringComparison.Ordinal))
+                {
+                    message =
+                        $"Local API key store targets '{storedEnvVarName}', but the app is configured for '{envVarName}'.";
+                    return false;
+                }
+
+                string storedSecret = (payload.api_key ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(storedSecret))
+                {
+                    message = $"Local API key store does not contain a key: '{storePath}'.";
+                    return false;
+                }
+
+                secret = storedSecret;
+                envVarName = storedEnvVarName;
+                message = $"Loaded API key from local secret store '{storePath}'.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to read local API key store '{storePath}': {ex.Message}";
+                return false;
+            }
+        }
+
+        private bool TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out string message)
+        {
+            message = string.Empty;
+            string envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
+            string existingValue = Environment.GetEnvironmentVariable(envVarName);
+            if (!string.IsNullOrWhiteSpace(existingValue))
+            {
+                return false;
+            }
+
+            if (!TryReadStoredOnlineAiApiKeySecret(
+                    out string secret,
+                    out string storedEnvVarName,
+                    out string storePath,
+                    out string readMessage))
+            {
+                message = readMessage;
+                return false;
+            }
+
+            try
+            {
+                Environment.SetEnvironmentVariable(storedEnvVarName, secret, EnvironmentVariableTarget.Process);
+                message = $"Loaded API key from local secret store '{storePath}' into this app session.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to load API key into the app process: {ex.Message}";
+                return false;
+            }
+        }
+
         private static AiMode ParseAiMode(string value)
         {
             return NormalizeAiModeValue(value) == "online"
@@ -5246,16 +5382,28 @@ namespace Reachy.ControlApp
             }
 
             string envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
-            bool persistedForUser = false;
+            string storePath = GetOnlineAiApiKeySecretStorePath();
+            bool sidecarConfigSynced = false;
+            string sidecarConfigSyncMessage = string.Empty;
 
             try
             {
-                Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.Process);
-                if (CanPersistUserEnvironmentVariable())
+                string directory = Path.GetDirectoryName(storePath);
+                if (!string.IsNullOrWhiteSpace(directory))
                 {
-                    Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.User);
-                    persistedForUser = true;
+                    Directory.CreateDirectory(directory);
                 }
+
+                var payload = new StoredOnlineApiKeySecret
+                {
+                    env_var = envVarName,
+                    api_key = secret,
+                    saved_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+                };
+                string json = JsonUtility.ToJson(payload, true);
+                File.WriteAllText(storePath, json + Environment.NewLine, Encoding.UTF8);
+                Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.Process);
+                sidecarConfigSynced = TrySyncLocalSidecarConfigFromUi(out sidecarConfigSyncMessage);
             }
             catch (Exception ex)
             {
@@ -5269,18 +5417,18 @@ namespace Reachy.ControlApp
             }
 
             onlineAiLastApiKeyCheckOk = true;
-            _onlineAiApiKeyStatus = persistedForUser
-                ? $"saved for current user ({envVarName})"
-                : $"saved for current app process ({envVarName})";
+            _onlineAiApiKeyStatus = $"saved in local secret store ({envVarName})";
             _onlineAiLastKeyCheckUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
-            _onlineAiLastConnectionTestResult = persistedForUser
-                ? "API key saved. Sidecar restart may be needed before testing."
-                : "API key saved for this app process only.";
+            _onlineAiLastConnectionTestResult = sidecarConfigSynced
+                ? "API key saved in the local secret store. Restart the sidecar if it is already running, then test online AI."
+                : "API key saved in the local secret store. Sidecar config sync failed, so manually restarted sidecars may need attention.";
             _onlineAiLastHttpError = string.Empty;
 
-            string persistenceMessage = persistedForUser
-                ? $"Saved API key to user environment variable '{envVarName}'."
-                : $"Saved API key to process environment variable '{envVarName}' for this app session.";
+            string persistenceMessage = $"Saved API key to local secret file '{storePath}'.";
+            if (!sidecarConfigSynced && !string.IsNullOrWhiteSpace(sidecarConfigSyncMessage))
+            {
+                persistenceMessage += $" Sidecar config sync failed: {sidecarConfigSyncMessage}";
+            }
 
             if (localAiAgentAutoStartSidecar && _localAiAgentSidecarStartedByUi)
             {
@@ -7645,10 +7793,26 @@ namespace Reachy.ControlApp
                     ? DefaultOnlineAiTranscriptionModel
                     : config.online_ai_transcription_model.Trim();
                 config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
+                string onlineAiApiKeySecretStorePath = GetOnlineAiApiKeySecretStorePath();
+                string sidecarDirectory = Path.GetDirectoryName(sidecarConfigPath);
+                if (!string.IsNullOrWhiteSpace(sidecarDirectory) &&
+                    TryMakeRelativePath(sidecarDirectory, onlineAiApiKeySecretStorePath, out string relativeSecretStorePath) &&
+                    !string.IsNullOrWhiteSpace(relativeSecretStorePath))
+                {
+                    config.online_ai_api_key_file_path = relativeSecretStorePath.Replace('\\', '/');
+                }
+                else
+                {
+                    config.online_ai_api_key_file_path = onlineAiApiKeySecretStorePath.Replace('\\', '/');
+                }
                 config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
                     ? DefaultOnlineAiBaseUrl
                     : onlineAiBaseUrl.Trim();
                 config.online_ai_timeout_seconds = Mathf.Clamp(onlineAiTimeoutSeconds, 3f, 120f);
+                if (config.openai_transcribe_language_hints == null || config.openai_transcribe_language_hints.Length == 0)
+                {
+                    config.openai_transcribe_language_hints = new[] { "en", "fi" };
+                }
                 config.online_ai_temperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
                 config.online_ai_max_output_tokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
                 config.online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
@@ -11467,10 +11631,11 @@ namespace Reachy.ControlApp
                 "Show",
                 GUILayout.Width(AiW(56f, aiWidthScale)));
             GUILayout.EndHorizontal();
-            GUILayout.Label("Runtime-only secret field. The key is not saved into Unity JSON config files.");
+            GUILayout.Label("Temporary secret input. Press the save button to store it in a local secret file outside tracked Unity JSON config files.");
+            GUILayout.Label($"Secret store path: {GetOnlineAiApiKeySecretStorePath()}");
 
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Save key to env var", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            if (GUILayout.Button("Save key permanently", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
             {
                 SaveOnlineApiKeyFromRuntimeInput();
             }
@@ -11557,12 +11722,12 @@ namespace Reachy.ControlApp
             GUILayout.Label("4. Open the API keys page and create a new secret key.");
             GUILayout.Label("5. Copy the key immediately and store it safely.");
             GUILayout.Label($"6. Leave the app's env-var field as '{GetSanitizedOnlineAiApiKeyEnvVarName()}', unless you intentionally use a different variable name.");
-            GUILayout.Label("7. Either paste the secret into the runtime-only API key field and press 'Save key to env var', or run the PowerShell command below.");
+            GUILayout.Label("7. Paste the secret into the API key field and press 'Save key permanently' to store it in the app's local secret file.");
             GUILayout.Label($"8. Leave Model as '{DefaultOnlineAiModel}', unless your account/project must use a different supported model.");
             GUILayout.Label($"9. Leave Base URL as '{DefaultOnlineAiBaseUrl}', unless you are using a compatible proxy endpoint.");
             GUILayout.Label("10. If the sidecar is not managed by this app, restart the sidecar or reopen the app after saving the key.");
             GUILayout.Label("11. Press Test online connection in the app.");
-            GUILayout.Label("Notes: ChatGPT and API billing are separate. If the test fails with a model or permission error, switch to a model your API project can access. Do not paste the secret key into this app field or commit it to git.");
+            GUILayout.Label("Notes: ChatGPT and API billing are separate. If the test fails with a model or permission error, switch to a model your API project can access. The app stores the key in a local secret file under UserSettings or app data, not in tracked Unity config files or git.");
 
             string safeEnvVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
             string powerShellExample =

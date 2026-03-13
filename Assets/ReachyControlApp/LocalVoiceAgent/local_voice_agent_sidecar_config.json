@@ -164,8 +164,13 @@
     "online_ai_model": "gpt-5.4",
     "online_ai_transcription_model": "gpt-4o-mini-transcribe",
     "online_ai_api_key_env_var": "OPENAI_API_KEY",
+    "online_ai_api_key_file_path": "../../../UserSettings/ReachyControlApp/Secrets/online_ai_api_key.json",
     "online_ai_base_url": "https://api.openai.com/v1",
     "online_ai_timeout_seconds": 15.0,
+    "openai_transcribe_language_hints": [
+        "en",
+        "fi"
+    ],
     "online_ai_temperature": 0.20000000298023225,
     "online_ai_max_output_tokens": 180,
     "online_ai_system_prompt": "You are Reachy's online conversational AI.",
