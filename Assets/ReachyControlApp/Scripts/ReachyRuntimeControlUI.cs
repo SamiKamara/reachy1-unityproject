@@ -393,6 +393,13 @@ namespace Reachy.ControlApp
             public bool Start;
         }
 
+        private enum ManualControllerInputSource
+        {
+            None = 0,
+            Gamepad = 1,
+            KeyboardFallback = 2
+        }
+
         private enum ManualBaseVectorIconKind
         {
             Forward = 0,
@@ -741,7 +748,7 @@ namespace Reachy.ControlApp
         [SerializeField] private string goalDegrees = "0";
 
         [Header("Manual Controller")]
-        [SerializeField] private bool manualControllerEnabled;
+        [SerializeField] private bool manualControllerEnabled = true;
         [SerializeField] private bool manualControllerShowCameraPreview = true;
         [SerializeField] private float manualControllerBaseSpeedMetersPerSecond = 0.35f;
         [SerializeField] private float manualControllerTurnSpeedRadiansPerSecond = 0.9f;
@@ -808,6 +815,7 @@ namespace Reachy.ControlApp
             new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         private string _manualControllerStatus = "Controller inactive.";
         private string _manualControllerDetectedDevice = "No gamepad detected.";
+        private ManualControllerInputSource _manualControllerInputSource;
         private float _nextManualControllerBaseCommandAt;
         private float _nextManualControllerBaseEventLogAt;
         private float _nextManualControllerJointCommandAt;
@@ -1367,25 +1375,16 @@ namespace Reachy.ControlApp
 
         private void UpdateManualController()
         {
-            if (_activeMenuView != RuntimeMenuView.ManualControl)
-            {
-                _manualControllerAutoEnableArmed = true;
-                if (!manualControllerEnabled)
-                {
-                    _manualControllerStatus = "Controller inactive.";
-                }
-
-                _manualControllerBaseWasActiveLastFrame = false;
-                _manualControllerSnapshot = default(ManualControllerSnapshot);
-                _manualControllerPreviousSnapshot = default(ManualControllerSnapshot);
-                return;
-            }
-
             _manualControllerPreviousSnapshot = _manualControllerSnapshot;
-            _manualControllerSnapshot = GetManualControllerSnapshot();
+            bool allowKeyboardFallback = _activeMenuView == RuntimeMenuView.ManualControl;
+            _manualControllerSnapshot = GetManualControllerSnapshot(
+                allowKeyboardFallback,
+                out _manualControllerInputSource);
             string detectedDevice = _manualControllerSnapshot.DisplayName;
             _manualControllerDetectedDevice = string.IsNullOrWhiteSpace(detectedDevice)
-                ? "No gamepad detected."
+                ? _manualControllerInputSource == ManualControllerInputSource.KeyboardFallback
+                    ? "Keyboard fallback (Manual Control tab)"
+                    : "No gamepad detected."
                 : detectedDevice;
 
             if (!manualControllerEnabled)
@@ -1400,9 +1399,14 @@ namespace Reachy.ControlApp
                 else
                 {
                     _manualControllerBaseWasActiveLastFrame = false;
-                    if (_manualControllerSnapshot.Connected)
+                    if (_manualControllerInputSource == ManualControllerInputSource.Gamepad)
                     {
                         _manualControllerStatus = "Controller detected. Enable controller driving to use the gamepad.";
+                    }
+                    else if (_manualControllerInputSource == ManualControllerInputSource.KeyboardFallback)
+                    {
+                        _manualControllerStatus =
+                            "Keyboard fallback ready on the Manual Control tab. Enable controller driving to use the keyboard.";
                     }
                     else
                     {
@@ -1424,7 +1428,9 @@ namespace Reachy.ControlApp
 
             if (_client == null || !_client.IsConnected)
             {
-                _manualControllerStatus = "Controller waiting: connect to Reachy first.";
+                _manualControllerStatus = _manualControllerInputSource == ManualControllerInputSource.KeyboardFallback
+                    ? "Keyboard fallback waiting: connect to Reachy first."
+                    : "Controller waiting: connect to Reachy first.";
                 _manualControllerTargetsInitialized = false;
                 _manualControllerBaseWasActiveLastFrame = false;
                 return;
@@ -1444,7 +1450,11 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            if (HasManualControllerMotionIntent(_manualControllerSnapshot))
+            bool allowKeyboardAssistInput =
+                _manualControllerInputSource == ManualControllerInputSource.Gamepad &&
+                _activeMenuView == RuntimeMenuView.ManualControl;
+
+            if (HasManualControllerMotionIntent(_manualControllerSnapshot, allowKeyboardAssistInput))
             {
                 StopActedSequence(
                     updateStatus: false,
@@ -1458,7 +1468,8 @@ namespace Reachy.ControlApp
 
             bool jointsDirty = UpdateManualControllerJointTargets(
                 _manualControllerSnapshot,
-                Mathf.Max(0.0001f, Time.unscaledDeltaTime));
+                Mathf.Max(0.0001f, Time.unscaledDeltaTime),
+                allowKeyboardAssistInput);
             UpdateManualControllerBase(_manualControllerSnapshot, Time.unscaledDeltaTime);
 
             if (jointsDirty && Time.unscaledTime >= _nextManualControllerJointCommandAt)
@@ -1474,7 +1485,9 @@ namespace Reachy.ControlApp
             }
         }
 
-        private static bool HasManualControllerMotionIntent(ManualControllerSnapshot snapshot)
+        private static bool HasManualControllerMotionIntent(
+            ManualControllerSnapshot snapshot,
+            bool includeKeyboardAssistInput)
         {
             return snapshot.Start ||
                    snapshot.LeftShoulder ||
@@ -1490,7 +1503,7 @@ namespace Reachy.ControlApp
                    Mathf.Abs(snapshot.LeftStickX) > 0f ||
                    Mathf.Abs(snapshot.LeftStickY) > 0f ||
                    Mathf.Abs(snapshot.RightStickX) > 0f ||
-                   HasAnyManualKeyboardDirectionalInput();
+                   (includeKeyboardAssistInput && HasAnyManualKeyboardAssistInput());
         }
 
         private bool HandleManualControllerActedSequenceInput(
@@ -1822,7 +1835,10 @@ namespace Reachy.ControlApp
             }
         }
 
-        private bool UpdateManualControllerJointTargets(ManualControllerSnapshot controller, float deltaTime)
+        private bool UpdateManualControllerJointTargets(
+            ManualControllerSnapshot controller,
+            float deltaTime,
+            bool includeKeyboardAssistInput)
         {
             bool changed = false;
             float armStep = Mathf.Max(1f, manualControllerArmLiftDegreesPerSecond) * deltaTime;
@@ -1851,14 +1867,16 @@ namespace Reachy.ControlApp
                 changed |= ApplyManualControllerArmNeutralPose(leftArm: false, maxDeltaDegrees: armStep);
             }
 
-            float headHorizontal = CombineManualControllerAxisAndKeys(
+            float headHorizontal = CombineManualControllerAxisAndOptionalKeys(
                 controller.DPadX,
                 KeyCode.LeftArrow,
-                KeyCode.RightArrow);
-            float headVertical = CombineManualControllerAxisAndKeys(
+                KeyCode.RightArrow,
+                includeKeyboardAssistInput);
+            float headVertical = CombineManualControllerAxisAndOptionalKeys(
                 controller.DPadY,
                 KeyCode.DownArrow,
-                KeyCode.UpArrow);
+                KeyCode.UpArrow,
+                includeKeyboardAssistInput);
 
             if (Mathf.Abs(headHorizontal) > 0f)
             {
@@ -2134,9 +2152,18 @@ namespace Reachy.ControlApp
             elbowPitch = pose.ElbowPitch;
         }
 
-        private static float CombineManualControllerAxisAndKeys(float analogValue, KeyCode negativeKey, KeyCode positiveKey)
+        private static float CombineManualControllerAxisAndOptionalKeys(
+            float analogValue,
+            KeyCode negativeKey,
+            KeyCode positiveKey,
+            bool includeKeyboardAssistInput)
         {
             float combined = analogValue;
+            if (!includeKeyboardAssistInput)
+            {
+                return Mathf.Clamp(combined, -1f, 1f);
+            }
+
             if (Input.GetKey(negativeKey))
             {
                 combined -= 1f;
@@ -2173,7 +2200,9 @@ namespace Reachy.ControlApp
             }
         }
 
-        private ManualControllerSnapshot GetManualControllerSnapshot()
+        private ManualControllerSnapshot GetManualControllerSnapshot(
+            bool allowKeyboardFallback,
+            out ManualControllerInputSource inputSource)
         {
             if (CanUseWindowsXInput())
             {
@@ -2181,12 +2210,27 @@ namespace Reachy.ControlApp
                 {
                     if (WindowsXInput.TryGetSnapshot(userIndex, out ManualControllerSnapshot xInputSnapshot))
                     {
+                        inputSource = ManualControllerInputSource.Gamepad;
                         return xInputSnapshot;
                     }
                 }
             }
 
-            return GetLegacyManualControllerSnapshot();
+            ManualControllerSnapshot legacySnapshot = GetLegacyManualControllerSnapshot();
+            if (legacySnapshot.Connected)
+            {
+                inputSource = ManualControllerInputSource.Gamepad;
+                return legacySnapshot;
+            }
+
+            if (allowKeyboardFallback)
+            {
+                inputSource = ManualControllerInputSource.KeyboardFallback;
+                return GetKeyboardFallbackManualControllerSnapshot(CanUseManualControllerKeyboardFallbackInput());
+            }
+
+            inputSource = ManualControllerInputSource.None;
+            return legacySnapshot;
         }
 
         private static bool ShouldAutoEnableManualController(ManualControllerSnapshot snapshot)
@@ -2346,6 +2390,65 @@ namespace Reachy.ControlApp
                    Input.GetKey(KeyCode.DownArrow) ||
                    Input.GetKey(KeyCode.LeftArrow) ||
                    Input.GetKey(KeyCode.RightArrow);
+        }
+
+        private static bool HasAnyManualKeyboardAssistInput()
+        {
+            return Input.GetKey(KeyCode.UpArrow) ||
+                   Input.GetKey(KeyCode.DownArrow) ||
+                   Input.GetKey(KeyCode.LeftArrow) ||
+                   Input.GetKey(KeyCode.RightArrow);
+        }
+
+        private static bool CanUseManualControllerKeyboardFallbackInput()
+        {
+            return GUIUtility.keyboardControl == 0;
+        }
+
+        private static ManualControllerSnapshot GetKeyboardFallbackManualControllerSnapshot(bool allowInput)
+        {
+            ManualControllerSnapshot snapshot = default(ManualControllerSnapshot);
+            snapshot.Connected = true;
+            snapshot.DisplayName = "Keyboard fallback (Manual Control tab)";
+            if (!allowInput)
+            {
+                return snapshot;
+            }
+
+            snapshot.LeftStickX = GetDigitalKeyAxis(KeyCode.A, KeyCode.D);
+            snapshot.LeftStickY = GetDigitalKeyAxis(KeyCode.S, KeyCode.W);
+            snapshot.RightStickX = GetDigitalKeyAxis(KeyCode.Q, KeyCode.E);
+            snapshot.DPadX = GetDigitalKeyAxis(KeyCode.LeftArrow, KeyCode.RightArrow);
+            snapshot.DPadY = GetDigitalKeyAxis(KeyCode.DownArrow, KeyCode.UpArrow);
+            snapshot.A = Input.GetKey(KeyCode.Z);
+            snapshot.B = Input.GetKey(KeyCode.X);
+            snapshot.X = Input.GetKey(KeyCode.C);
+            snapshot.Y = Input.GetKey(KeyCode.V);
+            snapshot.LeftShoulder = Input.GetKey(KeyCode.Alpha1);
+            snapshot.RightShoulder = Input.GetKey(KeyCode.Alpha3);
+            snapshot.LeftTrigger = Input.GetKey(KeyCode.Alpha2) ? 1f : 0f;
+            snapshot.RightTrigger = Input.GetKey(KeyCode.Alpha4) ? 1f : 0f;
+            snapshot.LeftStickButton = Input.GetKey(KeyCode.Alpha5);
+            snapshot.RightStickButton = Input.GetKey(KeyCode.Alpha6);
+            snapshot.Back = Input.GetKey(KeyCode.R);
+            snapshot.Start = Input.GetKey(KeyCode.Space);
+            return snapshot;
+        }
+
+        private static float GetDigitalKeyAxis(KeyCode negativeKey, KeyCode positiveKey)
+        {
+            float value = 0f;
+            if (Input.GetKey(negativeKey))
+            {
+                value -= 1f;
+            }
+
+            if (Input.GetKey(positiveKey))
+            {
+                value += 1f;
+            }
+
+            return Mathf.Clamp(value, -1f, 1f);
         }
 
         private static bool IsAnyJoystickButtonPressed(int buttonIndex)
@@ -7312,10 +7415,11 @@ namespace Reachy.ControlApp
 
         private void DrawManualGamepadSection()
         {
-            GUILayout.Label("Xbox Controller", _titleStyle);
+            bool showKeyboardFallbackMapping = _manualControllerInputSource != ManualControllerInputSource.Gamepad;
+            GUILayout.Label(showKeyboardFallbackMapping ? "Keyboard Fallback" : "Xbox Controller", _titleStyle);
             manualControllerEnabled = GUILayout.Toggle(
                 manualControllerEnabled,
-                "Enable controller driving while the Manual Control tab is open");
+                "Enable manual input driving");
             manualControllerShowCameraPreview = GUILayout.Toggle(
                 manualControllerShowCameraPreview,
                 "Show camera preview in the center of Manual Control");
@@ -7363,9 +7467,9 @@ namespace Reachy.ControlApp
                 "F0",
                 "deg/s");
 
-            GUILayout.Label($"Detected pad: {_manualControllerDetectedDevice}");
-            GUILayout.Label($"Controller state: {_manualControllerStatus}");
-            GUILayout.Label("Detection: Windows XInput first, Unity legacy input fallback.");
+            GUILayout.Label($"Detected input: {_manualControllerDetectedDevice}");
+            GUILayout.Label($"Manual input state: {_manualControllerStatus}");
+            GUILayout.Label("Detection: Windows XInput first, Unity legacy gamepad fallback, then keyboard fallback on Manual Control.");
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Sync targets", GUILayout.Height(22f)))
@@ -7409,19 +7513,36 @@ namespace Reachy.ControlApp
             GUILayout.EndHorizontal();
 
             GUILayout.Label("Mapping");
-            GUILayout.Label("Left stick: drive simulation base locally, or send mobile-base velocity on a real robot.");
-            GUILayout.Label("Right stick X: rotate the base.");
-            GUILayout.Label("L3 / Left stick press: cycle the left arm target pose.");
-            GUILayout.Label("R3 / Right stick press: cycle the right arm target pose.");
-            GUILayout.Label("L2 / LT: move the left arm toward its bent target pose. L1 / LB: move the left arm back toward neutral.");
-            GUILayout.Label("R2 / RT: move the right arm toward its bent target pose. R1 / RB: move the right arm back toward neutral.");
-            GUILayout.Label("Right panel: live vector visualizer for base translation and rotation.");
-            GUILayout.Label("Camera preview: bottom middle, leaving the upper middle area open.");
-            GUILayout.Label("D-pad / keyboard arrows: move Reachy's head left-right and up-down.");
-            GUILayout.Label("A / B: open and close both grippers.");
-            GUILayout.Label("X / Y: tilt the head left and right.");
-            GUILayout.Label("Back: switch left/right eye camera. Start: send Neutral Arms.");
-            GUILayout.Label("Hold L1 + R1 together: start the Reachy introduction. While it runs, manual controls pause until it finishes or you double-tap any gamepad button to cancel back to Neutral Arms.");
+            if (showKeyboardFallbackMapping)
+            {
+                GUILayout.Label("W / S: drive the base forward and backward.");
+                GUILayout.Label("A / D: strafe the base left and right.");
+                GUILayout.Label("Q / E: rotate the base left and right.");
+                GUILayout.Label("Arrow keys: move Reachy's head left-right and up-down.");
+                GUILayout.Label("1 / 2: move the left arm toward neutral or its bent target pose.");
+                GUILayout.Label("3 / 4: move the right arm toward neutral or its bent target pose.");
+                GUILayout.Label("5 / 6: cycle the left and right arm target poses.");
+                GUILayout.Label("Z / X: open and close both grippers.");
+                GUILayout.Label("C / V: tilt the head left and right.");
+                GUILayout.Label("R: switch left/right eye camera. Space: send Neutral Arms.");
+                GUILayout.Label("Keyboard fallback is available only on the Manual Control tab and pauses while a text field is focused.");
+            }
+            else
+            {
+                GUILayout.Label("Left stick: drive simulation base locally, or send mobile-base velocity on a real robot.");
+                GUILayout.Label("Right stick X: rotate the base.");
+                GUILayout.Label("L3 / Left stick press: cycle the left arm target pose.");
+                GUILayout.Label("R3 / Right stick press: cycle the right arm target pose.");
+                GUILayout.Label("L2 / LT: move the left arm toward its bent target pose. L1 / LB: move the left arm back toward neutral.");
+                GUILayout.Label("R2 / RT: move the right arm toward its bent target pose. R1 / RB: move the right arm back toward neutral.");
+                GUILayout.Label("Right panel: live vector visualizer for base translation and rotation.");
+                GUILayout.Label("Camera preview: bottom middle, leaving the upper middle area open.");
+                GUILayout.Label("D-pad / keyboard arrows: move Reachy's head left-right and up-down.");
+                GUILayout.Label("A / B: open and close both grippers.");
+                GUILayout.Label("X / Y: tilt the head left and right.");
+                GUILayout.Label("Back: switch left/right eye camera. Start: send Neutral Arms.");
+                GUILayout.Label("Hold L1 + R1 together: start the Reachy introduction. While it runs, manual controls pause until it finishes or you double-tap any gamepad button to cancel back to Neutral Arms.");
+            }
         }
 
         private void DrawManualControlRightPanel(Rect area)
@@ -11926,6 +12047,28 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void EnableRuntimeFileLoggingForRealRobotConnection()
+        {
+            if (runtimeFileLoggingEnabled)
+            {
+                if (!_runtimeLogSessionInitialized)
+                {
+                    InitializeRuntimeLogSession();
+                }
+
+                return;
+            }
+
+            runtimeFileLoggingEnabled = true;
+            InitializeRuntimeLogSession();
+            LogRuntimeEvent(
+                "logging",
+                "auto-enabled",
+                "Runtime file logging enabled automatically after successful real robot connection.",
+                "INFO",
+                forceWrite: true);
+        }
+
         private void DrawStatusSection(float statusTextHeight = 120f, bool showRunLogPath = true)
         {
             GUILayout.BeginHorizontal();
@@ -12108,6 +12251,10 @@ namespace Reachy.ControlApp
                     _autoReconnectScheduled = false;
                     _connectedMode = targetMode;
                     _nextHealthCheckAt = Time.unscaledTime + Mathf.Max(0.5f, healthCheckIntervalSeconds);
+                    if (targetMode == ReachyControlMode.RealRobot)
+                    {
+                        EnableRuntimeFileLoggingForRealRobotConnection();
+                    }
                     LogMobileBaseAvailabilityProbe(aggregate, targetMode);
                     LogConnectionEvent(
                         targetMode,
