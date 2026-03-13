@@ -782,6 +782,7 @@ namespace Reachy.ControlApp
         private Coroutine _actedSequenceCoroutine;
         private string _activeActedSequenceName = string.Empty;
         private bool _actedSequenceRequestingTtsSidecar;
+        private bool _actedSequenceSpeechInProgress;
         private Coroutine _loopingAnimationCoroutine;
         private string _activeLoopingAnimationName = string.Empty;
         private Coroutine _voiceShowMovementCoroutine;
@@ -8065,7 +8066,10 @@ namespace Reachy.ControlApp
             GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && _actedSequenceCoroutine != null;
             if (GUILayout.Button("Stop Acted Sequence", GUILayout.Height(28f)))
             {
-                StopActedSequence(updateStatus: true, reason: "Stopped from Animations & Poses panel.");
+                StopActedSequence(
+                    updateStatus: true,
+                    reason: "Stopped from Animations & Poses panel.",
+                    returnToNeutralPose: true);
             }
 
             GUI.enabled = previousEnabled;
@@ -8767,7 +8771,11 @@ namespace Reachy.ControlApp
             return true;
         }
 
-        private bool StopActedSequence(bool updateStatus, string reason, bool stopLoopingAnimation = true)
+        private bool StopActedSequence(
+            bool updateStatus,
+            string reason,
+            bool stopLoopingAnimation = true,
+            bool returnToNeutralPose = false)
         {
             if (_actedSequenceCoroutine == null)
             {
@@ -8778,6 +8786,7 @@ namespace Reachy.ControlApp
                 ? "Acted sequence"
                 : _activeActedSequenceName;
             StopCoroutine(_actedSequenceCoroutine);
+            InterruptActedSequenceSpeechIfNeeded(stoppedSequenceName, reason);
             ClearActedSequenceState();
             _client?.CancelActivePoseMotion();
 
@@ -8788,9 +8797,26 @@ namespace Reachy.ControlApp
                     reason: $"Interrupted because acted sequence '{stoppedSequenceName}' stopped.");
             }
 
+            bool returnedToNeutralPose = false;
+            string neutralPoseMessage = string.Empty;
+            if (returnToNeutralPose)
+            {
+                returnedToNeutralPose = TryReturnStoppedActedSequenceToNeutralPose(
+                    stoppedSequenceName,
+                    out neutralPoseMessage);
+            }
+
             string message = string.IsNullOrWhiteSpace(reason)
                 ? $"Acted sequence '{stoppedSequenceName}' stopped."
                 : $"Acted sequence '{stoppedSequenceName}' stopped. {reason}";
+            if (returnToNeutralPose)
+            {
+                message += returnedToNeutralPose
+                    ? $" Returned to '{VoiceHelloReturnPoseName}'."
+                    : string.IsNullOrWhiteSpace(neutralPoseMessage)
+                        ? string.Empty
+                        : $" Failed to return to '{VoiceHelloReturnPoseName}'. {neutralPoseMessage}";
+            }
             LogRuntimeEvent("acted-sequence", "stopped", message, "WARN");
             if (updateStatus)
             {
@@ -8818,7 +8844,45 @@ namespace Reachy.ControlApp
             _actedSequenceCoroutine = null;
             _activeActedSequenceName = string.Empty;
             _actedSequenceRequestingTtsSidecar = false;
+            _actedSequenceSpeechInProgress = false;
             ResetManualControllerActedSequenceLockState();
+        }
+
+        private void InterruptActedSequenceSpeechIfNeeded(string sequenceName, string reason)
+        {
+            if (!_actedSequenceSpeechInProgress || _voiceAgentBridge == null)
+            {
+                return;
+            }
+
+            string interruptReason = string.IsNullOrWhiteSpace(reason)
+                ? $"Acted sequence '{sequenceName}' stopped."
+                : $"Acted sequence '{sequenceName}' stopped. {reason}";
+            _voiceAgentBridge.InterruptTtsFeedback(interruptReason);
+        }
+
+        private bool TryReturnStoppedActedSequenceToNeutralPose(string sequenceName, out string message)
+        {
+            message = "Robot is not connected.";
+            if (_client == null || !_client.IsConnected)
+            {
+                return false;
+            }
+
+            bool neutralSent = TrySendActedSequencePresetPose(
+                sequenceName,
+                VoiceHelloReturnPoseName,
+                "return-neutral-after-stop",
+                1,
+                1,
+                out message,
+                out _);
+            if (neutralSent)
+            {
+                ResetManualControllerTargetsToDefaults();
+            }
+
+            return neutralSent;
         }
 
         private bool ShouldActedSequencePrepareLocalTtsSidecar()
@@ -9360,6 +9424,7 @@ namespace Reachy.ControlApp
             baselineSuccessfulTtsCount = snapshot.SuccessfulTtsCount;
             baselineFailedTtsCount = snapshot.FailedTtsCount;
             _voiceAgentBridge.EnqueueTtsFeedback(trimmedText, interrupt: true);
+            _actedSequenceSpeechInProgress = true;
             _voiceLastSpokenFeedback = trimmedText;
             message = "Queued acted sequence speech.";
             return true;

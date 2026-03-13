@@ -5,6 +5,7 @@ Local Reachy voice-agent sidecar.
 Endpoints used by Unity:
 - GET  /intent
 - POST /speak
+- POST /stop
 - POST /help
 
 Testing endpoints:
@@ -1159,6 +1160,13 @@ class TTS:
         except queue.Full:
             return False, "TTS queue is full."
 
+    def interrupt(self) -> tuple[bool, str]:
+        self.interrupt_event.set()
+        self._clear_queue_nonblocking()
+        self._terminate_active_process()
+        self.state.set_tts_speaking(False)
+        return True, "TTS playback interrupted."
+
     def _clear_queue_nonblocking(self) -> None:
         while True:
             try:
@@ -1813,6 +1821,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/speak":
             ok, msg = self.app.tts.speak(str(payload.get("text", "")), bool(payload.get("interrupt", False)))
             self.app.state.log("info" if ok else "warn", f"/speak -> {msg}")
+            self._send(HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST, {"ok": ok, "message": msg})
+            return
+
+        if path == "/stop":
+            stop_reason = str(payload.get("reason", "")).strip()
+            ok, msg = self.app.tts.interrupt()
+            if stop_reason:
+                self.app.state.log("info", f"/stop reason: {stop_reason}")
+            self.app.state.log("info" if ok else "warn", f"/stop -> {msg}")
             self._send(HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST, {"ok": ok, "message": msg})
             return
 

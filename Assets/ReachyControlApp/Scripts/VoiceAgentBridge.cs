@@ -167,6 +167,12 @@ namespace Reachy.ControlApp
         }
 
         [Serializable]
+        private sealed class TtsStopPayload
+        {
+            public string reason;
+        }
+
+        [Serializable]
         private sealed class HelpPayload
         {
             public string query;
@@ -219,6 +225,9 @@ namespace Reachy.ControlApp
         private Task<PollResult> _pollTask;
         private readonly Queue<TtsRequest> _ttsQueue = new Queue<TtsRequest>();
         private Task<TtsResult> _ttsTask;
+        private Task<TtsResult> _ttsInterruptTask;
+        private bool _ttsInterruptAfterActiveRequest;
+        private string _ttsInterruptAfterActiveRequestReason = string.Empty;
         private readonly Queue<HelpRequest> _helpQueue = new Queue<HelpRequest>();
         private Task<HelpResult> _helpTask;
         private readonly Queue<ListeningToggleRequest> _listeningToggleQueue = new Queue<ListeningToggleRequest>();
@@ -443,6 +452,44 @@ namespace Reachy.ControlApp
             }
         }
 
+        public void InterruptTtsFeedback(string reason)
+        {
+            string ttsStopEndpoint;
+            string ttsMirrorStopEndpoint;
+            int timeoutMs;
+            string sanitizedReason = SanitizeBridgeText(reason);
+
+            lock (_gate)
+            {
+                _ttsQueue.Clear();
+                ttsStopEndpoint = BuildTtsStopEndpoint(_ttsEndpoint);
+                ttsMirrorStopEndpoint = _ttsMirrorEnabled
+                    ? BuildTtsStopEndpoint(_ttsMirrorEndpoint)
+                    : string.Empty;
+                timeoutMs = _timeoutMs;
+
+                _lastTtsMessage = string.IsNullOrWhiteSpace(sanitizedReason)
+                    ? "Interrupting active TTS playback."
+                    : $"Interrupting active TTS playback. {sanitizedReason}";
+                _lastTtsError = string.Empty;
+                AddLogLocked("tts", "debug", _lastTtsMessage);
+                if (_ttsTask != null)
+                {
+                    _ttsInterruptAfterActiveRequest = true;
+                    _ttsInterruptAfterActiveRequestReason = sanitizedReason;
+                }
+
+                if (_ttsInterruptTask == null || _ttsInterruptTask.IsCompleted)
+                {
+                    _ttsInterruptTask = Task.Run(() => SendTtsInterruptRequest(
+                        ttsStopEndpoint,
+                        ttsMirrorStopEndpoint,
+                        timeoutMs,
+                        sanitizedReason));
+                }
+            }
+        }
+
         public void SetEnabled(bool enabled, float nowUnscaledTime)
         {
             lock (_gate)
@@ -463,6 +510,8 @@ namespace Reachy.ControlApp
                     _degradedMode = false;
                     _consecutivePollFailures = 0;
                     _ttsQueue.Clear();
+                    _ttsInterruptAfterActiveRequest = false;
+                    _ttsInterruptAfterActiveRequestReason = string.Empty;
                     _helpQueue.Clear();
                     _listeningToggleQueue.Clear();
                     _lastTtsMessage = "TTS idle.";
@@ -539,6 +588,7 @@ namespace Reachy.ControlApp
 
             Task<PollResult> localPollTask = null;
             Task<TtsResult> localTtsTask = null;
+            Task<TtsResult> localTtsInterruptTask = null;
             Task<HelpResult> localHelpTask = null;
             Task<ListeningToggleResult> localListeningToggleTask = null;
             string endpoint = string.Empty;
@@ -569,6 +619,12 @@ namespace Reachy.ControlApp
                 {
                     localTtsTask = _ttsTask;
                     _ttsTask = null;
+                }
+
+                if (_ttsInterruptTask != null && _ttsInterruptTask.IsCompleted)
+                {
+                    localTtsInterruptTask = _ttsInterruptTask;
+                    _ttsInterruptTask = null;
                 }
 
                 if (_helpTask != null && _helpTask.IsCompleted)
@@ -628,6 +684,11 @@ namespace Reachy.ControlApp
                 ConsumeTtsResult(localTtsTask);
             }
 
+            if (localTtsInterruptTask != null)
+            {
+                ConsumeTtsInterruptResult(localTtsInterruptTask);
+            }
+
             if (localHelpTask != null)
             {
                 ConsumeHelpResult(localHelpTask);
@@ -637,6 +698,8 @@ namespace Reachy.ControlApp
             {
                 ConsumeListeningToggleResult(localListeningToggleTask);
             }
+
+            StartDeferredTtsInterruptIfNeeded();
 
             if (shouldStartPoll)
             {
@@ -709,7 +772,7 @@ namespace Reachy.ControlApp
                     LastTranscript = _lastTranscript,
                     LastTranscriptIsFinal = _lastTranscriptIsFinal,
                     LastTranscriptConfidence = _lastTranscriptConfidence,
-                    TtsInFlight = _ttsTask != null,
+                    TtsInFlight = _ttsTask != null || _ttsInterruptTask != null,
                     QueuedTtsCount = _ttsQueue.Count,
                     TtsEndpoint = _ttsEndpoint,
                     SuccessfulTtsCount = _successfulTtsCount,
@@ -885,6 +948,79 @@ namespace Reachy.ControlApp
                         : sanitizedMessage;
                     AddLogLocked("tts", "warn", _lastTtsMessage);
                 }
+            }
+        }
+
+        private void ConsumeTtsInterruptResult(Task<TtsResult> completedTask)
+        {
+            TtsResult result;
+            try
+            {
+                result = completedTask.Result;
+            }
+            catch (Exception ex)
+            {
+                lock (_gate)
+                {
+                    _lastTtsError = SanitizeBridgeText(ex.Message);
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(_lastTtsError)
+                        ? "TTS interrupt task crashed."
+                        : $"TTS interrupt task crashed: {_lastTtsError}";
+                    AddLogLocked("tts", "warn", _lastTtsMessage);
+                }
+                return;
+            }
+
+            lock (_gate)
+            {
+                string sanitizedMessage = SanitizeBridgeText(result.Message);
+                string sanitizedError = SanitizeBridgeText(result.Error);
+                if (result.Success)
+                {
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(sanitizedMessage)
+                        ? "TTS interrupt sent."
+                        : sanitizedMessage;
+                    if (result.MirrorAttempted && !result.MirrorSuccess)
+                    {
+                        _lastTtsError = sanitizedError;
+                        AddLogLocked("tts", "warn", _lastTtsMessage);
+                    }
+                    else
+                    {
+                        _lastTtsError = string.Empty;
+                        AddLogLocked("tts", "debug", _lastTtsMessage);
+                    }
+                }
+                else
+                {
+                    _lastTtsError = sanitizedError;
+                    _lastTtsMessage = string.IsNullOrWhiteSpace(sanitizedMessage)
+                        ? "TTS interrupt failed."
+                        : sanitizedMessage;
+                    AddLogLocked("tts", "warn", _lastTtsMessage);
+                }
+            }
+        }
+
+        private void StartDeferredTtsInterruptIfNeeded()
+        {
+            lock (_gate)
+            {
+                if (!_ttsInterruptAfterActiveRequest ||
+                    _ttsTask != null ||
+                    _ttsInterruptTask != null)
+                {
+                    return;
+                }
+
+                _ttsInterruptAfterActiveRequest = false;
+                string reason = _ttsInterruptAfterActiveRequestReason;
+                _ttsInterruptAfterActiveRequestReason = string.Empty;
+                _ttsInterruptTask = Task.Run(() => SendTtsInterruptRequest(
+                    BuildTtsStopEndpoint(_ttsEndpoint),
+                    _ttsMirrorEnabled ? BuildTtsStopEndpoint(_ttsMirrorEndpoint) : string.Empty,
+                    _timeoutMs,
+                    reason));
             }
         }
 
@@ -1071,6 +1207,46 @@ namespace Reachy.ControlApp
             return primaryResult;
         }
 
+        private static TtsResult SendTtsInterruptRequest(
+            string endpoint,
+            string mirrorEndpoint,
+            int timeoutMs,
+            string reason)
+        {
+            TtsResult primaryResult = SendSingleTtsInterruptRequest(endpoint, timeoutMs, reason);
+            if (!primaryResult.Success)
+            {
+                primaryResult.MirrorAttempted = false;
+                primaryResult.MirrorSuccess = false;
+                return primaryResult;
+            }
+
+            if (string.IsNullOrWhiteSpace(mirrorEndpoint))
+            {
+                primaryResult.MirrorAttempted = false;
+                primaryResult.MirrorSuccess = true;
+                return primaryResult;
+            }
+
+            TtsResult mirrorResult = SendSingleTtsInterruptRequest(mirrorEndpoint, timeoutMs, reason);
+            primaryResult.MirrorAttempted = true;
+            primaryResult.MirrorSuccess = mirrorResult.Success;
+            if (mirrorResult.Success)
+            {
+                primaryResult.Message = "TTS interrupt accepted.";
+                primaryResult.Error = string.Empty;
+            }
+            else
+            {
+                primaryResult.Message = string.IsNullOrWhiteSpace(mirrorResult.Error)
+                    ? "TTS interrupt accepted locally; robot speaker mirror interrupt failed."
+                    : $"TTS interrupt accepted locally; robot speaker mirror interrupt failed: {mirrorResult.Error}";
+                primaryResult.Error = mirrorResult.Error;
+            }
+
+            return primaryResult;
+        }
+
         private static TtsResult SendSingleTtsRequest(string endpoint, int timeoutMs, TtsRequest requestPayload)
         {
             try
@@ -1139,6 +1315,113 @@ namespace Reachy.ControlApp
                     Error = detail
                 };
             }
+        }
+
+        private static TtsResult SendSingleTtsInterruptRequest(string endpoint, int timeoutMs, string reason)
+        {
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                return new TtsResult
+                {
+                    Success = false,
+                    MirrorAttempted = false,
+                    MirrorSuccess = false,
+                    Message = "TTS interrupt endpoint is unavailable.",
+                    Error = "endpoint is empty"
+                };
+            }
+
+            try
+            {
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.Accept = "application/json";
+                request.ContentType = "application/json";
+                request.Proxy = null;
+
+                string jsonBody = JsonUtility.ToJson(new TtsStopPayload
+                {
+                    reason = reason ?? string.Empty
+                });
+
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+                request.ContentLength = bodyBytes.Length;
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string responseBody = SanitizeBridgeText(reader.ReadToEnd());
+                    string responseMessage = string.IsNullOrWhiteSpace(responseBody)
+                        ? "TTS interrupt accepted."
+                        : $"TTS interrupt response: {responseBody}";
+                    return new TtsResult
+                    {
+                        Success = true,
+                        MirrorAttempted = false,
+                        MirrorSuccess = true,
+                        Message = responseMessage,
+                        Error = string.Empty
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = FormatWebExceptionDetail(webEx, endpoint);
+
+                return new TtsResult
+                {
+                    Success = false,
+                    MirrorAttempted = false,
+                    MirrorSuccess = false,
+                    Message = "TTS interrupt endpoint is not reachable.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                string detail = SanitizeBridgeText(ex.Message);
+                return new TtsResult
+                {
+                    Success = false,
+                    MirrorAttempted = false,
+                    MirrorSuccess = false,
+                    Message = "TTS interrupt request failed.",
+                    Error = detail
+                };
+            }
+        }
+
+        private static string BuildTtsStopEndpoint(string endpoint)
+        {
+            string trimmedEndpoint = SanitizeBridgeText(endpoint);
+            if (string.IsNullOrWhiteSpace(trimmedEndpoint) ||
+                !Uri.TryCreate(trimmedEndpoint, UriKind.Absolute, out Uri endpointUri))
+            {
+                return string.Empty;
+            }
+
+            string absolutePath = string.IsNullOrWhiteSpace(endpointUri.AbsolutePath)
+                ? "/"
+                : endpointUri.AbsolutePath;
+            int lastSlashIndex = absolutePath.LastIndexOf('/');
+            string stopPath = lastSlashIndex >= 0
+                ? absolutePath.Substring(0, lastSlashIndex + 1) + "stop"
+                : "/stop";
+
+            var builder = new UriBuilder(endpointUri)
+            {
+                Path = stopPath,
+                Query = string.Empty,
+                Fragment = string.Empty
+            };
+            return builder.Uri.AbsoluteUri;
         }
 
         private static string FormatWebExceptionDetail(WebException webEx, string endpoint)
