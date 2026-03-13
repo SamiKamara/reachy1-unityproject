@@ -19,7 +19,12 @@ namespace Reachy.ControlApp
         public float joint_degrees;
         public float confidence = 1.0f;
         public bool requires_confirmation;
+        public string reply_text = string.Empty;
         public string spoken_text = string.Empty;
+        public string source_backend = string.Empty;
+        public string source_mode = string.Empty;
+        public string validation_status = string.Empty;
+        public string validation_message = string.Empty;
         public bool transcript_is_final = true;
 
         [NonSerialized] public string raw_json = string.Empty;
@@ -106,6 +111,7 @@ namespace Reachy.ControlApp
             public bool Success;
             public bool MirrorAttempted;
             public bool MirrorSuccess;
+            public string RequestedText;
             public string Message;
             public string Error;
         }
@@ -164,6 +170,7 @@ namespace Reachy.ControlApp
         {
             public string text;
             public bool interrupt;
+            public bool wait_for_completion;
         }
 
         [Serializable]
@@ -549,7 +556,12 @@ namespace Reachy.ControlApp
                     joint_degrees = intent.joint_degrees,
                     confidence = intent.confidence,
                     requires_confirmation = intent.requires_confirmation,
+                    reply_text = intent.reply_text ?? string.Empty,
                     spoken_text = intent.spoken_text ?? string.Empty,
+                    source_backend = intent.source_backend ?? string.Empty,
+                    source_mode = intent.source_mode ?? string.Empty,
+                    validation_status = intent.validation_status ?? string.Empty,
+                    validation_message = intent.validation_message ?? string.Empty,
                     transcript_is_final = intent.transcript_is_final,
                     raw_json = string.IsNullOrWhiteSpace(intent.raw_json) ? "mock_intent" : intent.raw_json
                 };
@@ -1173,7 +1185,7 @@ namespace Reachy.ControlApp
             int timeoutMs,
             TtsRequest requestPayload)
         {
-            TtsResult primaryResult = SendSingleTtsRequest(endpoint, timeoutMs, requestPayload);
+            TtsResult primaryResult = SendSingleTtsRequest(endpoint, timeoutMs, requestPayload, waitForCompletion: true);
             if (!primaryResult.Success)
             {
                 primaryResult.MirrorAttempted = false;
@@ -1188,19 +1200,19 @@ namespace Reachy.ControlApp
                 return primaryResult;
             }
 
-            TtsResult mirrorResult = SendSingleTtsRequest(mirrorEndpoint, timeoutMs, requestPayload);
+            TtsResult mirrorResult = SendSingleTtsRequest(mirrorEndpoint, timeoutMs, requestPayload, waitForCompletion: false);
             primaryResult.MirrorAttempted = true;
             primaryResult.MirrorSuccess = mirrorResult.Success;
             if (mirrorResult.Success)
             {
-                primaryResult.Message = "Local TTS accepted; robot speaker mirror accepted.";
+                primaryResult.Message = "Local TTS completed; robot speaker mirror accepted.";
                 primaryResult.Error = string.Empty;
             }
             else
             {
                 primaryResult.Message = string.IsNullOrWhiteSpace(mirrorResult.Error)
-                    ? "Local TTS accepted; robot speaker mirror failed."
-                    : $"Local TTS accepted; robot speaker mirror failed: {mirrorResult.Error}";
+                    ? "Local TTS completed; robot speaker mirror failed."
+                    : $"Local TTS completed; robot speaker mirror failed: {mirrorResult.Error}";
                 primaryResult.Error = mirrorResult.Error;
             }
 
@@ -1247,14 +1259,19 @@ namespace Reachy.ControlApp
             return primaryResult;
         }
 
-        private static TtsResult SendSingleTtsRequest(string endpoint, int timeoutMs, TtsRequest requestPayload)
+        private static TtsResult SendSingleTtsRequest(
+            string endpoint,
+            int timeoutMs,
+            TtsRequest requestPayload,
+            bool waitForCompletion)
         {
             try
             {
+                int requestTimeoutMs = ComputeTtsRequestTimeoutMs(timeoutMs, requestPayload.Text, waitForCompletion);
                 HttpWebRequest request = WebRequest.CreateHttp(endpoint);
                 request.Method = "POST";
-                request.Timeout = timeoutMs;
-                request.ReadWriteTimeout = timeoutMs;
+                request.Timeout = requestTimeoutMs;
+                request.ReadWriteTimeout = requestTimeoutMs;
                 request.Accept = "application/json";
                 request.ContentType = "application/json";
                 request.Proxy = null;
@@ -1262,7 +1279,8 @@ namespace Reachy.ControlApp
                 string jsonBody = JsonUtility.ToJson(new TtsPayload
                 {
                     text = requestPayload.Text ?? string.Empty,
-                    interrupt = requestPayload.Interrupt
+                    interrupt = requestPayload.Interrupt,
+                    wait_for_completion = waitForCompletion
                 });
 
                 byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
@@ -1285,6 +1303,7 @@ namespace Reachy.ControlApp
                         Success = true,
                         MirrorAttempted = false,
                         MirrorSuccess = true,
+                        RequestedText = requestPayload.Text ?? string.Empty,
                         Message = responseMessage,
                         Error = string.Empty
                     };
@@ -1299,6 +1318,7 @@ namespace Reachy.ControlApp
                     Success = false,
                     MirrorAttempted = false,
                     MirrorSuccess = false,
+                    RequestedText = requestPayload.Text ?? string.Empty,
                     Message = "TTS endpoint is not reachable.",
                     Error = detail
                 };
@@ -1311,10 +1331,42 @@ namespace Reachy.ControlApp
                     Success = false,
                     MirrorAttempted = false,
                     MirrorSuccess = false,
+                    RequestedText = requestPayload.Text ?? string.Empty,
                     Message = "TTS request failed.",
                     Error = detail
                 };
             }
+        }
+
+        private static int ComputeTtsRequestTimeoutMs(int timeoutMs, string text, bool waitForCompletion)
+        {
+            int baseTimeoutMs = Math.Max(250, timeoutMs);
+            if (!waitForCompletion)
+            {
+                return baseTimeoutMs;
+            }
+
+            string trimmedText = (text ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedText))
+            {
+                return Math.Max(baseTimeoutMs, 5000);
+            }
+
+            int wordCount = trimmedText.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length;
+            int punctuationCount = 0;
+            for (int i = 0; i < trimmedText.Length; i++)
+            {
+                char ch = trimmedText[i];
+                if (ch == '.' || ch == '!' || ch == '?' || ch == ';' || ch == ':')
+                {
+                    punctuationCount++;
+                }
+            }
+
+            double wordsPerSecond = Math.Max(0.75, 175.0 / 60.0);
+            double estimatedSeconds = (Math.Max(1, wordCount) / wordsPerSecond) + (punctuationCount * 0.25) + 8.0;
+            int estimatedTimeoutMs = (int)Math.Ceiling(Math.Min(600.0, estimatedSeconds) * 1000.0);
+            return Math.Max(baseTimeoutMs, estimatedTimeoutMs);
         }
 
         private static TtsResult SendSingleTtsInterruptRequest(string endpoint, int timeoutMs, string reason)
@@ -1722,10 +1774,14 @@ namespace Reachy.ControlApp
 
                 VoiceAgentIntent directIntent = JsonUtility.FromJson<VoiceAgentIntent>(body);
                 if (directIntent != null &&
-                    (!string.IsNullOrWhiteSpace(directIntent.intent) || !string.IsNullOrWhiteSpace(directIntent.spoken_text)))
+                    (!string.IsNullOrWhiteSpace(directIntent.intent) ||
+                     !string.IsNullOrWhiteSpace(directIntent.spoken_text) ||
+                     !string.IsNullOrWhiteSpace(directIntent.reply_text)))
                 {
                     directIntent.raw_json = body;
-                    bool hasStructuredIntent = !string.IsNullOrWhiteSpace(directIntent.intent);
+                    bool hasStructuredIntent =
+                        !string.IsNullOrWhiteSpace(directIntent.intent) ||
+                        !string.IsNullOrWhiteSpace(directIntent.reply_text);
                     bool isFinalTranscript = directIntent.transcript_is_final;
                     bool hasTranscript = !string.IsNullOrWhiteSpace(directIntent.spoken_text);
                     bool shouldQueueIntent = hasStructuredIntent || isFinalTranscript;

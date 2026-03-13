@@ -1,6 +1,7 @@
 ﻿{
     "bind_host": "127.0.0.1",
     "bind_port": 8099,
+    "ai_mode": "online",
     "stt_backend": "vosk",
     "stt_model_path": "../../../../.local_voice_models/vosk-model-small-en-us-0.15",
     "stt_sample_rate_hz": 16000,
@@ -148,9 +149,21 @@
     "start_listening_enabled": true,
     "min_transcript_chars": 4,
     "min_transcript_words": 1,
+    "simulation_only_mode": false,
+    "block_motion_when_bridge_unhealthy": true,
     "safe_numeric_parsing": true,
     "require_target_token_for_joint": false,
     "reject_out_of_range_joint_commands": true,
     "joint_min_degrees": -180.0,
-    "joint_max_degrees": 180.0
+    "joint_max_degrees": 180.0,
+    "online_ai_enabled": true,
+    "online_ai_model": "",
+    "online_ai_api_key_env_var": "OPENAI_API_KEY",
+    "online_ai_base_url": "",
+    "online_ai_timeout_seconds": 15.0,
+    "online_ai_temperature": 0.20000000298023225,
+    "online_ai_max_output_tokens": 180,
+    "online_ai_system_prompt": "You are Reachy's online conversational AI.",
+    "online_ai_allow_direct_joint_commands": true,
+    "online_ai_require_motion_confirmation": false
 }

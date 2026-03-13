@@ -35,6 +35,19 @@ namespace Reachy.ControlApp
             "Teleoperation",
             "Connections"
         };
+
+        private enum AiMode
+        {
+            Local = 0,
+            Online = 1
+        }
+
+        private static readonly string[] AiModeLabels =
+        {
+            "Use Local AI",
+            "Use Online AI"
+        };
+
         private const float DesignMarginPixels = 10f;
         private const float DesignPanelGap = 10f;
         private const float DesignViewTopBarHeight = 42f;
@@ -103,6 +116,9 @@ namespace Reachy.ControlApp
         private const float RobotSpeakerHealthProbeRefreshSeconds = 45f;
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
+        private const string DefaultOnlineAiModel = "gpt-5.4";
+        private const string DefaultOnlineAiBaseUrl = "https://api.openai.com/v1";
+        private const string DefaultOnlineAiApiKeyEnvVar = "OPENAI_API_KEY";
         private static readonly string[] DefaultSidecarKnownPoses =
         {
             "Neutral Arms",
@@ -130,7 +146,10 @@ namespace Reachy.ControlApp
             "l_forearm_yaw",
             "l_wrist_pitch",
             "l_wrist_roll",
-            "l_gripper"
+            "l_gripper",
+            "neck_roll",
+            "neck_pitch",
+            "neck_yaw"
         };
         private static readonly string[] DefaultSidecarShowMovementSynonyms =
         {
@@ -682,7 +701,9 @@ namespace Reachy.ControlApp
         [SerializeField] private bool cameraUseRightEye;
 
         [Header("Local AI Agent")]
+        [SerializeField] private AiMode aiMode = AiMode.Local;
         [SerializeField] private bool enableLocalAiAgent = false;
+        [SerializeField] private bool enableOnlineAiAgent = false;
         [SerializeField] private bool localAiAgentPanelExpanded = false;
         [SerializeField] private string localAiAgentEndpoint = VoiceAgentBridge.DefaultEndpoint;
         [SerializeField] private float localAiAgentPollIntervalSeconds = 0.5f;
@@ -742,6 +763,20 @@ namespace Reachy.ControlApp
         [SerializeField] private float localAiAgentHelpModelTemperature = 0.2f;
         [SerializeField] private int localAiAgentHelpMaxAnswerChars = 360;
         [SerializeField] private bool localAiAgentShowRawIntentPayload;
+        [SerializeField] private string onlineAiModel = DefaultOnlineAiModel;
+        [SerializeField] private string onlineAiApiKeyEnvVar = DefaultOnlineAiApiKeyEnvVar;
+        [SerializeField] private string onlineAiBaseUrl = DefaultOnlineAiBaseUrl;
+        [SerializeField] private float onlineAiTimeoutSeconds = 15f;
+        [SerializeField] private float onlineAiTemperature = 0.2f;
+        [SerializeField] private int onlineAiMaxOutputTokens = 180;
+        [SerializeField]
+        [TextArea(3, 8)]
+        private string onlineAiSystemPrompt = "You are Reachy's online conversational AI.";
+        [SerializeField] private bool onlineAiAllowDirectJointCommands = true;
+        [SerializeField] private bool onlineAiRequireMotionConfirmation = false;
+        [SerializeField] private bool onlineAiShowApiKeyHelpOnFirstOpen = true;
+        [SerializeField] private bool onlineAiLastApiKeyCheckOk = false;
+        [SerializeField] private bool onlineAiShowApiKeyHelpPanel;
 
         [Header("Single Joint Command")]
         [SerializeField] private string jointName = "r_shoulder_pitch";
@@ -842,6 +877,7 @@ namespace Reachy.ControlApp
         private string _voiceLastIntentSummary = "No voice intents yet.";
         private string _voiceLastActionResult = "Idle.";
         private string _voiceLastSpokenFeedback = string.Empty;
+        private readonly Queue<string> _voicePendingSpokenFeedback = new Queue<string>();
         private string _voiceLastRawIntentPayload = string.Empty;
         private string _voiceLastLogExportPath = string.Empty;
         private int _voiceLastHandledHelpSuccessCount;
@@ -892,6 +928,21 @@ namespace Reachy.ControlApp
         private string _robotSpeakerHelperLogPath = string.Empty;
         private int _voiceLastHandledTtsSuccessCount;
         private int _voiceLastHandledTtsFailureCount;
+        private string _onlineAiLastReplyText = "No online replies yet.";
+        private string _onlineAiLastValidationResult = "No online validation yet.";
+        private string _onlineAiLastValidationFailure = string.Empty;
+        private string _onlineAiLastConnectionTestResult = "Online AI connection has not been tested.";
+        private string _onlineAiLastHttpError = string.Empty;
+        private string _onlineAiCurrentModel = string.Empty;
+        private string _onlineAiApiKeyStatus = "Unknown.";
+        private string _onlineAiLastKeyCheckUtc = string.Empty;
+        private string _onlineAiLastSourceBackend = string.Empty;
+        private string _onlineAiLastSourceMode = string.Empty;
+        private float _onlineAiLastLatencyMs = -1f;
+        private string _onlineAiApiKeySecretInput = string.Empty;
+        private bool _onlineAiShowApiKeySecretInput;
+        private Task<SidecarProbeResult> _onlineAiStatusTask;
+        private Task<OnlineAiTestResult> _onlineAiTestTask;
         private bool _sidecarShutdownCleanupDone;
 
         private struct SidecarProbeResult
@@ -900,6 +951,31 @@ namespace Reachy.ControlApp
             public bool Reachable;
             public bool HealthAvailable;
             public bool TtsSpeaking;
+            public string AiMode;
+            public bool OnlineAiEnabled;
+            public bool OnlineApiKeyFound;
+            public string OnlineApiKeyEnvVar;
+            public string OnlineModel;
+            public string OnlineLastKeyCheckUtc;
+            public string OnlineLastValidationResult;
+            public string OnlineLastValidationFailure;
+            public string OnlineLastReplyText;
+            public string OnlineLastHttpError;
+            public float OnlineLastLatencyMs;
+            public string OnlineLastConnectionTestResult;
+            public string OnlineSourceBackend;
+            public string Message;
+            public string Error;
+        }
+
+        private struct OnlineAiTestResult
+        {
+            public bool Success;
+            public bool ApiKeyFound;
+            public string ApiKeyEnvVar;
+            public string Model;
+            public float LatencyMs;
+            public string ReplyText;
             public string Message;
             public string Error;
         }
@@ -930,6 +1006,19 @@ namespace Reachy.ControlApp
             public bool tts_speaking;
             public int selected_input_device_index = -1;
             public string selected_input_device_name = string.Empty;
+            public string ai_mode = string.Empty;
+            public bool online_ai_enabled;
+            public string online_ai_model = string.Empty;
+            public string online_ai_api_key_env_var = string.Empty;
+            public bool online_ai_api_key_found;
+            public string online_ai_last_key_check_utc = string.Empty;
+            public string online_ai_last_validation_result = string.Empty;
+            public string online_ai_last_validation_failure = string.Empty;
+            public string online_ai_last_reply_text = string.Empty;
+            public string online_ai_last_http_error = string.Empty;
+            public float online_ai_last_latency_ms = -1f;
+            public string online_ai_last_connection_test_result = string.Empty;
+            public string online_ai_source_backend = string.Empty;
             public string last_error = string.Empty;
         }
 
@@ -944,6 +1033,19 @@ namespace Reachy.ControlApp
             public string stt_backend = string.Empty;
             public string last_message = string.Empty;
             public string last_error = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class OnlineAiTestEnvelope
+        {
+            public bool ok;
+            public bool api_key_found;
+            public string api_key_env_var = string.Empty;
+            public string model = string.Empty;
+            public float latency_ms = -1f;
+            public string reply_text = string.Empty;
+            public string message = string.Empty;
+            public string http_error = string.Empty;
         }
 
         [Serializable]
@@ -965,6 +1067,7 @@ namespace Reachy.ControlApp
         [Serializable]
         private sealed class VoiceAgentConfig
         {
+            public string ai_mode = "local";
             public string stt_backend = "vosk";
             public string model_path = string.Empty;
             public float intent_confidence_threshold = VoiceCommandRouter.DefaultConfidenceThreshold;
@@ -1016,6 +1119,18 @@ namespace Reachy.ControlApp
             public int help_model_max_tokens = 96;
             public float help_model_temperature = 0.2f;
             public int help_max_answer_chars = 360;
+            public bool online_ai_enabled = false;
+            public string online_ai_model = DefaultOnlineAiModel;
+            public string online_ai_api_key_env_var = DefaultOnlineAiApiKeyEnvVar;
+            public string online_ai_base_url = DefaultOnlineAiBaseUrl;
+            public float online_ai_timeout_seconds = 15f;
+            public float online_ai_temperature = 0.2f;
+            public int online_ai_max_output_tokens = 180;
+            public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
+            public bool online_ai_allow_direct_joint_commands = true;
+            public bool online_ai_require_motion_confirmation = false;
+            public bool online_ai_show_api_key_help_on_first_open = true;
+            public bool online_ai_last_api_key_check_ok = false;
             public string ipc_endpoint = VoiceAgentBridge.DefaultEndpoint;
         }
 
@@ -1024,6 +1139,7 @@ namespace Reachy.ControlApp
         {
             public string bind_host = "127.0.0.1";
             public int bind_port = 8099;
+            public string ai_mode = "local";
             public string stt_backend = "vosk";
             public string stt_model_path = "../../../.local_voice_models/vosk-model-small-en-us-0.15";
             public int stt_sample_rate_hz = 16000;
@@ -1052,11 +1168,23 @@ namespace Reachy.ControlApp
             public bool start_listening_enabled = true;
             public int min_transcript_chars = 4;
             public int min_transcript_words = 1;
+            public bool simulation_only_mode = false;
+            public bool block_motion_when_bridge_unhealthy = true;
             public bool safe_numeric_parsing = true;
             public bool require_target_token_for_joint = false;
             public bool reject_out_of_range_joint_commands = true;
             public float joint_min_degrees = -180f;
             public float joint_max_degrees = 180f;
+            public bool online_ai_enabled = false;
+            public string online_ai_model = DefaultOnlineAiModel;
+            public string online_ai_api_key_env_var = DefaultOnlineAiApiKeyEnvVar;
+            public string online_ai_base_url = DefaultOnlineAiBaseUrl;
+            public float online_ai_timeout_seconds = 15f;
+            public float online_ai_temperature = 0.2f;
+            public int online_ai_max_output_tokens = 180;
+            public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
+            public bool online_ai_allow_direct_joint_commands = true;
+            public bool online_ai_require_motion_confirmation = false;
         }
 
         private void Awake()
@@ -2277,6 +2405,12 @@ namespace Reachy.ControlApp
                    Application.platform == RuntimePlatform.WindowsPlayer;
         }
 
+        private static bool CanPersistUserEnvironmentVariable()
+        {
+            return Application.platform == RuntimePlatform.WindowsEditor ||
+                   Application.platform == RuntimePlatform.WindowsPlayer;
+        }
+
         private static ManualControllerSnapshot GetLegacyManualControllerSnapshot()
         {
             ManualControllerSnapshot snapshot = default(ManualControllerSnapshot);
@@ -2793,16 +2927,20 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            bool localAiEnabledNow = enableLocalAiAgent;
-            if (localAiEnabledNow && !_localAiAgentWasEnabledLastFrame)
+            bool aiEnabledNow = IsCurrentAiModeEnabled();
+            if (aiEnabledNow && !_localAiAgentWasEnabledLastFrame)
             {
                 _localAiAgentActivationAnnouncementPending = true;
+                if (IsOnlineAiModeSelected() && onlineAiShowApiKeyHelpOnFirstOpen)
+                {
+                    onlineAiShowApiKeyHelpPanel = true;
+                }
             }
-            else if (!localAiEnabledNow)
+            else if (!aiEnabledNow)
             {
                 _localAiAgentActivationAnnouncementPending = false;
             }
-            _localAiAgentWasEnabledLastFrame = localAiEnabledNow;
+            _localAiAgentWasEnabledLastFrame = aiEnabledNow;
 
             localAiAgentPollIntervalSeconds = Mathf.Max(0.1f, localAiAgentPollIntervalSeconds);
             localAiAgentConfidenceThreshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
@@ -2829,6 +2967,22 @@ namespace Reachy.ControlApp
             localAiAgentHelpModelMaxTokens = Mathf.Clamp(localAiAgentHelpModelMaxTokens, 16, 512);
             localAiAgentHelpModelTemperature = Mathf.Clamp(localAiAgentHelpModelTemperature, 0f, 1.5f);
             localAiAgentHelpMaxAnswerChars = Mathf.Clamp(localAiAgentHelpMaxAnswerChars, 80, 1200);
+            onlineAiTimeoutSeconds = Mathf.Clamp(onlineAiTimeoutSeconds, 3f, 120f);
+            onlineAiTemperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
+            onlineAiMaxOutputTokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
+            if (string.IsNullOrWhiteSpace(onlineAiModel))
+            {
+                onlineAiModel = DefaultOnlineAiModel;
+            }
+            if (string.IsNullOrWhiteSpace(onlineAiBaseUrl))
+            {
+                onlineAiBaseUrl = DefaultOnlineAiBaseUrl;
+            }
+            onlineAiApiKeyEnvVar = GetSanitizedOnlineAiApiKeyEnvVarName();
+            if (string.IsNullOrWhiteSpace(onlineAiSystemPrompt))
+            {
+                onlineAiSystemPrompt = "You are Reachy's online conversational AI.";
+            }
             EnsurePreferredMicrophoneDevice();
             if (string.IsNullOrWhiteSpace(localAiAgentListeningEndpoint))
             {
@@ -2868,12 +3022,12 @@ namespace Reachy.ControlApp
             _voiceTranscriptParser.MinTranscriptChars = localAiAgentMinTranscriptChars;
             _voiceTranscriptParser.MinTranscriptWords = localAiAgentMinTranscriptWords;
 
-            bool sidecarShouldBePrepared = enableLocalAiAgent || _actedSequenceRequestingTtsSidecar;
-            bool bridgeShouldBeEnabled = enableLocalAiAgent;
+            bool sidecarShouldBePrepared = aiEnabledNow || _actedSequenceRequestingTtsSidecar;
+            bool bridgeShouldBeEnabled = aiEnabledNow;
             if (localAiAgentAutoStartSidecar)
             {
                 UpdateLocalAiAgentSidecarStartup(sidecarShouldBePrepared);
-                bridgeShouldBeEnabled = enableLocalAiAgent && _localAiAgentSidecarReady;
+                bridgeShouldBeEnabled = aiEnabledNow && _localAiAgentSidecarReady;
             }
             else if (!sidecarShouldBePrepared)
             {
@@ -2913,13 +3067,22 @@ namespace Reachy.ControlApp
                 localAiAgentRetryBackoffMaxSeconds,
                 localAiAgentDegradedFailureThreshold);
             _voiceAgentBridge.SetEnabled(bridgeShouldBeEnabled, Time.unscaledTime);
+            ConsumeOnlineAiStatusTaskIfReady();
+            ConsumeOnlineAiTestTaskIfReady();
 
             if (_localAiAgentActivationAnnouncementPending && bridgeShouldBeEnabled)
             {
+                if (IsOnlineAiModeSelected())
+                {
+                    RequestOnlineAiStatusRefresh();
+                }
+
                 if (localAiAgentEnableTtsFeedback)
                 {
                     QueueVoiceFeedback(
-                        LocalAiAgentActivationAnnouncement,
+                        IsOnlineAiModeSelected()
+                            ? "Online AI agent is now active. Keep speech local and configure your own OpenAI API key before testing."
+                            : LocalAiAgentActivationAnnouncement,
                         interrupt: false,
                         bypassRateLimit: true);
                 }
@@ -2941,10 +3104,11 @@ namespace Reachy.ControlApp
 
             _voiceAgentBridge.Update(Time.unscaledTime);
 
-            if (!enableLocalAiAgent)
+            if (!aiEnabledNow)
             {
                 _voiceHasPendingAction = false;
                 _voiceLastSpokenFeedback = string.Empty;
+                _voicePendingSpokenFeedback.Clear();
                 _voiceLastRequestedListeningEnabled = null;
                 _voiceLastCommandFingerprint = string.Empty;
                 _voiceWarnedSttInactive = false;
@@ -2959,6 +3123,7 @@ namespace Reachy.ControlApp
             {
                 _voiceHasPendingAction = false;
                 _voiceLastSpokenFeedback = string.Empty;
+                _voicePendingSpokenFeedback.Clear();
                 _voiceLastCommandFingerprint = string.Empty;
                 _voiceWarnedSttInactive = false;
                 _voiceLastActionResult = _localAiAgentSidecarStatus;
@@ -3021,13 +3186,23 @@ namespace Reachy.ControlApp
 
             if (bridgeSnapshot.SuccessfulTtsCount > _voiceLastHandledTtsSuccessCount)
             {
+                int ttsSuccessDelta = bridgeSnapshot.SuccessfulTtsCount - _voiceLastHandledTtsSuccessCount;
                 _voiceLastHandledTtsSuccessCount = bridgeSnapshot.SuccessfulTtsCount;
+                for (int i = 0; i < ttsSuccessDelta; i++)
+                {
+                    ConfirmTrackedVoiceFeedback(success: true, bridgeSnapshot);
+                }
                 LogVoiceBridgeTtsRuntimeEvent(bridgeSnapshot, success: true);
             }
 
             if (bridgeSnapshot.FailedTtsCount > _voiceLastHandledTtsFailureCount)
             {
+                int ttsFailureDelta = bridgeSnapshot.FailedTtsCount - _voiceLastHandledTtsFailureCount;
                 _voiceLastHandledTtsFailureCount = bridgeSnapshot.FailedTtsCount;
+                for (int i = 0; i < ttsFailureDelta; i++)
+                {
+                    ConfirmTrackedVoiceFeedback(success: false, bridgeSnapshot);
+                }
                 LogVoiceBridgeTtsRuntimeEvent(bridgeSnapshot, success: false);
             }
 
@@ -3091,6 +3266,40 @@ namespace Reachy.ControlApp
             LogRuntimeEvent(category, title, detail, severity);
         }
 
+        private void TrackPendingVoiceFeedback(string message, bool interrupt)
+        {
+            string trimmedMessage = string.IsNullOrWhiteSpace(message) ? string.Empty : message.Trim();
+            if (interrupt)
+            {
+                _voicePendingSpokenFeedback.Clear();
+            }
+
+            if (!string.IsNullOrWhiteSpace(trimmedMessage))
+            {
+                _voicePendingSpokenFeedback.Enqueue(trimmedMessage);
+            }
+        }
+
+        private void ConfirmTrackedVoiceFeedback(bool success, VoiceAgentBridge.BridgeSnapshot snapshot)
+        {
+            string trackedMessage = _voicePendingSpokenFeedback.Count > 0
+                ? _voicePendingSpokenFeedback.Dequeue()
+                : string.Empty;
+            if (success)
+            {
+                if (!string.IsNullOrWhiteSpace(trackedMessage))
+                {
+                    _voiceLastSpokenFeedback = trackedMessage;
+                }
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(snapshot.LastTtsError))
+            {
+                _voiceLastActionResult = $"TTS failed: {snapshot.LastTtsError}";
+            }
+        }
+
         private void HandleIncomingVoiceIntent(VoiceAgentIntent incomingIntent)
         {
             if (incomingIntent == null)
@@ -3102,12 +3311,34 @@ namespace Reachy.ControlApp
             _voiceLastRawIntentPayload = incomingIntent.raw_json ?? string.Empty;
             if (string.IsNullOrWhiteSpace(_voiceLastRawIntentPayload))
             {
-                _voiceLastRawIntentPayload = $"intent={incomingIntent.intent}; spoken={incomingIntent.spoken_text}";
+                _voiceLastRawIntentPayload =
+                    $"intent={incomingIntent.intent}; spoken={incomingIntent.spoken_text}; reply={incomingIntent.reply_text}";
             }
 
             if (!string.IsNullOrWhiteSpace(incomingIntent.spoken_text))
             {
                 _voiceLastTranscript = incomingIntent.spoken_text;
+            }
+
+            bool isOnlineIntent = string.Equals(
+                incomingIntent.source_mode,
+                "online",
+                StringComparison.OrdinalIgnoreCase);
+            if (isOnlineIntent)
+            {
+                _onlineAiLastSourceMode = "online";
+                _onlineAiLastSourceBackend = string.IsNullOrWhiteSpace(incomingIntent.source_backend)
+                    ? _onlineAiLastSourceBackend
+                    : incomingIntent.source_backend.Trim();
+                if (!string.IsNullOrWhiteSpace(incomingIntent.reply_text))
+                {
+                    _onlineAiLastReplyText = incomingIntent.reply_text.Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(incomingIntent.validation_status))
+                {
+                    _onlineAiLastValidationResult = incomingIntent.validation_status.Trim();
+                }
+                _onlineAiLastValidationFailure = incomingIntent.validation_message ?? string.Empty;
             }
 
             VoiceAgentIntent intentToRoute = incomingIntent;
@@ -3174,6 +3405,29 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            if (isOnlineIntent && routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint &&
+                !onlineAiAllowDirectJointCommands)
+            {
+                _voiceLastActionResult = "Online AI joint commands are disabled in the operator settings.";
+                return;
+            }
+
+            if (isOnlineIntent &&
+                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Help &&
+                !string.IsNullOrWhiteSpace(incomingIntent.reply_text))
+            {
+                routedAction.Kind = VoiceCommandRouter.VoiceActionKind.None;
+                routedAction.RequiresConfirmation = false;
+            }
+
+            if (isOnlineIntent && IsMotionVoiceAction(routedAction.Kind))
+            {
+                routedAction.RequiresConfirmation =
+                    routedAction.Kind == VoiceCommandRouter.VoiceActionKind.StopMotion
+                        ? false
+                        : onlineAiRequireMotionConfirmation;
+            }
+
             if (_voiceHasPendingAction &&
                 routedAction.Kind != VoiceCommandRouter.VoiceActionKind.StopMotion &&
                 routedAction.Kind != VoiceCommandRouter.VoiceActionKind.ConfirmPending &&
@@ -3183,11 +3437,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            bool isMotionAction =
-                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.SetPose ||
-                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.MoveJoint ||
-                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.ShowMovement ||
-                routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Hello;
+            bool isMotionAction = IsMotionVoiceAction(routedAction.Kind);
             if (isMotionAction && localAiAgentBlockMotionWhenBridgeUnhealthy)
             {
                 if (!IsBridgeHealthyForMotion(out string bridgeHealthReason))
@@ -3208,14 +3458,32 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            if (routedAction.Kind == VoiceCommandRouter.VoiceActionKind.None)
+            {
+                _voiceLastActionResult = string.IsNullOrWhiteSpace(incomingIntent.reply_text)
+                    ? "Online AI returned no robot action."
+                    : "Online AI reply received.";
+                if (!string.IsNullOrWhiteSpace(incomingIntent.reply_text))
+                {
+                    QueueVoiceFeedback(incomingIntent.reply_text, interrupt: false);
+                }
+                return;
+            }
+
             ExecuteVoiceAction(routedAction, out string actionMessage);
             _voiceLastActionResult = actionMessage;
+            string feedbackText = string.IsNullOrWhiteSpace(incomingIntent.reply_text)
+                ? actionMessage
+                : incomingIntent.reply_text.Trim();
             bool shouldSpeakActionMessage =
-                !(routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Help && localAiAgentEnableLocalHelpModel);
+                !string.IsNullOrWhiteSpace(feedbackText) &&
+                !(routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Help &&
+                  localAiAgentEnableLocalHelpModel &&
+                  !isOnlineIntent);
             if (shouldSpeakActionMessage)
             {
                 QueueVoiceFeedback(
-                    actionMessage,
+                    feedbackText,
                     interrupt: routedAction.Kind == VoiceCommandRouter.VoiceActionKind.StopMotion);
             }
         }
@@ -3297,7 +3565,7 @@ namespace Reachy.ControlApp
             bool interrupt = false,
             bool bypassRateLimit = false)
         {
-            if (!enableLocalAiAgent || !localAiAgentEnableTtsFeedback || _voiceAgentBridge == null)
+            if (!IsCurrentAiModeEnabled() || !localAiAgentEnableTtsFeedback || _voiceAgentBridge == null)
             {
                 return;
             }
@@ -3316,7 +3584,7 @@ namespace Reachy.ControlApp
             _voiceNextAllowedTtsAt = now + localAiAgentTtsMinIntervalSeconds;
             string trimmedMessage = message.Trim();
             _voiceAgentBridge.EnqueueTtsFeedback(trimmedMessage, interrupt);
-            _voiceLastSpokenFeedback = trimmedMessage;
+            TrackPendingVoiceFeedback(trimmedMessage, interrupt);
         }
 
         private KeyCode ResolvePushToTalkKey()
@@ -3334,7 +3602,7 @@ namespace Reachy.ControlApp
 
         private void RequestRemoteListeningState(bool enabled, bool force = false)
         {
-            if (_voiceAgentBridge == null || !enableLocalAiAgent)
+            if (_voiceAgentBridge == null || !IsCurrentAiModeEnabled())
             {
                 return;
             }
@@ -3469,6 +3737,7 @@ namespace Reachy.ControlApp
             _localAiAgentSidecarProbeTask = null;
             _localAiAgentSidecarInitialProbeCompleted = true;
             _localAiAgentSidecarReady = result.Success && result.Reachable;
+            ApplyOnlineAiStatusProbe(result);
             if (_localAiAgentSidecarReady)
             {
                 _localAiAgentSidecarStatus = string.IsNullOrWhiteSpace(result.Message)
@@ -4174,6 +4443,27 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void RestartManagedSidecarForOnlineApiKeyUpdate()
+        {
+            if (!_localAiAgentSidecarStartedByUi)
+            {
+                _localAiAgentSidecarReady = false;
+                _localAiAgentSidecarStartupActive = false;
+                _localAiAgentSidecarInitialProbeCompleted = false;
+                _localAiAgentSidecarProbeTask = null;
+                _localAiAgentSidecarNextProbeAt = Time.unscaledTime;
+                return;
+            }
+
+            StopAutoStartedSidecarIfRunning("online API key update");
+            _localAiAgentSidecarReady = false;
+            _localAiAgentSidecarStartupActive = false;
+            _localAiAgentSidecarInitialProbeCompleted = false;
+            _localAiAgentSidecarProbeTask = null;
+            _localAiAgentSidecarNextProbeAt = Time.unscaledTime;
+            _localAiAgentSidecarStatus = "Restarting local sidecar to apply updated online API key...";
+        }
+
         private void CleanupAllSidecarsOnShutdown(string reason)
         {
             if (_sidecarShutdownCleanupDone)
@@ -4333,6 +4623,19 @@ namespace Reachy.ControlApp
                         Reachable = ok,
                         HealthAvailable = true,
                         TtsSpeaking = parsed != null && parsed.tts_speaking,
+                        AiMode = parsed?.ai_mode ?? string.Empty,
+                        OnlineAiEnabled = parsed != null && parsed.online_ai_enabled,
+                        OnlineApiKeyFound = parsed != null && parsed.online_ai_api_key_found,
+                        OnlineApiKeyEnvVar = parsed?.online_ai_api_key_env_var ?? string.Empty,
+                        OnlineModel = parsed?.online_ai_model ?? string.Empty,
+                        OnlineLastKeyCheckUtc = parsed?.online_ai_last_key_check_utc ?? string.Empty,
+                        OnlineLastValidationResult = parsed?.online_ai_last_validation_result ?? string.Empty,
+                        OnlineLastValidationFailure = parsed?.online_ai_last_validation_failure ?? string.Empty,
+                        OnlineLastReplyText = parsed?.online_ai_last_reply_text ?? string.Empty,
+                        OnlineLastHttpError = parsed?.online_ai_last_http_error ?? string.Empty,
+                        OnlineLastLatencyMs = parsed != null ? parsed.online_ai_last_latency_ms : -1f,
+                        OnlineLastConnectionTestResult = parsed?.online_ai_last_connection_test_result ?? string.Empty,
+                        OnlineSourceBackend = parsed?.online_ai_source_backend ?? string.Empty,
                         Message = ok
                             ? $"Sidecar health is OK.{selectedDeviceSummary}"
                             : "Sidecar health endpoint reported not OK.",
@@ -4765,6 +5068,101 @@ namespace Reachy.ControlApp
             return "rule_based";
         }
 
+        private static string NormalizeAiModeValue(string value)
+        {
+            string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized == "online" ? "online" : "local";
+        }
+
+        private static bool LooksLikeOpenAiApiKey(string value)
+        {
+            string trimmed = (value ?? string.Empty).Trim();
+            if (trimmed.Length < 12)
+            {
+                return false;
+            }
+
+            return trimmed.StartsWith("sk-", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("sk_proj_", StringComparison.OrdinalIgnoreCase) ||
+                trimmed.StartsWith("sk-proj-", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsLikelyEnvironmentVariableName(string value)
+        {
+            string trimmed = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return false;
+            }
+
+            if (!(char.IsLetter(trimmed[0]) || trimmed[0] == '_'))
+            {
+                return false;
+            }
+
+            for (int i = 1; i < trimmed.Length; i++)
+            {
+                char c = trimmed[i];
+                if (!(char.IsLetterOrDigit(c) || c == '_'))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private string GetSanitizedOnlineAiApiKeyEnvVarName()
+        {
+            string trimmed = (onlineAiApiKeyEnvVar ?? string.Empty).Trim();
+            if (LooksLikeOpenAiApiKey(trimmed))
+            {
+                return DefaultOnlineAiApiKeyEnvVar;
+            }
+
+            if (!IsLikelyEnvironmentVariableName(trimmed))
+            {
+                return DefaultOnlineAiApiKeyEnvVar;
+            }
+
+            return trimmed;
+        }
+
+        private static AiMode ParseAiMode(string value)
+        {
+            return NormalizeAiModeValue(value) == "online"
+                ? AiMode.Online
+                : AiMode.Local;
+        }
+
+        private string GetCurrentAiModeConfigValue()
+        {
+            return aiMode == AiMode.Online ? "online" : "local";
+        }
+
+        private bool IsOnlineAiModeSelected()
+        {
+            return aiMode == AiMode.Online;
+        }
+
+        private bool IsCurrentAiModeEnabled()
+        {
+            return IsOnlineAiModeSelected() ? enableOnlineAiAgent : enableLocalAiAgent;
+        }
+
+        private string GetCurrentAiModeLabel()
+        {
+            return IsOnlineAiModeSelected() ? "Online AI" : "Local AI";
+        }
+
+        private static bool IsMotionVoiceAction(VoiceCommandRouter.VoiceActionKind kind)
+        {
+            return kind == VoiceCommandRouter.VoiceActionKind.SetPose ||
+                kind == VoiceCommandRouter.VoiceActionKind.MoveJoint ||
+                kind == VoiceCommandRouter.VoiceActionKind.ShowMovement ||
+                kind == VoiceCommandRouter.VoiceActionKind.Hello;
+        }
+
         private bool IsBridgeHealthyForMotion(out string reason)
         {
             reason = string.Empty;
@@ -4812,6 +5210,298 @@ namespace Reachy.ControlApp
 
             _voiceAgentBridge.ResetHealthState(Time.unscaledTime);
             _voiceLastActionResult = "Voice bridge state reset requested.";
+        }
+
+        private void RequestOnlineAiStatusRefresh()
+        {
+            if (_onlineAiStatusTask != null && !_onlineAiStatusTask.IsCompleted)
+            {
+                _voiceLastActionResult = "Online AI status refresh is already in progress.";
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 400, 12000);
+            _onlineAiStatusTask = Task.Run(() => ProbeSidecar(intentEndpoint, timeoutMs));
+            _voiceLastActionResult = "Refreshing online AI status from sidecar health.";
+        }
+
+        private void SaveOnlineApiKeyFromRuntimeInput()
+        {
+            string secret = (_onlineAiApiKeySecretInput ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(secret))
+            {
+                _voiceLastActionResult = "API key save failed: runtime API key field is empty.";
+                return;
+            }
+
+            string envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
+            bool persistedForUser = false;
+
+            try
+            {
+                Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.Process);
+                if (CanPersistUserEnvironmentVariable())
+                {
+                    Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.User);
+                    persistedForUser = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                _voiceLastActionResult = $"API key save failed: {ex.Message}";
+                return;
+            }
+            finally
+            {
+                _onlineAiApiKeySecretInput = string.Empty;
+                _onlineAiShowApiKeySecretInput = false;
+            }
+
+            onlineAiLastApiKeyCheckOk = true;
+            _onlineAiApiKeyStatus = persistedForUser
+                ? $"saved for current user ({envVarName})"
+                : $"saved for current app process ({envVarName})";
+            _onlineAiLastKeyCheckUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            _onlineAiLastConnectionTestResult = persistedForUser
+                ? "API key saved. Sidecar restart may be needed before testing."
+                : "API key saved for this app process only.";
+            _onlineAiLastHttpError = string.Empty;
+
+            string persistenceMessage = persistedForUser
+                ? $"Saved API key to user environment variable '{envVarName}'."
+                : $"Saved API key to process environment variable '{envVarName}' for this app session.";
+
+            if (localAiAgentAutoStartSidecar && _localAiAgentSidecarStartedByUi)
+            {
+                RestartManagedSidecarForOnlineApiKeyUpdate();
+                _voiceLastActionResult = $"{persistenceMessage} Restarting sidecar to apply it.";
+            }
+            else
+            {
+                _voiceLastActionResult =
+                    $"{persistenceMessage} Restart the sidecar or reopen the app before testing online AI.";
+            }
+        }
+
+        private void ConsumeOnlineAiStatusTaskIfReady()
+        {
+            if (_onlineAiStatusTask == null || !_onlineAiStatusTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                ApplyOnlineAiStatusProbe(_onlineAiStatusTask.Result);
+            }
+            catch (Exception ex)
+            {
+                _onlineAiApiKeyStatus = "Status refresh failed.";
+                _onlineAiLastHttpError = ex.Message;
+                _voiceLastActionResult = $"Online AI status refresh failed: {ex.Message}";
+            }
+            finally
+            {
+                _onlineAiStatusTask = null;
+            }
+        }
+
+        private void ApplyOnlineAiStatusProbe(SidecarProbeResult result)
+        {
+            if (!string.IsNullOrWhiteSpace(result.OnlineModel))
+            {
+                _onlineAiCurrentModel = result.OnlineModel;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.OnlineLastKeyCheckUtc))
+            {
+                _onlineAiLastKeyCheckUtc = result.OnlineLastKeyCheckUtc;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.OnlineLastValidationResult))
+            {
+                _onlineAiLastValidationResult = result.OnlineLastValidationResult;
+            }
+
+            _onlineAiLastValidationFailure = result.OnlineLastValidationFailure ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(result.OnlineLastReplyText))
+            {
+                _onlineAiLastReplyText = result.OnlineLastReplyText;
+            }
+
+            _onlineAiLastHttpError = result.OnlineLastHttpError ?? string.Empty;
+            if (result.OnlineLastLatencyMs >= 0f)
+            {
+                _onlineAiLastLatencyMs = result.OnlineLastLatencyMs;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.OnlineLastConnectionTestResult))
+            {
+                _onlineAiLastConnectionTestResult = result.OnlineLastConnectionTestResult;
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.OnlineSourceBackend))
+            {
+                _onlineAiLastSourceBackend = result.OnlineSourceBackend;
+            }
+
+            string envVarName = string.IsNullOrWhiteSpace(result.OnlineApiKeyEnvVar)
+                ? GetSanitizedOnlineAiApiKeyEnvVarName()
+                : result.OnlineApiKeyEnvVar;
+            _onlineAiApiKeyStatus =
+                $"{(result.OnlineApiKeyFound ? "found" : "missing")} ({envVarName})";
+            onlineAiLastApiKeyCheckOk = result.OnlineApiKeyFound;
+            if (!string.IsNullOrWhiteSpace(result.Message))
+            {
+                _voiceLastActionResult = result.Message;
+            }
+        }
+
+        private void RequestOnlineAiConnectionTest()
+        {
+            if (_onlineAiTestTask != null && !_onlineAiTestTask.IsCompleted)
+            {
+                _voiceLastActionResult = "Online AI connection test is already in progress.";
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            int timeoutMs = Mathf.Clamp(
+                Mathf.Max(localAiAgentSidecarHealthTimeoutMs, Mathf.RoundToInt(onlineAiTimeoutSeconds * 1000f)),
+                1000,
+                30000);
+            _onlineAiTestTask = Task.Run(() => RunOnlineAiConnectionTest(intentEndpoint, timeoutMs));
+            _voiceLastActionResult = "Testing online AI connection through the sidecar.";
+        }
+
+        private void ConsumeOnlineAiTestTaskIfReady()
+        {
+            if (_onlineAiTestTask == null || !_onlineAiTestTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                OnlineAiTestResult result = _onlineAiTestTask.Result;
+                string envVarName = string.IsNullOrWhiteSpace(result.ApiKeyEnvVar)
+                    ? GetSanitizedOnlineAiApiKeyEnvVarName()
+                    : result.ApiKeyEnvVar;
+                _onlineAiApiKeyStatus =
+                    $"{(result.ApiKeyFound ? "found" : "missing")} ({envVarName})";
+                onlineAiLastApiKeyCheckOk = result.ApiKeyFound;
+                if (!string.IsNullOrWhiteSpace(result.Model))
+                {
+                    _onlineAiCurrentModel = result.Model;
+                }
+                if (result.LatencyMs >= 0f)
+                {
+                    _onlineAiLastLatencyMs = result.LatencyMs;
+                }
+                if (!string.IsNullOrWhiteSpace(result.ReplyText))
+                {
+                    _onlineAiLastReplyText = result.ReplyText;
+                }
+                _onlineAiLastConnectionTestResult = result.Message;
+                _onlineAiLastHttpError = result.Error ?? string.Empty;
+                _voiceLastActionResult = result.Message;
+            }
+            catch (Exception ex)
+            {
+                _onlineAiLastConnectionTestResult = $"Online AI connection test failed: {ex.Message}";
+                _onlineAiLastHttpError = ex.Message;
+                _voiceLastActionResult = _onlineAiLastConnectionTestResult;
+            }
+            finally
+            {
+                _onlineAiTestTask = null;
+            }
+        }
+
+        private static OnlineAiTestResult RunOnlineAiConnectionTest(string intentEndpoint, int timeoutMs)
+        {
+            if (!TryBuildSiblingEndpoint(intentEndpoint, "/online-test", out string endpoint))
+            {
+                return new OnlineAiTestResult
+                {
+                    Success = false,
+                    Message = "Could not build the online test endpoint URL.",
+                    Error = "online-test endpoint URL is invalid."
+                };
+            }
+
+            try
+            {
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.Accept = "application/json";
+                request.ContentType = "application/json";
+                request.Proxy = null;
+                byte[] payloadBytes = Encoding.UTF8.GetBytes("{}");
+                request.ContentLength = payloadBytes.Length;
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(payloadBytes, 0, payloadBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream stream = response.GetResponseStream())
+                using (var reader = new StreamReader(stream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string body = reader.ReadToEnd();
+                    OnlineAiTestEnvelope parsed = JsonUtility.FromJson<OnlineAiTestEnvelope>(body);
+                    return new OnlineAiTestResult
+                    {
+                        Success = parsed != null && parsed.ok,
+                        ApiKeyFound = parsed != null && parsed.api_key_found,
+                        ApiKeyEnvVar = parsed?.api_key_env_var ?? string.Empty,
+                        Model = parsed?.model ?? string.Empty,
+                        LatencyMs = parsed != null ? parsed.latency_ms : -1f,
+                        ReplyText = parsed?.reply_text ?? string.Empty,
+                        Message = parsed?.message ?? "Online AI connection test completed.",
+                        Error = parsed?.http_error ?? string.Empty
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = webEx.Message;
+                if (webEx.Response != null)
+                {
+                    using (Stream stream = webEx.Response.GetResponseStream())
+                    using (var reader = new StreamReader(stream ?? Stream.Null, Encoding.UTF8))
+                    {
+                        string body = reader.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(body))
+                        {
+                            detail = $"{detail} ({body})";
+                        }
+                    }
+                }
+
+                return new OnlineAiTestResult
+                {
+                    Success = false,
+                    Message = "Online AI connection test failed.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                return new OnlineAiTestResult
+                {
+                    Success = false,
+                    Message = "Online AI connection test failed.",
+                    Error = ex.Message
+                };
+            }
         }
 
         private void ExportVoiceBridgeLogs()
@@ -5589,7 +6279,7 @@ namespace Reachy.ControlApp
             VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
             _voiceAgentStatusState = new VoiceAgentStatusPanel.State
             {
-                AgentEnabled = snapshot.Enabled,
+                AgentEnabled = IsCurrentAiModeEnabled(),
                 BridgeReachable = snapshot.BridgeReachable,
                 PollInFlight = snapshot.PollInFlight,
                 DegradedMode = snapshot.DegradedMode,
@@ -5651,7 +6341,21 @@ namespace Reachy.ControlApp
                 LastIntentSummary = _voiceLastIntentSummary,
                 LastActionResult = _voiceLastActionResult,
                 PendingActionSummary = _voiceHasPendingAction ? _voicePendingAction.Summary : string.Empty,
-                LastBridgeLogLine = snapshot.LastLogLine
+                LastBridgeLogLine = snapshot.LastLogLine,
+                AiModeLabel = GetCurrentAiModeLabel(),
+                OnlineAiEnabled = enableOnlineAiAgent,
+                OnlineModel = string.IsNullOrWhiteSpace(_onlineAiCurrentModel)
+                    ? onlineAiModel
+                    : _onlineAiCurrentModel,
+                OnlineApiKeyStatus = _onlineAiApiKeyStatus,
+                OnlineLastKeyCheckUtc = _onlineAiLastKeyCheckUtc,
+                OnlineLastReplyText = _onlineAiLastReplyText,
+                OnlineLastValidationResult = _onlineAiLastValidationResult,
+                OnlineLastValidationFailure = _onlineAiLastValidationFailure,
+                OnlineLastConnectionTestResult = _onlineAiLastConnectionTestResult,
+                OnlineSourceBackend = _onlineAiLastSourceBackend,
+                OnlineLastLatencyMs = _onlineAiLastLatencyMs,
+                OnlineLastHttpError = _onlineAiLastHttpError
             };
         }
 
@@ -6471,6 +7175,24 @@ namespace Reachy.ControlApp
                 bool hasRobotSpeakerPortField = json.IndexOf(
                     "\"robot_speaker_port\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasAiModeField = json.IndexOf(
+                    "\"ai_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineEnabledField = json.IndexOf(
+                    "\"online_ai_enabled\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAllowDirectJointCommandsField = json.IndexOf(
+                    "\"online_ai_allow_direct_joint_commands\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineRequireMotionConfirmationField = json.IndexOf(
+                    "\"online_ai_require_motion_confirmation\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineShowApiKeyHelpField = json.IndexOf(
+                    "\"online_ai_show_api_key_help_on_first_open\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineLastApiKeyCheckOkField = json.IndexOf(
+                    "\"online_ai_last_api_key_check_ok\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
 
                 VoiceAgentConfig config = JsonUtility.FromJson<VoiceAgentConfig>(json);
                 if (config == null)
@@ -6483,6 +7205,7 @@ namespace Reachy.ControlApp
                 {
                     localAiAgentEndpoint = config.ipc_endpoint.Trim();
                 }
+                aiMode = hasAiModeField ? ParseAiMode(config.ai_mode) : AiMode.Local;
 
                 localAiAgentConfidenceThreshold = Mathf.Clamp01(config.intent_confidence_threshold);
                 if (config.transcript_default_confidence > 0f)
@@ -6607,8 +7330,43 @@ namespace Reachy.ControlApp
                 localAiAgentHelpModelMaxTokens = Mathf.Clamp(config.help_model_max_tokens, 16, 512);
                 localAiAgentHelpModelTemperature = Mathf.Clamp(config.help_model_temperature, 0f, 1.5f);
                 localAiAgentHelpMaxAnswerChars = Mathf.Clamp(config.help_max_answer_chars, 80, 1200);
+                enableOnlineAiAgent = hasOnlineEnabledField && config.online_ai_enabled;
+                onlineAiModel = string.IsNullOrWhiteSpace(config.online_ai_model)
+                    ? DefaultOnlineAiModel
+                    : config.online_ai_model.Trim();
+                onlineAiApiKeyEnvVar = string.IsNullOrWhiteSpace(config.online_ai_api_key_env_var)
+                    ? DefaultOnlineAiApiKeyEnvVar
+                    : config.online_ai_api_key_env_var.Trim();
+                onlineAiBaseUrl = string.IsNullOrWhiteSpace(config.online_ai_base_url)
+                    ? DefaultOnlineAiBaseUrl
+                    : config.online_ai_base_url.Trim();
+                if (config.online_ai_timeout_seconds > 0f)
+                {
+                    onlineAiTimeoutSeconds = Mathf.Clamp(config.online_ai_timeout_seconds, 3f, 120f);
+                }
+                onlineAiTemperature = Mathf.Clamp(config.online_ai_temperature, 0f, 2f);
+                onlineAiMaxOutputTokens = Mathf.Clamp(config.online_ai_max_output_tokens, 32, 2048);
+                if (!string.IsNullOrWhiteSpace(config.online_ai_system_prompt))
+                {
+                    onlineAiSystemPrompt = config.online_ai_system_prompt;
+                }
+                onlineAiAllowDirectJointCommands = hasOnlineAllowDirectJointCommandsField
+                    ? config.online_ai_allow_direct_joint_commands
+                    : true;
+                onlineAiRequireMotionConfirmation = hasOnlineRequireMotionConfirmationField
+                    ? config.online_ai_require_motion_confirmation
+                    : false;
+                onlineAiShowApiKeyHelpOnFirstOpen = hasOnlineShowApiKeyHelpField
+                    ? config.online_ai_show_api_key_help_on_first_open
+                    : true;
+                onlineAiLastApiKeyCheckOk = hasOnlineLastApiKeyCheckOkField &&
+                    config.online_ai_last_api_key_check_ok;
+                if (aiMode == AiMode.Online && onlineAiShowApiKeyHelpOnFirstOpen)
+                {
+                    onlineAiShowApiKeyHelpPanel = true;
+                }
                 message =
-                    $"Loaded voice config ({config.stt_backend}) from {configPath}. " +
+                    $"Loaded voice config ({config.stt_backend}, mode={GetCurrentAiModeLabel()}) from {configPath}. " +
                     $"Endpoint={localAiAgentEndpoint}, Conf={localAiAgentConfidenceThreshold:F2}, MinTxt={localAiAgentMinTranscriptChars}c/{localAiAgentMinTranscriptWords}w, NumSafe={localAiAgentUseSafeNumericParsing}, Range=[{localAiAgentJointMinDegrees:F1},{localAiAgentJointMaxDegrees:F1}], Dedupe={localAiAgentSuppressDuplicateCommands}({localAiAgentDuplicateCommandWindowSeconds:F2}s), SimOnly={localAiAgentSimulationOnlyMode}, TTS={localAiAgentEnableTtsFeedback}, RobotSpkMirror={localAiAgentMirrorTtsToRobotSpeaker}(:{localAiAgentRobotSpeakerPort}), PTT={localAiAgentEnablePushToTalk}({localAiAgentPushToTalkKey}), AutoStartSidecar={localAiAgentAutoStartSidecar}, SyncSidecarCfgOnStart={localAiAgentSyncSidecarConfigOnStart}, HelpModel={localAiAgentEnableLocalHelpModel}({localAiAgentHelpModelBackend}), HB={localAiAgentHeartbeatTimeoutSeconds:F1}s, SafeMotion={localAiAgentBlockMotionWhenBridgeUnhealthy}.";
                 return true;
             }
@@ -6644,7 +7402,11 @@ namespace Reachy.ControlApp
                 float normalizedJointMax = Mathf.Max(localAiAgentJointMinDegrees, localAiAgentJointMaxDegrees);
                 localAiAgentJointMinDegrees = normalizedJointMin;
                 localAiAgentJointMaxDegrees = normalizedJointMax;
+                onlineAiTimeoutSeconds = Mathf.Clamp(onlineAiTimeoutSeconds, 3f, 120f);
+                onlineAiTemperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
+                onlineAiMaxOutputTokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
 
+                config.ai_mode = GetCurrentAiModeConfigValue();
                 config.intent_confidence_threshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
                 config.transcript_default_confidence = Mathf.Clamp01(localAiAgentTranscriptConfidence);
                 config.transcript_parser_enabled = localAiAgentEnableTranscriptParser;
@@ -6712,6 +7474,24 @@ namespace Reachy.ControlApp
                 config.help_model_max_tokens = Mathf.Clamp(localAiAgentHelpModelMaxTokens, 16, 512);
                 config.help_model_temperature = Mathf.Clamp(localAiAgentHelpModelTemperature, 0f, 1.5f);
                 config.help_max_answer_chars = Mathf.Clamp(localAiAgentHelpMaxAnswerChars, 80, 1200);
+                config.online_ai_enabled = enableOnlineAiAgent;
+                config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
+                    ? DefaultOnlineAiModel
+                    : onlineAiModel.Trim();
+                config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
+                config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
+                    ? DefaultOnlineAiBaseUrl
+                    : onlineAiBaseUrl.Trim();
+                config.online_ai_timeout_seconds = onlineAiTimeoutSeconds;
+                config.online_ai_temperature = onlineAiTemperature;
+                config.online_ai_max_output_tokens = onlineAiMaxOutputTokens;
+                config.online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
+                    ? "You are Reachy's online conversational AI."
+                    : onlineAiSystemPrompt;
+                config.online_ai_allow_direct_joint_commands = onlineAiAllowDirectJointCommands;
+                config.online_ai_require_motion_confirmation = onlineAiRequireMotionConfirmation;
+                config.online_ai_show_api_key_help_on_first_open = onlineAiShowApiKeyHelpOnFirstOpen;
+                config.online_ai_last_api_key_check_ok = onlineAiLastApiKeyCheckOk;
                 config.ipc_endpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
                     ? VoiceAgentBridge.DefaultEndpoint
                     : localAiAgentEndpoint.Trim();
@@ -6818,6 +7598,7 @@ namespace Reachy.ControlApp
 
                 config.intent_confidence_threshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
                 config.transcript_default_confidence = Mathf.Clamp01(localAiAgentTranscriptConfidence);
+                config.ai_mode = GetCurrentAiModeConfigValue();
                 if (!string.IsNullOrWhiteSpace(voiceConfigSttBackend))
                 {
                     config.stt_backend = voiceConfigSttBackend;
@@ -6839,6 +7620,8 @@ namespace Reachy.ControlApp
                 config.start_listening_enabled = localAiAgentListeningEnabled;
                 config.min_transcript_chars = Mathf.Max(0, localAiAgentMinTranscriptChars);
                 config.min_transcript_words = Mathf.Max(0, localAiAgentMinTranscriptWords);
+                config.simulation_only_mode = localAiAgentSimulationOnlyMode;
+                config.block_motion_when_bridge_unhealthy = localAiAgentBlockMotionWhenBridgeUnhealthy;
                 config.safe_numeric_parsing = localAiAgentUseSafeNumericParsing;
                 config.require_target_token_for_joint = localAiAgentRequireTargetTokenForJoint;
                 config.reject_out_of_range_joint_commands = localAiAgentRejectOutOfRangeJointCommands;
@@ -6854,6 +7637,22 @@ namespace Reachy.ControlApp
                 config.help_max_answer_chars = Mathf.Clamp(localAiAgentHelpMaxAnswerChars, 80, 1200);
                 config.audio_input_device_name = localAiAgentPreferredMicrophoneDeviceName ?? string.Empty;
                 config.prefer_non_virtual_input_device = localAiAgentIgnoreVirtualMicrophones;
+                config.online_ai_enabled = enableOnlineAiAgent;
+                config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
+                    ? DefaultOnlineAiModel
+                    : onlineAiModel.Trim();
+                config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
+                config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
+                    ? DefaultOnlineAiBaseUrl
+                    : onlineAiBaseUrl.Trim();
+                config.online_ai_timeout_seconds = Mathf.Clamp(onlineAiTimeoutSeconds, 3f, 120f);
+                config.online_ai_temperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
+                config.online_ai_max_output_tokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
+                config.online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
+                    ? "You are Reachy's online conversational AI."
+                    : onlineAiSystemPrompt;
+                config.online_ai_allow_direct_joint_commands = onlineAiAllowDirectJointCommands;
+                config.online_ai_require_motion_confirmation = onlineAiRequireMotionConfirmation;
 
                 string directory = Path.GetDirectoryName(sidecarConfigPath);
                 if (!string.IsNullOrWhiteSpace(directory))
@@ -6912,11 +7711,14 @@ namespace Reachy.ControlApp
                     return false;
                 }
 
+                aiMode = ParseAiMode(config.ai_mode);
                 localAiAgentConfidenceThreshold = Mathf.Clamp01(config.intent_confidence_threshold);
                 localAiAgentTranscriptConfidence = Mathf.Clamp01(config.transcript_default_confidence);
                 localAiAgentListeningEnabled = config.start_listening_enabled;
                 localAiAgentMinTranscriptChars = Mathf.Max(0, config.min_transcript_chars);
                 localAiAgentMinTranscriptWords = Mathf.Max(0, config.min_transcript_words);
+                localAiAgentSimulationOnlyMode = config.simulation_only_mode;
+                localAiAgentBlockMotionWhenBridgeUnhealthy = config.block_motion_when_bridge_unhealthy;
                 localAiAgentUseSafeNumericParsing = config.safe_numeric_parsing;
                 localAiAgentRequireTargetTokenForJoint = config.require_target_token_for_joint;
                 localAiAgentRejectOutOfRangeJointCommands = config.reject_out_of_range_joint_commands;
@@ -6939,13 +7741,32 @@ namespace Reachy.ControlApp
                 localAiAgentIgnoreVirtualMicrophones = hasPreferNonVirtualInputField
                     ? config.prefer_non_virtual_input_device
                     : true;
+                enableOnlineAiAgent = config.online_ai_enabled;
+                onlineAiModel = string.IsNullOrWhiteSpace(config.online_ai_model)
+                    ? DefaultOnlineAiModel
+                    : config.online_ai_model.Trim();
+                onlineAiApiKeyEnvVar = string.IsNullOrWhiteSpace(config.online_ai_api_key_env_var)
+                    ? DefaultOnlineAiApiKeyEnvVar
+                    : config.online_ai_api_key_env_var.Trim();
+                onlineAiBaseUrl = string.IsNullOrWhiteSpace(config.online_ai_base_url)
+                    ? DefaultOnlineAiBaseUrl
+                    : config.online_ai_base_url.Trim();
+                onlineAiTimeoutSeconds = Mathf.Clamp(config.online_ai_timeout_seconds, 3f, 120f);
+                onlineAiTemperature = Mathf.Clamp(config.online_ai_temperature, 0f, 2f);
+                onlineAiMaxOutputTokens = Mathf.Clamp(config.online_ai_max_output_tokens, 32, 2048);
+                if (!string.IsNullOrWhiteSpace(config.online_ai_system_prompt))
+                {
+                    onlineAiSystemPrompt = config.online_ai_system_prompt;
+                }
+                onlineAiAllowDirectJointCommands = config.online_ai_allow_direct_joint_commands;
+                onlineAiRequireMotionConfirmation = config.online_ai_require_motion_confirmation;
                 EnsurePreferredMicrophoneDevice();
 
                 message =
                     $"Loaded sidecar config from {sidecarConfigPath}. " +
                     $"Conf={localAiAgentConfidenceThreshold:F2}, MinTxt={localAiAgentMinTranscriptChars}c/{localAiAgentMinTranscriptWords}w, " +
                     $"NumSafe={localAiAgentUseSafeNumericParsing}, Range=[{localAiAgentJointMinDegrees:F1},{localAiAgentJointMaxDegrees:F1}], " +
-                    $"ListeningDefault={localAiAgentListeningEnabled}, HelpBackend={localAiAgentHelpModelBackend}.";
+                    $"ListeningDefault={localAiAgentListeningEnabled}, HelpBackend={localAiAgentHelpModelBackend}, Mode={GetCurrentAiModeLabel()}.";
                 return true;
             }
             catch (Exception ex)
@@ -8980,6 +9801,7 @@ namespace Reachy.ControlApp
                 ? $"Acted sequence '{sequenceName}' stopped."
                 : $"Acted sequence '{sequenceName}' stopped. {reason}";
             _voiceAgentBridge.InterruptTtsFeedback(interruptReason);
+            _voicePendingSpokenFeedback.Clear();
         }
 
         private bool TryReturnStoppedActedSequenceToNeutralPose(string sequenceName, out string message)
@@ -9545,8 +10367,8 @@ namespace Reachy.ControlApp
             baselineSuccessfulTtsCount = snapshot.SuccessfulTtsCount;
             baselineFailedTtsCount = snapshot.FailedTtsCount;
             _voiceAgentBridge.EnqueueTtsFeedback(trimmedText, interrupt: true);
+            TrackPendingVoiceFeedback(trimmedText, interrupt: true);
             _actedSequenceSpeechInProgress = true;
-            _voiceLastSpokenFeedback = trimmedText;
             message = "Queued acted sequence speech.";
             return true;
         }
@@ -9653,15 +10475,24 @@ namespace Reachy.ControlApp
             GUILayout.Label("AI Input & Parsing", _titleStyle);
             float aiWidthScale = Mathf.Clamp((area.width - 24f) / 700f, 0.62f, 0.92f);
             bool aiCompact = area.width < 620f;
-
-            bool previousEnabled = enableLocalAiAgent;
-            enableLocalAiAgent = GUILayout.Toggle(enableLocalAiAgent, "Enable local AI agent");
-            if (previousEnabled && !enableLocalAiAgent)
+            GUILayout.Label("Choose which AI backend handles transcripts and motion intents.");
+            int nextAiMode = GUILayout.SelectionGrid((int)aiMode, AiModeLabels, aiCompact ? 1 : 2);
+            if (nextAiMode != (int)aiMode)
             {
-                RejectPendingVoiceAction();
+                if (_voiceHasPendingAction)
+                {
+                    RejectPendingVoiceAction(queueFeedback: false);
+                }
+                aiMode = (AiMode)Mathf.Clamp(nextAiMode, 0, AiModeLabels.Length - 1);
+                if (IsOnlineAiModeSelected() && onlineAiShowApiKeyHelpOnFirstOpen)
+                {
+                    onlineAiShowApiKeyHelpPanel = true;
+                }
             }
 
-            GUILayout.Label("Voice endpoint, parser safety, listening, and microphone controls.");
+            GUILayout.Label(IsOnlineAiModeSelected()
+                ? "Online mode keeps STT/TTS local while the sidecar calls the OpenAI API for structured replies."
+                : "Voice endpoint, parser safety, listening, and microphone controls.");
 
             float bodyHeight = Mathf.Max(60f, area.height - 80f);
             _aiPrimaryScroll = GUILayout.BeginScrollView(
@@ -9669,6 +10500,21 @@ namespace Reachy.ControlApp
                 false,
                 true,
                 GUILayout.Height(bodyHeight));
+
+            if (IsOnlineAiModeSelected())
+            {
+                DrawOnlineAiPrimaryContent(aiWidthScale, aiCompact);
+                GUILayout.EndScrollView();
+                GUILayout.EndArea();
+                return;
+            }
+
+            bool previousEnabled = enableLocalAiAgent;
+            enableLocalAiAgent = GUILayout.Toggle(enableLocalAiAgent, "Enable local AI agent");
+            if (previousEnabled && !enableLocalAiAgent)
+            {
+                RejectPendingVoiceAction();
+            }
 
             GUILayout.BeginHorizontal();
             GUILayout.Label("Endpoint", GUILayout.Width(AiW(62f, aiWidthScale)));
@@ -10097,7 +10943,9 @@ namespace Reachy.ControlApp
         {
             GUILayout.BeginArea(area, GUI.skin.box);
             GUILayout.Label("AI Runtime & Tools", _titleStyle);
-            GUILayout.Label("Sidecar lifecycle, health policy, local help model, and diagnostics.");
+            GUILayout.Label(IsOnlineAiModeSelected()
+                ? "Sidecar lifecycle, bridge policy, online diagnostics, and test tools."
+                : "Sidecar lifecycle, health policy, local help model, and diagnostics.");
             float bodyHeight = Mathf.Max(60f, area.height - 58f);
             float contentWidth = GetAiRuntimeContentWidth(area.width);
             float formWidth = Mathf.Max(200f, contentWidth - 18f);
@@ -10267,76 +11115,126 @@ namespace Reachy.ControlApp
 
             GUILayout.Space(8f);
 
-            GUILayout.BeginVertical(GUI.skin.box);
-            GUILayout.Label("Local help");
-            GUILayout.BeginHorizontal();
-            localAiAgentEnableLocalHelpModel = GUILayout.Toggle(
-                localAiAgentEnableLocalHelpModel,
-                "Enable help model",
-                GUILayout.Width(halfWidth));
-            bool previousHelpBtnEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent && localAiAgentEnableLocalHelpModel;
-            if (GUILayout.Button("Ask help", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            if (IsOnlineAiModeSelected())
             {
-                QueueLocalHelpRequest(out string helpMsg);
-                _voiceLastActionResult = helpMsg;
+                GUILayout.BeginVertical(GUI.skin.box);
+                GUILayout.Label("Online diagnostics");
+                GUILayout.Label($"API key status: {_onlineAiApiKeyStatus}");
+                if (!string.IsNullOrWhiteSpace(_onlineAiCurrentModel))
+                {
+                    GUILayout.Label($"Model: {_onlineAiCurrentModel}");
+                }
+                if (!string.IsNullOrWhiteSpace(_onlineAiLastKeyCheckUtc))
+                {
+                    GUILayout.Label($"Last key check: {_onlineAiLastKeyCheckUtc}");
+                }
+                if (_onlineAiLastLatencyMs >= 0f)
+                {
+                    GUILayout.Label($"Last latency: {_onlineAiLastLatencyMs:F0} ms");
+                }
+                GUILayout.Label($"Last validation: {_onlineAiLastValidationResult}");
+                if (!string.IsNullOrWhiteSpace(_onlineAiLastValidationFailure))
+                {
+                    GUILayout.Label($"Validation detail: {_onlineAiLastValidationFailure}");
+                }
+                if (!string.IsNullOrWhiteSpace(_onlineAiLastReplyText))
+                {
+                    GUILayout.Label($"Last reply: {_onlineAiLastReplyText}");
+                }
+                if (!string.IsNullOrWhiteSpace(_onlineAiLastSourceBackend))
+                {
+                    GUILayout.Label($"Backend: {_onlineAiLastSourceBackend}");
+                }
+                if (!string.IsNullOrWhiteSpace(_onlineAiLastHttpError))
+                {
+                    GUILayout.Label($"HTTP error: {_onlineAiLastHttpError}");
+                }
+                GUILayout.Label($"Connection test: {_onlineAiLastConnectionTestResult}");
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Refresh online status", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    RequestOnlineAiStatusRefresh();
+                }
+                if (GUILayout.Button("Test online connection", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    RequestOnlineAiConnectionTest();
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.EndVertical();
             }
-            GUI.enabled = previousHelpBtnEnabled;
-            GUILayout.EndHorizontal();
-
-            GUILayout.Label("Help URL");
-            localAiAgentHelpEndpoint = GUILayout.TextField(localAiAgentHelpEndpoint);
-
-            GUILayout.Label("Help context");
-            localAiAgentHelpContext = GUILayout.TextField(localAiAgentHelpContext);
-
-            GUILayout.BeginHorizontal();
-            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
-            GUILayout.Label("Backend");
-            localAiAgentHelpModelBackend = GUILayout.TextField(localAiAgentHelpModelBackend);
-            GUILayout.EndVertical();
-            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
-            GUILayout.Label("Temperature");
-            string helpTempText = GUILayout.TextField(
-                localAiAgentHelpModelTemperature.ToString(CultureInfo.InvariantCulture));
-            if (float.TryParse(helpTempText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedHelpTemp))
+            else
             {
-                localAiAgentHelpModelTemperature = Mathf.Clamp(parsedHelpTemp, 0f, 1.5f);
-            }
-            GUILayout.EndVertical();
-            GUILayout.EndHorizontal();
+                GUILayout.BeginVertical(GUI.skin.box);
+                GUILayout.Label("Local help");
+                GUILayout.BeginHorizontal();
+                localAiAgentEnableLocalHelpModel = GUILayout.Toggle(
+                    localAiAgentEnableLocalHelpModel,
+                    "Enable help model",
+                    GUILayout.Width(halfWidth));
+                bool previousHelpBtnEnabled = GUI.enabled;
+                GUI.enabled = enableLocalAiAgent && localAiAgentEnableLocalHelpModel;
+                if (GUILayout.Button("Ask help", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    QueueLocalHelpRequest(out string helpMsg);
+                    _voiceLastActionResult = helpMsg;
+                }
+                GUI.enabled = previousHelpBtnEnabled;
+                GUILayout.EndHorizontal();
 
-            GUILayout.BeginHorizontal();
-            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
-            GUILayout.Label("Max tokens");
-            string helpMaxTokensText = GUILayout.TextField(
-                localAiAgentHelpModelMaxTokens.ToString(CultureInfo.InvariantCulture));
-            if (int.TryParse(helpMaxTokensText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxTokens))
-            {
-                localAiAgentHelpModelMaxTokens = Mathf.Clamp(parsedHelpMaxTokens, 16, 512);
-            }
-            GUILayout.EndVertical();
-            GUILayout.BeginVertical(GUILayout.Width(halfWidth));
-            GUILayout.Label("Max chars");
-            string helpMaxCharsText = GUILayout.TextField(
-                localAiAgentHelpMaxAnswerChars.ToString(CultureInfo.InvariantCulture));
-            if (int.TryParse(helpMaxCharsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxChars))
-            {
-                localAiAgentHelpMaxAnswerChars = Mathf.Clamp(parsedHelpMaxChars, 80, 1200);
-            }
-            GUILayout.EndVertical();
-            GUILayout.EndHorizontal();
+                GUILayout.Label("Help URL");
+                localAiAgentHelpEndpoint = GUILayout.TextField(localAiAgentHelpEndpoint);
 
-            GUILayout.Label("Model path");
-            localAiAgentHelpModelPath = GUILayout.TextField(localAiAgentHelpModelPath);
-            GUILayout.EndVertical();
+                GUILayout.Label("Help context");
+                localAiAgentHelpContext = GUILayout.TextField(localAiAgentHelpContext);
+
+                GUILayout.BeginHorizontal();
+                GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+                GUILayout.Label("Backend");
+                localAiAgentHelpModelBackend = GUILayout.TextField(localAiAgentHelpModelBackend);
+                GUILayout.EndVertical();
+                GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+                GUILayout.Label("Temperature");
+                string helpTempText = GUILayout.TextField(
+                    localAiAgentHelpModelTemperature.ToString(CultureInfo.InvariantCulture));
+                if (float.TryParse(helpTempText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedHelpTemp))
+                {
+                    localAiAgentHelpModelTemperature = Mathf.Clamp(parsedHelpTemp, 0f, 1.5f);
+                }
+                GUILayout.EndVertical();
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+                GUILayout.Label("Max tokens");
+                string helpMaxTokensText = GUILayout.TextField(
+                    localAiAgentHelpModelMaxTokens.ToString(CultureInfo.InvariantCulture));
+                if (int.TryParse(helpMaxTokensText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxTokens))
+                {
+                    localAiAgentHelpModelMaxTokens = Mathf.Clamp(parsedHelpMaxTokens, 16, 512);
+                }
+                GUILayout.EndVertical();
+                GUILayout.BeginVertical(GUILayout.Width(halfWidth));
+                GUILayout.Label("Max chars");
+                string helpMaxCharsText = GUILayout.TextField(
+                    localAiAgentHelpMaxAnswerChars.ToString(CultureInfo.InvariantCulture));
+                if (int.TryParse(helpMaxCharsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedHelpMaxChars))
+                {
+                    localAiAgentHelpMaxAnswerChars = Mathf.Clamp(parsedHelpMaxChars, 80, 1200);
+                }
+                GUILayout.EndVertical();
+                GUILayout.EndHorizontal();
+
+                GUILayout.Label("Model path");
+                localAiAgentHelpModelPath = GUILayout.TextField(localAiAgentHelpModelPath);
+                GUILayout.EndVertical();
+            }
 
             GUILayout.Space(8f);
 
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label("Diagnostics");
             bool previousBridgeControlEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = IsCurrentAiModeEnabled();
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Force poll", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
             {
@@ -10373,7 +11271,7 @@ namespace Reachy.ControlApp
                 "Final",
                 GUILayout.Width(halfWidth));
             bool previousButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = IsCurrentAiModeEnabled();
             if (GUILayout.Button("Send mock STT", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
             {
                 EnqueueMockTranscriptIntent(
@@ -10384,7 +11282,7 @@ namespace Reachy.ControlApp
             GUI.enabled = previousButtonEnabled;
             GUILayout.EndHorizontal();
 
-            if (enableLocalAiAgent)
+            if (IsCurrentAiModeEnabled())
             {
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Mock pose", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
@@ -10433,6 +11331,266 @@ namespace Reachy.ControlApp
 
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        private void DrawOnlineAiPrimaryContent(float aiWidthScale, bool aiCompact)
+        {
+            bool previousEnabled = enableOnlineAiAgent;
+            enableOnlineAiAgent = GUILayout.Toggle(enableOnlineAiAgent, "Enable online AI");
+            if (previousEnabled && !enableOnlineAiAgent)
+            {
+                RejectPendingVoiceAction();
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Endpoint", GUILayout.Width(AiW(62f, aiWidthScale)));
+            localAiAgentEndpoint = GUILayout.TextField(localAiAgentEndpoint);
+            GUILayout.EndHorizontal();
+
+            if (aiCompact)
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Load cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool loaded = TryLoadVoiceAgentConfigFromDisk(out string loadMessage);
+                    _voiceLastActionResult = loadMessage;
+                    if (!loaded)
+                    {
+                        _voiceLastParserMessage = loadMessage;
+                    }
+                }
+                if (GUILayout.Button("Save cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+                    _voiceLastActionResult = saveMessage;
+                    if (!saved)
+                    {
+                        _voiceLastParserMessage = saveMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Sync sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+                    _voiceLastActionResult = syncMessage;
+                    if (!synced)
+                    {
+                        _voiceLastParserMessage = syncMessage;
+                    }
+                }
+                if (GUILayout.Button("Load sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+                {
+                    bool loadedSidecar = TryLoadLocalSidecarConfigIntoUi(out string sidecarLoadMessage);
+                    _voiceLastActionResult = sidecarLoadMessage;
+                    if (!loadedSidecar)
+                    {
+                        _voiceLastParserMessage = sidecarLoadMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("Load cfg", GUILayout.Width(AiW(72f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool loaded = TryLoadVoiceAgentConfigFromDisk(out string loadMessage);
+                    _voiceLastActionResult = loadMessage;
+                    if (!loaded)
+                    {
+                        _voiceLastParserMessage = loadMessage;
+                    }
+                }
+                if (GUILayout.Button("Save cfg", GUILayout.Width(AiW(72f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+                    _voiceLastActionResult = saveMessage;
+                    if (!saved)
+                    {
+                        _voiceLastParserMessage = saveMessage;
+                    }
+                }
+                if (GUILayout.Button("Sync sidecar", GUILayout.Width(AiW(92f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+                    _voiceLastActionResult = syncMessage;
+                    if (!synced)
+                    {
+                        _voiceLastParserMessage = syncMessage;
+                    }
+                }
+                if (GUILayout.Button("Load sidecar", GUILayout.Width(AiW(92f, aiWidthScale)), GUILayout.Height(22f)))
+                {
+                    bool loadedSidecar = TryLoadLocalSidecarConfigIntoUi(out string sidecarLoadMessage);
+                    _voiceLastActionResult = sidecarLoadMessage;
+                    if (!loadedSidecar)
+                    {
+                        _voiceLastParserMessage = sidecarLoadMessage;
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Model", GUILayout.Width(AiW(62f, aiWidthScale)));
+            onlineAiModel = GUILayout.TextField(onlineAiModel);
+            GUILayout.EndHorizontal();
+            GUILayout.Label($"Default: {DefaultOnlineAiModel} (official general-purpose starting point).");
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("API env", GUILayout.Width(AiW(62f, aiWidthScale)));
+            onlineAiApiKeyEnvVar = GUILayout.TextField(onlineAiApiKeyEnvVar);
+            GUILayout.EndHorizontal();
+            GUILayout.Label($"Enter the environment variable name, not the secret key. Default env var: {DefaultOnlineAiApiKeyEnvVar}");
+            if (LooksLikeOpenAiApiKey(onlineAiApiKeyEnvVar))
+            {
+                GUILayout.Label("Warning: this field expects a variable name like OPENAI_API_KEY, not the secret key itself.");
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("API key", GUILayout.Width(AiW(62f, aiWidthScale)));
+            if (_onlineAiShowApiKeySecretInput)
+            {
+                _onlineAiApiKeySecretInput = GUILayout.TextField(_onlineAiApiKeySecretInput);
+            }
+            else
+            {
+                _onlineAiApiKeySecretInput = GUILayout.PasswordField(_onlineAiApiKeySecretInput, '*');
+            }
+            _onlineAiShowApiKeySecretInput = GUILayout.Toggle(
+                _onlineAiShowApiKeySecretInput,
+                "Show",
+                GUILayout.Width(AiW(56f, aiWidthScale)));
+            GUILayout.EndHorizontal();
+            GUILayout.Label("Runtime-only secret field. The key is not saved into Unity JSON config files.");
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Save key to env var", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                SaveOnlineApiKeyFromRuntimeInput();
+            }
+            if (GUILayout.Button("Clear key field", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                _onlineAiApiKeySecretInput = string.Empty;
+                _onlineAiShowApiKeySecretInput = false;
+                _voiceLastActionResult = "Cleared runtime API key input field.";
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Base URL", GUILayout.Width(AiW(62f, aiWidthScale)));
+            onlineAiBaseUrl = GUILayout.TextField(onlineAiBaseUrl);
+            GUILayout.EndHorizontal();
+            GUILayout.Label($"Default: {DefaultOnlineAiBaseUrl} (leave this unless you use a compatible proxy/provider).");
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Timeout", GUILayout.Width(AiW(62f, aiWidthScale)));
+            string timeoutText = GUILayout.TextField(
+                onlineAiTimeoutSeconds.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(timeoutText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedTimeout))
+            {
+                onlineAiTimeoutSeconds = Mathf.Clamp(parsedTimeout, 3f, 120f);
+            }
+
+            GUILayout.Label("Temp", GUILayout.Width(AiW(40f, aiWidthScale)));
+            string temperatureText = GUILayout.TextField(
+                onlineAiTemperature.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (float.TryParse(temperatureText, NumberStyles.Float, CultureInfo.InvariantCulture, out float parsedTemp))
+            {
+                onlineAiTemperature = Mathf.Clamp(parsedTemp, 0f, 2f);
+            }
+
+            GUILayout.Label("Max tok", GUILayout.Width(AiW(54f, aiWidthScale)));
+            string maxTokensText = GUILayout.TextField(
+                onlineAiMaxOutputTokens.ToString(CultureInfo.InvariantCulture),
+                GUILayout.Width(AiW(64f, aiWidthScale)));
+            if (int.TryParse(maxTokensText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedMaxTokens))
+            {
+                onlineAiMaxOutputTokens = Mathf.Clamp(parsedMaxTokens, 32, 2048);
+            }
+            GUILayout.EndHorizontal();
+
+            onlineAiAllowDirectJointCommands = GUILayout.Toggle(
+                onlineAiAllowDirectJointCommands,
+                "Allow direct joint commands");
+            onlineAiRequireMotionConfirmation = GUILayout.Toggle(
+                onlineAiRequireMotionConfirmation,
+                "Require confirmation for online AI motion");
+            localAiAgentSimulationOnlyMode = GUILayout.Toggle(
+                localAiAgentSimulationOnlyMode,
+                "Simulation-only voice");
+            localAiAgentBlockMotionWhenBridgeUnhealthy = GUILayout.Toggle(
+                localAiAgentBlockMotionWhenBridgeUnhealthy,
+                "Block motion when bridge is unhealthy");
+
+            GUILayout.Label("Online system prompt");
+            onlineAiSystemPrompt = GUILayout.TextArea(onlineAiSystemPrompt, GUILayout.MinHeight(90f));
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("How to create and connect my OpenAI API key", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                onlineAiShowApiKeyHelpPanel = !onlineAiShowApiKeyHelpPanel;
+                onlineAiShowApiKeyHelpOnFirstOpen = false;
+            }
+            GUILayout.EndHorizontal();
+
+            if (onlineAiShowApiKeyHelpPanel)
+            {
+                DrawOnlineAiApiKeyHelpBox();
+            }
+        }
+
+        private void DrawOnlineAiApiKeyHelpBox()
+        {
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("OpenAI API key setup");
+            GUILayout.Label("1. Open the OpenAI Platform website.");
+            GUILayout.Label("2. Sign in with your own OpenAI account.");
+            GUILayout.Label("3. Make sure your OpenAI API project has billing or credits available.");
+            GUILayout.Label("4. Open the API keys page and create a new secret key.");
+            GUILayout.Label("5. Copy the key immediately and store it safely.");
+            GUILayout.Label($"6. Leave the app's env-var field as '{GetSanitizedOnlineAiApiKeyEnvVarName()}', unless you intentionally use a different variable name.");
+            GUILayout.Label("7. Either paste the secret into the runtime-only API key field and press 'Save key to env var', or run the PowerShell command below.");
+            GUILayout.Label($"8. Leave Model as '{DefaultOnlineAiModel}', unless your account/project must use a different supported model.");
+            GUILayout.Label($"9. Leave Base URL as '{DefaultOnlineAiBaseUrl}', unless you are using a compatible proxy endpoint.");
+            GUILayout.Label("10. If the sidecar is not managed by this app, restart the sidecar or reopen the app after saving the key.");
+            GUILayout.Label("11. Press Test online connection in the app.");
+            GUILayout.Label("Notes: ChatGPT and API billing are separate. If the test fails with a model or permission error, switch to a model your API project can access. Do not paste the secret key into this app field or commit it to git.");
+
+            string safeEnvVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
+            string powerShellExample =
+                $"[System.Environment]::SetEnvironmentVariable(\"{safeEnvVarName}\", \"paste_your_key_here\", \"User\")";
+            GUILayout.TextArea(powerShellExample, GUILayout.MinHeight(42f));
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Open OpenAI Platform", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                Application.OpenURL("https://platform.openai.com/");
+                _voiceLastActionResult = "Opened OpenAI Platform in the default browser.";
+            }
+            if (GUILayout.Button("Open API keys page", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                Application.OpenURL("https://platform.openai.com/api-keys");
+                _voiceLastActionResult = "Opened the OpenAI API keys page in the default browser.";
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Copy PowerShell example", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                GUIUtility.systemCopyBuffer = powerShellExample;
+                _voiceLastActionResult = "Copied the PowerShell environment-variable example to the clipboard.";
+            }
+            if (GUILayout.Button("Re-check API key availability", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                RequestOnlineAiStatusRefresh();
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
         }
 
         private void DrawAiStatusWindowPanel(Rect area)

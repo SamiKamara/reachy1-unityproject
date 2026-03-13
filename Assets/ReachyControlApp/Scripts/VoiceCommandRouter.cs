@@ -70,6 +70,12 @@ namespace Reachy.ControlApp
                     action.Kind = VoiceActionKind.Help;
                     action.Summary = "Voice help requested.";
                     break;
+                case "none":
+                    action.Kind = VoiceActionKind.None;
+                    action.Summary = string.IsNullOrWhiteSpace(intent.reply_text)
+                        ? "Online reply with no robot action."
+                        : intent.reply_text.Trim();
+                    break;
                 case "status":
                     action.Kind = VoiceActionKind.Status;
                     action.Summary = "Voice status requested.";
@@ -155,8 +161,13 @@ namespace Reachy.ControlApp
             {
                 action.RequiresConfirmation = false;
             }
+            if (action.Kind == VoiceActionKind.None)
+            {
+                action.RequiresConfirmation = false;
+            }
 
-            if (!string.IsNullOrWhiteSpace(intent.spoken_text))
+            if (!string.IsNullOrWhiteSpace(intent.spoken_text) &&
+                action.Kind != VoiceActionKind.None)
             {
                 action.Summary += $" Heard: \"{intent.spoken_text}\".";
             }

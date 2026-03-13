@@ -65,6 +65,18 @@ namespace Reachy.ControlApp
             public string LastActionResult;
             public string PendingActionSummary;
             public string LastBridgeLogLine;
+            public string AiModeLabel;
+            public bool OnlineAiEnabled;
+            public string OnlineModel;
+            public string OnlineApiKeyStatus;
+            public string OnlineLastKeyCheckUtc;
+            public string OnlineLastReplyText;
+            public string OnlineLastValidationResult;
+            public string OnlineLastValidationFailure;
+            public string OnlineLastConnectionTestResult;
+            public string OnlineSourceBackend;
+            public float OnlineLastLatencyMs;
+            public string OnlineLastHttpError;
         }
 
         public static void DrawReadout(State state)
@@ -74,6 +86,10 @@ namespace Reachy.ControlApp
                 : "Disabled";
             string pollState = state.PollInFlight ? " (polling...)" : string.Empty;
 
+            if (!string.IsNullOrWhiteSpace(state.AiModeLabel))
+            {
+                GUILayout.Label($"AI mode: {state.AiModeLabel}");
+            }
             GUILayout.Label($"Bridge: {bridgeState}{pollState}");
             if (state.DegradedMode)
             {
@@ -193,12 +209,69 @@ namespace Reachy.ControlApp
 
             if (!string.IsNullOrWhiteSpace(state.LastSpokenFeedback))
             {
-                GUILayout.Label($"Spoken: {state.LastSpokenFeedback}");
+                GUILayout.Label($"Confirmed speech: {state.LastSpokenFeedback}");
             }
 
             if (!string.IsNullOrWhiteSpace(state.LastHelpAnswer))
             {
                 GUILayout.Label($"Help answer: {state.LastHelpAnswer}");
+            }
+
+            bool showOnlineSection =
+                string.Equals(state.AiModeLabel, "Online AI") ||
+                state.OnlineAiEnabled ||
+                !string.IsNullOrWhiteSpace(state.OnlineModel) ||
+                !string.IsNullOrWhiteSpace(state.OnlineLastReplyText);
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineApiKeyStatus))
+            {
+                GUILayout.Label(
+                    $"Online API key: {state.OnlineApiKeyStatus} | Online enabled: {(state.OnlineAiEnabled ? "yes" : "no")}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineModel))
+            {
+                GUILayout.Label($"Online model: {state.OnlineModel}");
+            }
+
+            if (showOnlineSection && state.OnlineLastLatencyMs >= 0f)
+            {
+                GUILayout.Label($"Online latency: {state.OnlineLastLatencyMs:F0} ms");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastKeyCheckUtc))
+            {
+                GUILayout.Label($"Online key check: {state.OnlineLastKeyCheckUtc}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastValidationResult))
+            {
+                GUILayout.Label($"Online validation: {state.OnlineLastValidationResult}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastValidationFailure))
+            {
+                GUILayout.Label($"Online validation detail: {state.OnlineLastValidationFailure}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastReplyText))
+            {
+                GUILayout.Label($"Online reply: {state.OnlineLastReplyText}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastConnectionTestResult))
+            {
+                GUILayout.Label($"Online test: {state.OnlineLastConnectionTestResult}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineSourceBackend))
+            {
+                GUILayout.Label($"Online backend: {state.OnlineSourceBackend}");
+            }
+
+            if (showOnlineSection && !string.IsNullOrWhiteSpace(state.OnlineLastHttpError))
+            {
+                GUILayout.Label($"Online HTTP err: {state.OnlineLastHttpError}");
             }
 
             if (!string.IsNullOrWhiteSpace(state.LastBridgeLogLine))

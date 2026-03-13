@@ -1,4 +1,5 @@
 {
+  "ai_mode": "local",
   "stt_backend": "vosk",
   "model_path": ".local_voice_models/vosk-model-small-en-us-0.15",
   "intent_confidence_threshold": 0.78,
@@ -48,5 +49,17 @@
   "help_model_max_tokens": 96,
   "help_model_temperature": 0.2,
   "help_max_answer_chars": 360,
+  "online_ai_enabled": false,
+  "online_ai_model": "gpt-5.4",
+  "online_ai_api_key_env_var": "OPENAI_API_KEY",
+  "online_ai_base_url": "https://api.openai.com/v1",
+  "online_ai_timeout_seconds": 15.0,
+  "online_ai_temperature": 0.2,
+  "online_ai_max_output_tokens": 180,
+  "online_ai_system_prompt": "You are Reachy's online conversational AI.",
+  "online_ai_allow_direct_joint_commands": true,
+  "online_ai_require_motion_confirmation": false,
+  "online_ai_show_api_key_help_on_first_open": true,
+  "online_ai_last_api_key_check_ok": false,
   "ipc_endpoint": "http://127.0.0.1:8099/intent"
 }

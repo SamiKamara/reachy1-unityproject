@@ -19,8 +19,10 @@ Testing endpoints:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
+import os
 import subprocess
 import queue
 import re
@@ -31,6 +33,8 @@ from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 from urllib.parse import urlparse
 
 
@@ -61,7 +65,25 @@ DEFAULT_JOINTS = [
     "l_wrist_pitch",
     "l_wrist_roll",
     "l_gripper",
+    "neck_roll",
+    "neck_pitch",
+    "neck_yaw",
 ]
+
+ONLINE_ALLOWED_INTENTS = (
+    "none",
+    "help",
+    "status",
+    "connect_robot",
+    "disconnect_robot",
+    "set_pose",
+    "move_joint",
+    "show_movement",
+    "stop_motion",
+)
+DEFAULT_ONLINE_AI_MODEL = "gpt-5.4"
+DEFAULT_ONLINE_AI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 
 DEFAULT_SHOW_MOVEMENT_SYNONYMS = [
     "show movement",
@@ -547,6 +569,7 @@ def load_config(path: Path) -> dict:
     config = {
         "bind_host": "127.0.0.1",
         "bind_port": 8099,
+        "ai_mode": "local",
         "stt_backend": "vosk",
         "stt_model_path": "../../../.local_voice_models/vosk-model-small-en-us-0.15",
         "stt_sample_rate_hz": 16000,
@@ -575,11 +598,25 @@ def load_config(path: Path) -> dict:
         "start_listening_enabled": True,
         "min_transcript_chars": 4,
         "min_transcript_words": 1,
+        "simulation_only_mode": False,
+        "block_motion_when_bridge_unhealthy": True,
         "safe_numeric_parsing": True,
         "require_target_token_for_joint": False,
         "reject_out_of_range_joint_commands": True,
         "joint_min_degrees": -180.0,
         "joint_max_degrees": 180.0,
+        "online_ai_enabled": False,
+        "online_ai_model": DEFAULT_ONLINE_AI_MODEL,
+        "online_ai_api_key_env_var": DEFAULT_ONLINE_AI_API_KEY_ENV_VAR,
+        "online_ai_base_url": DEFAULT_ONLINE_AI_BASE_URL,
+        "online_ai_timeout_seconds": 15.0,
+        "online_ai_temperature": 0.2,
+        "online_ai_max_output_tokens": 180,
+        "online_ai_system_prompt": "You are Reachy's online conversational AI.",
+        "online_ai_allow_direct_joint_commands": True,
+        "online_ai_require_motion_confirmation": False,
+        "online_ai_show_api_key_help_on_first_open": True,
+        "online_ai_last_api_key_check_ok": False,
     }
     config["_config_dir"] = str(path.parent.resolve())
 
@@ -596,6 +633,9 @@ def load_config(path: Path) -> dict:
 
     config["bind_host"] = str(config.get("bind_host", "127.0.0.1")).strip() or "127.0.0.1"
     config["bind_port"] = max(1, min(65535, int(config.get("bind_port", 8099))))
+    config["ai_mode"] = str(config.get("ai_mode", "local")).strip().lower() or "local"
+    if config["ai_mode"] not in ("local", "online"):
+        config["ai_mode"] = "local"
     config["stt_backend"] = str(config.get("stt_backend", "none")).strip().lower()
     config["tts_backend"] = str(config.get("tts_backend", "none")).strip().lower()
     config["stt_sample_rate_hz"] = max(8000, int(config.get("stt_sample_rate_hz", 16000)))
@@ -642,6 +682,10 @@ def load_config(path: Path) -> dict:
     config["start_listening_enabled"] = parse_bool(config.get("start_listening_enabled"), True)
     config["min_transcript_chars"] = max(0, int(config.get("min_transcript_chars", 4)))
     config["min_transcript_words"] = max(0, int(config.get("min_transcript_words", 1)))
+    config["simulation_only_mode"] = parse_bool(config.get("simulation_only_mode"), False)
+    config["block_motion_when_bridge_unhealthy"] = parse_bool(
+        config.get("block_motion_when_bridge_unhealthy"),
+        True)
     config["safe_numeric_parsing"] = parse_bool(config.get("safe_numeric_parsing"), True)
     config["require_target_token_for_joint"] = parse_bool(config.get("require_target_token_for_joint"), False)
     config["reject_out_of_range_joint_commands"] = parse_bool(
@@ -649,6 +693,39 @@ def load_config(path: Path) -> dict:
         True)
     config["joint_min_degrees"] = float(config.get("joint_min_degrees", -180.0))
     config["joint_max_degrees"] = float(config.get("joint_max_degrees", 180.0))
+    config["online_ai_enabled"] = parse_bool(config.get("online_ai_enabled"), False)
+    config["online_ai_model"] = (
+        str(config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL)
+    config["online_ai_api_key_env_var"] = (
+        str(config.get("online_ai_api_key_env_var", DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)).strip()
+        or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
+    config["online_ai_base_url"] = (
+        str(config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)).strip()
+        or DEFAULT_ONLINE_AI_BASE_URL)
+    config["online_ai_timeout_seconds"] = max(
+        3.0,
+        min(120.0, float(config.get("online_ai_timeout_seconds", 15.0))))
+    config["online_ai_temperature"] = max(
+        0.0,
+        min(2.0, float(config.get("online_ai_temperature", 0.2))))
+    config["online_ai_max_output_tokens"] = max(
+        32,
+        min(2048, int(config.get("online_ai_max_output_tokens", 180))))
+    config["online_ai_system_prompt"] = (
+        str(config.get("online_ai_system_prompt", "You are Reachy's online conversational AI.")).strip()
+        or "You are Reachy's online conversational AI.")
+    config["online_ai_allow_direct_joint_commands"] = parse_bool(
+        config.get("online_ai_allow_direct_joint_commands"),
+        True)
+    config["online_ai_require_motion_confirmation"] = parse_bool(
+        config.get("online_ai_require_motion_confirmation"),
+        False)
+    config["online_ai_show_api_key_help_on_first_open"] = parse_bool(
+        config.get("online_ai_show_api_key_help_on_first_open"),
+        True)
+    config["online_ai_last_api_key_check_ok"] = parse_bool(
+        config.get("online_ai_last_api_key_check_ok"),
+        False)
     if config["joint_min_degrees"] > config["joint_max_degrees"]:
         low = config["joint_max_degrees"]
         high = config["joint_min_degrees"]
@@ -908,7 +985,12 @@ class Parser:
             "joint_degrees": 0.0,
             "confidence": confidence,
             "requires_confirmation": requires_confirmation,
+            "reply_text": "",
             "spoken_text": spoken,
+            "source_backend": "local_parser",
+            "source_mode": "local",
+            "validation_status": "local_parser",
+            "validation_message": "",
             "transcript_is_final": True,
         }
 
@@ -934,6 +1016,24 @@ class State:
         self.tts_speaking = False
         self.selected_input_device_name = ""
         self.selected_input_device_index = -1
+        self.ai_mode = str(config.get("ai_mode", "local")).strip().lower() or "local"
+        self.online_ai_enabled = parse_bool(config.get("online_ai_enabled"), False)
+        self.online_model = str(config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
+        self.online_api_key_env_var = (
+            str(config.get("online_ai_api_key_env_var", DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)).strip()
+            or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
+        self.online_api_key_found = False
+        self.online_last_key_check_utc = ""
+        self.online_last_request_utc = ""
+        self.online_last_response_summary = ""
+        self.online_last_reply_text = ""
+        self.online_last_validation_result = "idle"
+        self.online_last_validation_failure = ""
+        self.online_last_http_error = ""
+        self.online_last_latency_ms = -1.0
+        self.online_last_connection_test_result = "Not tested."
+        self.online_last_connection_test_ok = False
+        self.online_source_backend = "openai_responses"
 
     def log(self, level: str, message: str) -> None:
         msg = (message or "").strip() or "n/a"
@@ -948,6 +1048,68 @@ class State:
             self.last_message = msg
             if lvl in ("error", "critical"):
                 self.last_error = msg
+
+    @staticmethod
+    def _utc_now_text() -> str:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    def refresh_online_key_status(self) -> tuple[bool, str]:
+        env_var = (
+            str(self.config.get("online_ai_api_key_env_var", self.online_api_key_env_var)).strip()
+            or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
+        key_value = os.environ.get(env_var, "")
+        found = bool(str(key_value or "").strip())
+        with self.lock:
+            self.online_api_key_env_var = env_var
+            self.online_api_key_found = found
+            self.online_last_key_check_utc = self._utc_now_text()
+            self.online_ai_enabled = parse_bool(self.config.get("online_ai_enabled"), False)
+            self.ai_mode = str(self.config.get("ai_mode", self.ai_mode)).strip().lower() or "local"
+            self.online_model = str(self.config.get("online_ai_model", self.online_model)).strip()
+        return found, env_var
+
+    def record_online_request_started(self, model: str) -> None:
+        with self.lock:
+            self.online_model = str(model or self.online_model).strip()
+            self.online_last_request_utc = self._utc_now_text()
+            self.online_last_http_error = ""
+
+    def record_online_response(
+        self,
+        *,
+        reply_text: str,
+        validation_result: str,
+        validation_failure: str,
+        response_summary: str,
+        http_error: str,
+        latency_ms: float,
+        source_backend: str,
+    ) -> None:
+        with self.lock:
+            self.online_last_reply_text = str(reply_text or "").strip()
+            self.online_last_validation_result = str(validation_result or "").strip() or "unknown"
+            self.online_last_validation_failure = str(validation_failure or "").strip()
+            self.online_last_response_summary = str(response_summary or "").strip()
+            self.online_last_http_error = str(http_error or "").strip()
+            self.online_last_latency_ms = float(latency_ms)
+            self.online_source_backend = str(source_backend or "openai_responses").strip() or "openai_responses"
+
+    def record_online_connection_test(
+        self,
+        ok: bool,
+        message: str,
+        *,
+        latency_ms: float = -1.0,
+        http_error: str = "",
+        model: str = "",
+    ) -> None:
+        with self.lock:
+            self.online_last_connection_test_ok = bool(ok)
+            self.online_last_connection_test_result = str(message or "").strip() or "No result."
+            self.online_last_latency_ms = float(latency_ms)
+            self.online_last_http_error = str(http_error or "").strip()
+            if model:
+                self.online_model = str(model).strip()
 
     def set_runtime(self, mic_active: bool, listening: bool, backend: str | None = None) -> None:
         with self.lock:
@@ -986,7 +1148,14 @@ class State:
         with self.lock:
             self.pending_partial = None
 
-    def process_transcript(self, transcript: str, confidence: float, is_final: bool, parser: Parser) -> dict:
+    def process_transcript(
+        self,
+        transcript: str,
+        confidence: float,
+        is_final: bool,
+        parser: Parser,
+        online_orchestrator=None,
+    ) -> dict:
         text = (transcript or "").strip()
         if not text:
             return {"ok": False, "message": "Transcript is empty."}
@@ -1009,7 +1178,11 @@ class State:
                 }
                 return {"ok": True, "message": "Stored partial transcript.", "intent_name": ""}
 
-        parsed, parse_message = parser.parse(text, confidence)
+        use_online_mode = str(self.config.get("ai_mode", "local")).strip().lower() == "online"
+        if use_online_mode and online_orchestrator is not None:
+            parsed, parse_message = online_orchestrator.handle_transcript(text, confidence)
+        else:
+            parsed, parse_message = parser.parse(text, confidence)
         event = {
             "has_intent": parsed is not None,
             "transcript": text,
@@ -1044,7 +1217,12 @@ class State:
             "joint_degrees": float(payload.get("joint_degrees", 0.0) or 0.0),
             "confidence": max(0.0, min(1.0, float(payload.get("confidence", 0.95) or 0.95))),
             "requires_confirmation": bool(payload.get("requires_confirmation", False)),
+            "reply_text": str(payload.get("reply_text", "")).strip(),
             "spoken_text": str(payload.get("spoken_text", "")).strip(),
+            "source_backend": str(payload.get("source_backend", "")).strip(),
+            "source_mode": str(payload.get("source_mode", "")).strip(),
+            "validation_status": str(payload.get("validation_status", "")).strip(),
+            "validation_message": str(payload.get("validation_message", "")).strip(),
             "transcript_is_final": bool(payload.get("transcript_is_final", True)),
         }
 
@@ -1082,6 +1260,7 @@ class State:
             return base
 
     def health(self) -> dict:
+        api_key_found, env_var = self.refresh_online_key_status()
         with self.lock:
             return {
                 "ok": True,
@@ -1100,6 +1279,26 @@ class State:
                 "selected_input_device_index": self.selected_input_device_index,
                 "selected_input_device_name": self.selected_input_device_name,
                 "last_help_answer": self.last_help_answer,
+                "ai_mode": self.ai_mode,
+                "simulation_only_mode": parse_bool(self.config.get("simulation_only_mode"), False),
+                "block_motion_when_bridge_unhealthy": parse_bool(
+                    self.config.get("block_motion_when_bridge_unhealthy"),
+                    True),
+                "online_ai_enabled": self.online_ai_enabled,
+                "online_ai_model": self.online_model,
+                "online_ai_api_key_env_var": env_var,
+                "online_ai_api_key_found": api_key_found,
+                "online_ai_last_key_check_utc": self.online_last_key_check_utc,
+                "online_ai_last_request_utc": self.online_last_request_utc,
+                "online_ai_last_response_summary": self.online_last_response_summary,
+                "online_ai_last_reply_text": self.online_last_reply_text,
+                "online_ai_last_validation_result": self.online_last_validation_result,
+                "online_ai_last_validation_failure": self.online_last_validation_failure,
+                "online_ai_last_http_error": self.online_last_http_error,
+                "online_ai_last_latency_ms": self.online_last_latency_ms,
+                "online_ai_last_connection_test_result": self.online_last_connection_test_result,
+                "online_ai_last_connection_test_ok": self.online_last_connection_test_ok,
+                "online_ai_source_backend": self.online_source_backend,
                 "last_message": self.last_message,
                 "last_error": self.last_error,
             }
@@ -1135,14 +1334,15 @@ class TTS:
         self.state.set_tts_speaking(False)
         self.interrupt_event.set()
         self._terminate_active_process()
+        self._clear_queue_nonblocking("TTS worker stopped before playback.")
         try:
-            self.queue.put_nowait(("", False))
+            self.queue.put_nowait(("", False, None))
         except queue.Full:
             pass
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
 
-    def speak(self, text: str, interrupt: bool) -> tuple[bool, str]:
+    def speak(self, text: str, interrupt: bool, wait_for_completion: bool = False) -> tuple[bool, str]:
         text = (text or "").strip()
         if not text:
             return False, "Speech text is empty."
@@ -1151,28 +1351,48 @@ class TTS:
             return True, "TTS backend disabled; accepted as no-op."
 
         try:
+            completion_queue = queue.Queue(maxsize=1) if wait_for_completion else None
             if interrupt:
                 self.interrupt_event.set()
-                self._clear_queue_nonblocking()
+                self._clear_queue_nonblocking("TTS request cleared by interrupt.")
                 self._terminate_active_process()
-            self.queue.put_nowait((text, interrupt))
-            return True, "Speech queued."
+            self.queue.put_nowait((text, interrupt, completion_queue))
+            if not wait_for_completion or completion_queue is None:
+                return True, "Speech queued."
+
+            wait_timeout = self._estimate_timeout_seconds(text) + 2.0
+            try:
+                ok, message = completion_queue.get(timeout=wait_timeout)
+                return bool(ok), str(message or "").strip() or "Speech completed."
+            except queue.Empty:
+                return False, f"TTS completion wait timed out after {wait_timeout:.1f}s."
         except queue.Full:
             return False, "TTS queue is full."
 
     def interrupt(self) -> tuple[bool, str]:
         self.interrupt_event.set()
-        self._clear_queue_nonblocking()
+        self._clear_queue_nonblocking("TTS request cleared by interrupt.")
         self._terminate_active_process()
         self.state.set_tts_speaking(False)
         return True, "TTS playback interrupted."
 
-    def _clear_queue_nonblocking(self) -> None:
+    def _clear_queue_nonblocking(self, cleared_message: str = "TTS request cleared before playback.") -> None:
         while True:
             try:
-                self.queue.get_nowait()
+                queued_item = self.queue.get_nowait()
             except queue.Empty:
                 return
+            if not isinstance(queued_item, tuple):
+                continue
+            if len(queued_item) < 3:
+                continue
+            text, _interrupt, completion_queue = queued_item
+            if not text or completion_queue is None:
+                continue
+            try:
+                completion_queue.put_nowait((False, cleared_message))
+            except Exception:
+                pass
 
     def _set_active_process(self, proc) -> None:
         with self._active_process_lock:
@@ -1210,13 +1430,14 @@ class TTS:
     def _build_windows_sapi_script(self, text: str) -> str:
         rate = self._rate_to_windows_sapi_scale(int(self.config.get("tts_rate", 175)))
         voice_name = str(self.config.get("tts_voice_name", "")).strip()
-        escaped_text = (text or "").replace("'", "''")
-        escaped_voice = voice_name.replace("'", "''")
+        encoded_text = base64.b64encode((text or "").encode("utf-8")).decode("ascii")
+        encoded_voice = base64.b64encode(voice_name.encode("utf-8")).decode("ascii")
         return (
             "Add-Type -AssemblyName System.Speech; "
             "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$synth.Rate = {rate}; "
-            f"$voiceToken = '{escaped_voice}'.ToLowerInvariant(); "
+            f"$voiceTokenBytes = [System.Convert]::FromBase64String('{encoded_voice}'); "
+            "$voiceToken = [System.Text.Encoding]::UTF8.GetString($voiceTokenBytes).ToLowerInvariant(); "
             "if ($voiceToken) { "
             "  foreach ($voice in $synth.GetInstalledVoices()) { "
             "    $name = $voice.VoiceInfo.Name; "
@@ -1226,7 +1447,9 @@ class TTS:
             "    } "
             "  } "
             "} "
-            f"$synth.Speak('{escaped_text}'); "
+            f"$speechBytes = [System.Convert]::FromBase64String('{encoded_text}'); "
+            "$speechText = [System.Text.Encoding]::UTF8.GetString($speechBytes); "
+            "$synth.Speak($speechText); "
             "$synth.Dispose();"
         )
 
@@ -1247,14 +1470,15 @@ class TTS:
     def _speak_with_subprocess(self, text: str) -> tuple[bool, str]:
         timeout_seconds = self._estimate_timeout_seconds(text)
         script = self._build_windows_sapi_script(text)
+        encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
         cmd = [
             "powershell",
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            script,
+            "-EncodedCommand",
+            encoded_script,
         ]
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -1342,11 +1566,23 @@ class TTS:
 
         while not self.stop_event.is_set():
             try:
-                text, _interrupt = self.queue.get(timeout=0.2)
+                queued_item = self.queue.get(timeout=0.2)
             except queue.Empty:
+                continue
+            if isinstance(queued_item, tuple):
+                if len(queued_item) >= 3:
+                    text, _interrupt, completion_queue = queued_item
+                elif len(queued_item) == 2:
+                    text, _interrupt = queued_item
+                    completion_queue = None
+                else:
+                    continue
+            else:
                 continue
             if not text:
                 continue
+            ok = False
+            message = "TTS worker did not process the request."
             try:
                 if self.interrupt_event.is_set():
                     self.interrupt_event.clear()
@@ -1361,13 +1597,19 @@ class TTS:
                     self.state.log("error", message)
             finally:
                 self.state.set_tts_speaking(False)
+                if completion_queue is not None:
+                    try:
+                        completion_queue.put_nowait((ok, message))
+                    except Exception:
+                        pass
 
 
 class VoskSTT:
-    def __init__(self, config: dict, state: State, parser: Parser) -> None:
+    def __init__(self, config: dict, state: State, parser: Parser, online_orchestrator: OnlineAIOrchestrator) -> None:
         self.config = config
         self.state = state
         self.parser = parser
+        self.online_orchestrator = online_orchestrator
         self.enabled = str(config["stt_backend"]) == "vosk"
         self.stop_event = threading.Event()
         self.thread = None
@@ -1597,6 +1839,7 @@ class VoskSTT:
                                 float(self.config["transcript_default_confidence"]),
                                 True,
                                 self.parser,
+                                self.online_orchestrator,
                             )
                     else:
                         payload = json.loads(recognizer.PartialResult())
@@ -1607,6 +1850,7 @@ class VoskSTT:
                                 float(self.config["transcript_default_confidence"]),
                                 False,
                                 self.parser,
+                                self.online_orchestrator,
                             )
         except Exception as exc:
             self.state.log("error", f"Vosk STT runtime failed: {exc}")
@@ -1615,13 +1859,702 @@ class VoskSTT:
             self.state.log("warn", "Vosk STT worker stopped.")
 
 
+class OnlineAIOrchestrator:
+    def __init__(self, config: dict, state: State) -> None:
+        self.config = config
+        self.state = state
+        self.source_backend = "openai_responses"
+
+    def is_selected_mode(self) -> bool:
+        return str(self.config.get("ai_mode", "local")).strip().lower() == "online"
+
+    def handle_transcript(self, transcript: str, confidence: float) -> tuple[dict | None, str]:
+        resolved_confidence = max(0.0, min(1.0, confidence if confidence > 0.0 else 0.85))
+        if not self.is_selected_mode():
+            return None, "online_mode_inactive"
+
+        if not parse_bool(self.config.get("online_ai_enabled"), False):
+            message = "Online AI mode is selected, but the online backend is disabled."
+            self.state.record_online_response(
+                reply_text="Online AI is currently disabled. Switch back to Local AI or enable the online backend.",
+                validation_result="disabled",
+                validation_failure=message,
+                response_summary=message,
+                http_error="",
+                latency_ms=-1.0,
+                source_backend=self.source_backend,
+            )
+            return self._build_safe_reply_intent(
+                transcript,
+                resolved_confidence,
+                "Online AI is currently disabled. Switch back to Local AI or enable the online backend.",
+                validation_status="disabled",
+                validation_message=message,
+            ), message
+
+        model = str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
+        if not model:
+            message = "Online AI model is empty."
+            self.state.record_online_response(
+                reply_text="Online AI is not configured yet. Set an OpenAI model name before testing it.",
+                validation_result="config_error",
+                validation_failure=message,
+                response_summary=message,
+                http_error="",
+                latency_ms=-1.0,
+                source_backend=self.source_backend,
+            )
+            return self._build_safe_reply_intent(
+                transcript,
+                resolved_confidence,
+                "Online AI is not configured yet. Set an OpenAI model name before testing it.",
+                validation_status="config_error",
+                validation_message=message,
+            ), message
+
+        api_key_found, env_var = self.state.refresh_online_key_status()
+        api_key = os.environ.get(env_var, "").strip()
+        if not api_key_found or not api_key:
+            message = f"OpenAI API key env var '{env_var}' is missing."
+            self.state.record_online_response(
+                reply_text="I cannot use online AI until the OpenAI API key is available in the configured environment variable.",
+                validation_result="missing_api_key",
+                validation_failure=message,
+                response_summary=message,
+                http_error="",
+                latency_ms=-1.0,
+                source_backend=self.source_backend,
+            )
+            return self._build_safe_reply_intent(
+                transcript,
+                resolved_confidence,
+                "I cannot use online AI until the OpenAI API key is available in the configured environment variable.",
+                validation_status="missing_api_key",
+                validation_message=message,
+            ), message
+
+        self.state.record_online_request_started(model)
+        request_started = time.perf_counter()
+        try:
+            payload = self._request_online_turn(api_key, transcript)
+            latency_ms = max(0.0, (time.perf_counter() - request_started) * 1000.0)
+        except Exception as exc:
+            latency_ms = max(0.0, (time.perf_counter() - request_started) * 1000.0)
+            error_message = str(exc).strip() or "Unknown online AI request error."
+            reply_text = self._build_online_failure_reply(error_message)
+            self.state.record_online_response(
+                reply_text=reply_text,
+                validation_result="http_error",
+                validation_failure=error_message,
+                response_summary=reply_text,
+                http_error=error_message,
+                latency_ms=latency_ms,
+                source_backend=self.source_backend,
+            )
+            return self._build_safe_reply_intent(
+                transcript,
+                resolved_confidence,
+                reply_text,
+                validation_status="http_error",
+                validation_message=error_message,
+            ), f"online_http_error: {error_message}"
+
+        normalized_intent, message = self._validate_and_normalize(transcript, resolved_confidence, payload)
+        normalized_intent["source_backend"] = self.source_backend
+        normalized_intent["source_mode"] = "online"
+        self.state.record_online_response(
+            reply_text=normalized_intent.get("reply_text", ""),
+            validation_result=normalized_intent.get("validation_status", "validated"),
+            validation_failure=normalized_intent.get("validation_message", ""),
+            response_summary=message,
+            http_error="",
+            latency_ms=latency_ms,
+            source_backend=self.source_backend,
+        )
+        return normalized_intent, message
+
+    def test_connection(self) -> dict:
+        model = str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
+        api_key_found, env_var = self.state.refresh_online_key_status()
+        api_key = os.environ.get(env_var, "").strip()
+        if not parse_bool(self.config.get("online_ai_enabled"), False):
+            message = "Online AI is disabled."
+            self.state.record_online_connection_test(False, message, model=model)
+            return {
+                "ok": False,
+                "message": message,
+                "model": model,
+                "api_key_found": api_key_found,
+                "api_key_env_var": env_var,
+            }
+        if not model:
+            message = "Online AI model is empty."
+            self.state.record_online_connection_test(False, message, model=model)
+            return {
+                "ok": False,
+                "message": message,
+                "model": model,
+                "api_key_found": api_key_found,
+                "api_key_env_var": env_var,
+            }
+
+        if not api_key_found or not api_key:
+            message = f"OpenAI API key env var '{env_var}' is missing."
+            self.state.record_online_connection_test(False, message, model=model)
+            return {
+                "ok": False,
+                "message": message,
+                "model": model,
+                "api_key_found": False,
+                "api_key_env_var": env_var,
+            }
+
+        self.state.record_online_request_started(model)
+        started = time.perf_counter()
+        try:
+            payload = self._request_online_turn(
+                api_key,
+                "Connection test. Reply briefly and set action.intent to none.",
+                connection_test=True,
+            )
+            latency_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+            normalized_intent, validation_message = self._validate_and_normalize(
+                "Connection test.",
+                1.0,
+                payload)
+            reply_text = normalized_intent.get("reply_text", "")
+            result_message = (
+                f"Online AI connection OK. Model={model}. "
+                f"{validation_message}. Reply='{reply_text}'."
+            )
+            self.state.record_online_response(
+                reply_text=reply_text,
+                validation_result=normalized_intent.get("validation_status", "validated"),
+                validation_failure=normalized_intent.get("validation_message", ""),
+                response_summary=validation_message,
+                http_error="",
+                latency_ms=latency_ms,
+                source_backend=self.source_backend,
+            )
+            self.state.record_online_connection_test(
+                True,
+                result_message,
+                latency_ms=latency_ms,
+                http_error="",
+                model=model,
+            )
+            return {
+                "ok": True,
+                "message": result_message,
+                "model": model,
+                "api_key_found": True,
+                "api_key_env_var": env_var,
+                "latency_ms": latency_ms,
+                "reply_text": reply_text,
+            }
+        except Exception as exc:
+            latency_ms = max(0.0, (time.perf_counter() - started) * 1000.0)
+            error_message = str(exc).strip() or "Unknown online AI request error."
+            friendly_reason = self._summarize_online_request_error(error_message)
+            self.state.record_online_connection_test(
+                False,
+                f"Online AI connection failed: {friendly_reason}",
+                latency_ms=latency_ms,
+                http_error=error_message,
+                model=model,
+            )
+            return {
+                "ok": False,
+                "message": f"Online AI connection failed: {friendly_reason}",
+                "model": model,
+                "api_key_found": True,
+                "api_key_env_var": env_var,
+                "latency_ms": latency_ms,
+                "http_error": error_message,
+            }
+
+    def _build_online_failure_reply(self, error_message: str) -> str:
+        return f"Online AI request failed. {self._summarize_online_request_error(error_message)}"
+
+    @staticmethod
+    def _summarize_online_request_error(error_message: str) -> str:
+        status_code, error_code, _error_type, server_message = (
+            OnlineAIOrchestrator._extract_online_error_details(error_message))
+        cleaned_server_message = OnlineAIOrchestrator._clean_online_error_message(server_message)
+        lowered_message = cleaned_server_message.lower()
+        error_code = str(error_code or "").strip().lower()
+
+        if error_code == "insufficient_quota" or "exceeded your current quota" in lowered_message:
+            return (
+                "The OpenAI API project is out of quota or billing is not active. "
+                "Add credits, enable billing, or raise the project spend limit, then try again.")
+
+        if error_code == "rate_limit_exceeded":
+            return "The OpenAI API rate limit was reached. Wait a moment, then try again."
+
+        if error_code in ("invalid_api_key", "incorrect_api_key_provided") or status_code == 401:
+            return (
+                "The OpenAI API key was rejected. Save a valid API key to the configured env var, "
+                "restart the sidecar, and try again.")
+
+        if error_code == "model_not_found" or "does not exist" in lowered_message or "not available" in lowered_message:
+            return "The selected OpenAI model is not available for this API project. Choose a supported model and try again."
+
+        if error_code == "invalid_json_schema":
+            return "The app sent an invalid structured-output schema. Restart the sidecar after updating the app."
+
+        raw_text = str(error_message or "").strip().lower()
+        if raw_text.startswith("network error:") or "name or service not known" in raw_text or "timed out" in raw_text:
+            return "The request could not reach OpenAI. Check internet access, the base URL, and any proxy settings, then try again."
+
+        if status_code is not None and status_code >= 500:
+            return "OpenAI returned a server error. Try again in a moment."
+
+        if cleaned_server_message:
+            return f"OpenAI rejected the request: {cleaned_server_message}"
+
+        if status_code is not None:
+            return f"OpenAI returned HTTP {status_code}. Check the online AI settings and try again."
+
+        return "Check the API key, selected model, and network connection, then try again."
+
+    @staticmethod
+    def _extract_online_error_details(error_message: str) -> tuple[int | None, str, str, str]:
+        text = str(error_message or "").strip()
+        if not text:
+            return None, "", "", ""
+
+        status_code = None
+        body_text = text
+        match = re.match(r"HTTP\s+(\d+):\s*(.*)", text, re.IGNORECASE | re.DOTALL)
+        if match:
+            try:
+                status_code = int(match.group(1))
+            except Exception:
+                status_code = None
+            body_text = match.group(2).strip()
+
+        if not body_text.startswith("{"):
+            return status_code, "", "", body_text
+
+        try:
+            payload = json.loads(body_text)
+        except Exception:
+            return status_code, "", "", body_text
+
+        error_payload = payload.get("error")
+        if not isinstance(error_payload, dict):
+            return status_code, "", "", body_text
+
+        return (
+            status_code,
+            str(error_payload.get("code", "") or "").strip(),
+            str(error_payload.get("type", "") or "").strip(),
+            str(error_payload.get("message", "") or "").strip(),
+        )
+
+    @staticmethod
+    def _clean_online_error_message(message: str) -> str:
+        cleaned = str(message or "").replace("\r", " ").replace("\n", " ").strip()
+        if not cleaned:
+            return ""
+
+        cleaned = cleaned.split("For more information", 1)[0].strip()
+        cleaned = re.sub(r"https?://\S+", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned.rstrip(" .")
+
+    def _request_online_turn(self, api_key: str, transcript: str, connection_test: bool = False) -> dict:
+        system_prompt = self._build_system_prompt()
+        user_payload = {
+            "user_transcript": str(transcript or "").strip(),
+            "ai_mode": str(self.config.get("ai_mode", "local")).strip().lower() or "local",
+            "connection_test": bool(connection_test),
+            "require_confirmation_for_motion": parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False),
+            "simulation_only_mode": parse_bool(self.config.get("simulation_only_mode"), False),
+            "block_motion_when_bridge_unhealthy": parse_bool(
+                self.config.get("block_motion_when_bridge_unhealthy"),
+                True),
+            "allow_direct_joint_commands": parse_bool(
+                self.config.get("online_ai_allow_direct_joint_commands"),
+                True),
+            "known_poses": list(self.config.get("known_poses", [])),
+            "known_joints": list(self.config.get("known_joints", [])),
+            "joint_degree_limits": {
+                "default_min": float(self.config.get("joint_min_degrees", -180.0)),
+                "default_max": float(self.config.get("joint_max_degrees", 180.0)),
+            },
+            "allowed_action_intents": list(ONLINE_ALLOWED_INTENTS),
+        }
+        request_payload = {
+            "model": str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL,
+            "temperature": float(self.config.get("online_ai_temperature", 0.2)),
+            "max_output_tokens": int(self.config.get("online_ai_max_output_tokens", 180)),
+            "input": [
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": system_prompt,
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": json.dumps(user_payload, ensure_ascii=True),
+                        }
+                    ],
+                },
+            ],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "reachy_online_turn",
+                    "strict": True,
+                    "schema": self._build_response_schema(),
+                }
+            },
+        }
+
+        endpoint = self._build_responses_endpoint()
+        timeout_seconds = float(self.config.get("online_ai_timeout_seconds", 15.0))
+        body = json.dumps(request_payload, ensure_ascii=True).encode("utf-8")
+        request = urllib_request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or str(exc)
+            raise RuntimeError(f"HTTP {exc.code}: {detail}")
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Network error: {exc.reason}")
+
+        response_payload = json.loads(raw)
+        response_text = self._extract_response_text(response_payload)
+        if not response_text:
+            raise RuntimeError("Online AI response did not contain structured text output.")
+
+        try:
+            return json.loads(response_text)
+        except Exception as exc:
+            raise RuntimeError(f"Structured online response was not valid JSON: {exc}")
+
+    def _build_system_prompt(self) -> str:
+        operator_prompt = (
+            str(self.config.get("online_ai_system_prompt", "You are Reachy's online conversational AI.")).strip()
+            or "You are Reachy's online conversational AI.")
+        return (
+            f"{operator_prompt}\n"
+            "You are producing one JSON object for a Reachy robot controller.\n"
+            "Rules:\n"
+            "- Return valid JSON only.\n"
+            "- Keep spoken output in reply_text.\n"
+            "- Put one robot action in action.intent.\n"
+            "- Always include action.pose_name, action.joint_name, and action.joint_degrees; use null when a field does not apply.\n"
+            "- Use intent 'none' when no robot action is needed.\n"
+            "- Never invent pose names or joint names.\n"
+            "- Never emit actions outside the provided allowlists.\n"
+            "- If unsure, use intent 'none' and ask a clarifying question in reply_text.\n"
+            "- If direct joint commands are not allowed, do not emit move_joint.\n"
+            "- Keep reply_text concise and operator-facing.\n"
+        )
+
+    @staticmethod
+    def _build_response_schema() -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "reply_text": {"type": "string"},
+                "confidence": {"type": "number"},
+                "action": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "intent": {
+                            "type": "string",
+                            "enum": list(ONLINE_ALLOWED_INTENTS),
+                        },
+                        "pose_name": {"type": ["string", "null"]},
+                        "joint_name": {"type": ["string", "null"]},
+                        "joint_degrees": {"type": ["number", "null"]},
+                    },
+                    "required": ["intent", "pose_name", "joint_name", "joint_degrees"],
+                },
+            },
+            "required": ["reply_text", "confidence", "action"],
+        }
+
+    def _build_responses_endpoint(self) -> str:
+        base_url = str(self.config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)).strip()
+        if not base_url:
+            return f"{DEFAULT_ONLINE_AI_BASE_URL}/responses"
+
+        trimmed = base_url.rstrip("/")
+        if trimmed.endswith("/responses"):
+            return trimmed
+        if trimmed.endswith("/v1"):
+            return f"{trimmed}/responses"
+        return f"{trimmed}/v1/responses"
+
+    @staticmethod
+    def _extract_response_text(response_payload: dict) -> str:
+        if not isinstance(response_payload, dict):
+            return ""
+
+        top_level_text = response_payload.get("output_text")
+        if isinstance(top_level_text, str) and top_level_text.strip():
+            return top_level_text.strip()
+
+        output_items = response_payload.get("output")
+        if not isinstance(output_items, list):
+            return ""
+
+        fragments: list[str] = []
+        for item in output_items:
+            if not isinstance(item, dict):
+                continue
+            content_items = item.get("content")
+            if not isinstance(content_items, list):
+                continue
+            for content in content_items:
+                if not isinstance(content, dict):
+                    continue
+                text_value = content.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    fragments.append(text_value.strip())
+                    continue
+                if isinstance(text_value, dict):
+                    nested = text_value.get("value")
+                    if isinstance(nested, str) and nested.strip():
+                        fragments.append(nested.strip())
+                        continue
+                if isinstance(content.get("output_text"), str) and content["output_text"].strip():
+                    fragments.append(content["output_text"].strip())
+
+        return "\n".join(fragment for fragment in fragments if fragment).strip()
+
+    def _validate_and_normalize(
+        self,
+        transcript: str,
+        confidence: float,
+        payload: dict,
+    ) -> tuple[dict, str]:
+        if not isinstance(payload, dict):
+            return self._build_safe_reply_intent(
+                transcript,
+                confidence,
+                "I could not understand the online AI response safely, so I did not move.",
+                validation_status="invalid_schema",
+                validation_message="Top-level online response is not a JSON object.",
+            ), "Online AI response rejected: top-level payload is not an object."
+
+        reply_text_value = payload.get("reply_text", "")
+        reply_text = "" if reply_text_value is None else str(reply_text_value).strip()
+        if not reply_text:
+            reply_text = "I am ready."
+
+        action = payload.get("action")
+        if not isinstance(action, dict):
+            return self._build_safe_reply_intent(
+                transcript,
+                confidence,
+                "I could not validate the requested online action, so I did not move.",
+                validation_status="invalid_schema",
+                validation_message="action must be an object with an intent field.",
+            ), "Online AI response rejected: action field was invalid."
+
+        intent_value = action.get("intent", "")
+        intent_name = "" if intent_value is None else str(intent_value).strip().lower()
+        intent_name = intent_name or "none"
+        if intent_name not in ONLINE_ALLOWED_INTENTS:
+            return self._build_safe_reply_intent(
+                transcript,
+                confidence,
+                "I could not validate the requested online action, so I did not move.",
+                validation_status="unsupported_intent",
+                validation_message=f"Unsupported action intent '{intent_name}'.",
+            ), f"Online AI response rejected: unsupported action intent '{intent_name}'."
+
+        normalized = {
+            "type": "robot_command",
+            "intent": intent_name,
+            "pose_name": "",
+            "joint_name": "",
+            "joint_degrees": 0.0,
+            "confidence": max(0.0, min(1.0, float(payload.get("confidence", confidence) or confidence))),
+            "requires_confirmation": False,
+            "reply_text": reply_text,
+            "spoken_text": str(transcript or "").strip(),
+            "source_backend": self.source_backend,
+            "source_mode": "online",
+            "validation_status": "validated",
+            "validation_message": "",
+            "transcript_is_final": True,
+        }
+
+        if intent_name == "set_pose":
+            pose_name = self._coerce_optional_text(action.get("pose_name"))
+            resolved_pose = self._resolve_name(pose_name, self.config.get("known_poses", []))
+            if not resolved_pose:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate that pose name safely, so I did not move.",
+                    validation_status="rejected_pose",
+                    validation_message=f"Unknown pose '{pose_name}'.",
+                ), f"Online AI response rejected: unknown pose '{pose_name}'."
+            normalized["pose_name"] = resolved_pose
+            normalized["requires_confirmation"] = parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False)
+
+        if intent_name == "move_joint":
+            if not parse_bool(self.config.get("online_ai_allow_direct_joint_commands"), True):
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "Direct online joint commands are disabled, so I did not move.",
+                    validation_status="joint_commands_disabled",
+                    validation_message="online_ai_allow_direct_joint_commands is false.",
+                ), "Online AI response rejected: direct joint commands are disabled."
+
+            joint_name = self._coerce_optional_text(action.get("joint_name"))
+            resolved_joint = self._resolve_name(joint_name, self.config.get("known_joints", []))
+            if not resolved_joint:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate that joint name safely, so I did not move.",
+                    validation_status="rejected_joint",
+                    validation_message=f"Unknown joint '{joint_name}'.",
+                ), f"Online AI response rejected: unknown joint '{joint_name}'."
+
+            try:
+                joint_degrees_value = action.get("joint_degrees", 0.0)
+                if joint_degrees_value is None:
+                    raise ValueError("joint_degrees was null")
+                joint_degrees = float(joint_degrees_value)
+            except Exception:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "I could not validate that joint target safely, so I did not move.",
+                    validation_status="invalid_joint_value",
+                    validation_message="joint_degrees was not numeric.",
+                ), "Online AI response rejected: joint_degrees was not numeric."
+
+            joint_min = float(self.config.get("joint_min_degrees", -180.0))
+            joint_max = float(self.config.get("joint_max_degrees", 180.0))
+            if joint_degrees < joint_min or joint_degrees > joint_max:
+                return self._build_safe_reply_intent(
+                    transcript,
+                    confidence,
+                    "That joint target is outside the allowed range, so I did not move.",
+                    validation_status="joint_out_of_range",
+                    validation_message=(
+                        f"Target {joint_degrees:.1f} is outside [{joint_min:.1f}, {joint_max:.1f}] deg."),
+                ), (
+                    f"Online AI response rejected: target {joint_degrees:.1f} "
+                    f"is outside [{joint_min:.1f}, {joint_max:.1f}] deg.")
+
+            normalized["joint_name"] = resolved_joint
+            normalized["joint_degrees"] = joint_degrees
+            normalized["requires_confirmation"] = parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False)
+
+        if intent_name == "show_movement":
+            normalized["requires_confirmation"] = parse_bool(
+                self.config.get("online_ai_require_motion_confirmation"),
+                False)
+
+        if intent_name == "stop_motion":
+            normalized["requires_confirmation"] = False
+
+        return normalized, f"Online AI response validated for intent '{intent_name}'."
+
+    @staticmethod
+    def _coerce_optional_text(value) -> str:
+        return "" if value is None else str(value).strip()
+
+    @staticmethod
+    def _resolve_name(requested_name: str, candidates) -> str:
+        requested = str(requested_name or "").strip()
+        if not requested:
+            return ""
+
+        if not isinstance(candidates, list):
+            candidates = list(candidates or [])
+
+        for candidate in candidates:
+            candidate_text = str(candidate or "").strip()
+            if candidate_text and candidate_text.lower() == requested.lower():
+                return candidate_text
+
+        normalized_requested = normalize(requested)
+        for candidate in candidates:
+            candidate_text = str(candidate or "").strip()
+            if candidate_text and normalize(candidate_text) == normalized_requested:
+                return candidate_text
+
+        return ""
+
+    def _build_safe_reply_intent(
+        self,
+        transcript: str,
+        confidence: float,
+        reply_text: str,
+        *,
+        validation_status: str,
+        validation_message: str,
+    ) -> dict:
+        return {
+            "type": "robot_command",
+            "intent": "none",
+            "pose_name": "",
+            "joint_name": "",
+            "joint_degrees": 0.0,
+            "confidence": max(0.0, min(1.0, confidence if confidence > 0.0 else 0.85)),
+            "requires_confirmation": False,
+            "reply_text": str(reply_text or "").strip(),
+            "spoken_text": str(transcript or "").strip(),
+            "source_backend": self.source_backend,
+            "source_mode": "online",
+            "validation_status": str(validation_status or "").strip(),
+            "validation_message": str(validation_message or "").strip(),
+            "transcript_is_final": True,
+        }
+
+
 class App:
     def __init__(self, config: dict) -> None:
         self.config = config
         self.state = State(config)
         self.parser = Parser(config)
+        self.online = OnlineAIOrchestrator(config, self.state)
         self.tts = TTS(config, self.state)
-        self.stt = VoskSTT(config, self.state, self.parser)
+        self.stt = VoskSTT(config, self.state, self.parser, self.online)
         self.help_responder = LocalHelpResponder(config, self.state)
 
     def start(self) -> None:
@@ -1631,7 +2564,7 @@ class App:
             "info",
             f"Local sidecar ready on {self.config['bind_host']}:{self.config['bind_port']} "
             f"(stt={self.config['stt_backend']}, tts={self.config['tts_backend']}, "
-            f"help={self.help_responder.backend}).",
+            f"help={self.help_responder.backend}, ai_mode={self.config.get('ai_mode', 'local')}).",
         )
 
     def stop(self) -> None:
@@ -1819,7 +2752,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/speak":
-            ok, msg = self.app.tts.speak(str(payload.get("text", "")), bool(payload.get("interrupt", False)))
+            ok, msg = self.app.tts.speak(
+                str(payload.get("text", "")),
+                bool(payload.get("interrupt", False)),
+                bool(payload.get("wait_for_completion", False)))
             self.app.state.log("info" if ok else "warn", f"/speak -> {msg}")
             self._send(HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST, {"ok": ok, "message": msg})
             return
@@ -1851,7 +2787,13 @@ class Handler(BaseHTTPRequestHandler):
                 conf = float(payload.get("confidence", self.app.config["transcript_default_confidence"]))
             except Exception:
                 conf = float(self.app.config["transcript_default_confidence"])
-            result = self.app.state.process_transcript(text, conf, final, self.app.parser)
+            result = self.app.state.process_transcript(
+                text,
+                conf,
+                final,
+                self.app.parser,
+                self.app.online,
+            )
             self.app.state.log("info" if result.get("ok") else "warn", f"/inject_transcript -> {result.get('message')}" )
             self._send(HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST, result)
             return
@@ -1867,6 +2809,14 @@ class Handler(BaseHTTPRequestHandler):
             self.app.state.set_listening_enabled(enabled)
             self.app.state.log("info", f"/listening -> {'enabled' if enabled else 'disabled'}")
             self._send(HTTPStatus.OK, {"ok": True, "enabled": enabled})
+            return
+
+        if path == "/online-test":
+            result = self.app.online.test_connection()
+            self.app.state.log(
+                "info" if result.get("ok") else "warn",
+                f"/online-test -> {result.get('message', '')}")
+            self._send(HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST, result)
             return
 
         self._send(HTTPStatus.NOT_FOUND, {"ok": False, "message": "Unknown POST endpoint."})
