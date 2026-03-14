@@ -14,6 +14,7 @@ Testing endpoints:
 - POST /inject_transcript
 - POST /inject_intent
 - POST /listening
+- POST /microphone-source
 """
 
 from __future__ import annotations
@@ -24,9 +25,11 @@ import io
 import json
 import logging
 import os
-import subprocess
 import queue
 import re
+import shlex
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -102,6 +105,12 @@ DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS = 8
 DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_JOINTS_PER_STEP = len(DEFAULT_JOINTS)
 DEFAULT_ONLINE_MOTION_SEQUENCE_MIN_HOLD_SECONDS = 0.15
 DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_HOLD_SECONDS = 4.0
+DEFAULT_AUDIO_SOURCE_MODE = "blend"
+DEFAULT_REACHY_MIC_SSH_PORT = 22
+DEFAULT_REACHY_MIC_SSH_USER = "reachy"
+DEFAULT_REACHY_MIC_SSH_PASSWORD = "reachy"
+DEFAULT_REACHY_MIC_DEVICE_SPEC = "plughw:1,0"
+DEFAULT_REACHY_MIC_DEVICE_LABEL = "Reachy ReSpeaker"
 SEMANTIC_ASSIST_POSE_NAMES = [
     "Left Hand Up",
     "Left Hand Wave",
@@ -687,6 +696,17 @@ def parse_bool(value, default: bool) -> bool:
     return default
 
 
+def normalize_audio_source_mode(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in ("pc", "pc_only", "local", "local_only", "computer"):
+        return "pc"
+    if normalized in ("reachy", "robot", "reachy_only", "robot_only"):
+        return "reachy"
+    if normalized in ("blend", "both", "mixed", "mix"):
+        return "blend"
+    return DEFAULT_AUDIO_SOURCE_MODE
+
+
 def normalize_phrase_list(value, fallback: list[str]) -> list[str]:
     source = value if isinstance(value, list) else []
     normalized: list[str] = []
@@ -737,6 +757,13 @@ def load_config(path: Path) -> dict:
         "help_max_answer_chars": 360,
         "audio_input_device_name": "",
         "prefer_non_virtual_input_device": True,
+        "audio_source_mode": DEFAULT_AUDIO_SOURCE_MODE,
+        "reachy_mic_robot_connected": False,
+        "reachy_mic_ssh_host": "",
+        "reachy_mic_ssh_port": DEFAULT_REACHY_MIC_SSH_PORT,
+        "reachy_mic_ssh_user": DEFAULT_REACHY_MIC_SSH_USER,
+        "reachy_mic_ssh_password": DEFAULT_REACHY_MIC_SSH_PASSWORD,
+        "reachy_mic_device_spec": "",
         "start_listening_enabled": True,
         "min_transcript_chars": 4,
         "min_transcript_words": 1,
@@ -836,6 +863,22 @@ def load_config(path: Path) -> dict:
     config["prefer_non_virtual_input_device"] = parse_bool(
         config.get("prefer_non_virtual_input_device"),
         True)
+    config["audio_source_mode"] = normalize_audio_source_mode(
+        config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
+    config["reachy_mic_robot_connected"] = parse_bool(
+        config.get("reachy_mic_robot_connected"),
+        False)
+    config["reachy_mic_ssh_host"] = str(config.get("reachy_mic_ssh_host", "")).strip()
+    config["reachy_mic_ssh_port"] = max(
+        1,
+        min(65535, int(config.get("reachy_mic_ssh_port", DEFAULT_REACHY_MIC_SSH_PORT))))
+    config["reachy_mic_ssh_user"] = (
+        str(config.get("reachy_mic_ssh_user", DEFAULT_REACHY_MIC_SSH_USER)).strip()
+        or DEFAULT_REACHY_MIC_SSH_USER)
+    config["reachy_mic_ssh_password"] = (
+        str(config.get("reachy_mic_ssh_password", DEFAULT_REACHY_MIC_SSH_PASSWORD)).strip()
+        or DEFAULT_REACHY_MIC_SSH_PASSWORD)
+    config["reachy_mic_device_spec"] = str(config.get("reachy_mic_device_spec", "")).strip()
     config["start_listening_enabled"] = parse_bool(config.get("start_listening_enabled"), True)
     config["min_transcript_chars"] = max(0, int(config.get("min_transcript_chars", 4)))
     config["min_transcript_words"] = max(0, int(config.get("min_transcript_words", 1)))
@@ -999,6 +1042,76 @@ def pcm16_rms(chunk: bytes) -> float:
         value = int(sample)
         total += float(value * value)
     return (total / float(count)) ** 0.5
+
+
+def apply_microphone_routing_payload(config: dict, payload: dict) -> dict:
+    config["audio_source_mode"] = normalize_audio_source_mode(
+        payload.get("audio_source_mode", config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
+    )
+    config["audio_input_device_name"] = str(
+        payload.get("audio_input_device_name", config.get("audio_input_device_name", ""))
+    ).strip()
+    config["prefer_non_virtual_input_device"] = parse_bool(
+        payload.get("prefer_non_virtual_input_device", config.get("prefer_non_virtual_input_device", True)),
+        True,
+    )
+    config["reachy_mic_robot_connected"] = parse_bool(
+        payload.get("reachy_mic_robot_connected", config.get("reachy_mic_robot_connected", False)),
+        False,
+    )
+    config["reachy_mic_ssh_host"] = str(
+        payload.get("reachy_mic_ssh_host", config.get("reachy_mic_ssh_host", ""))
+    ).strip()
+    config["reachy_mic_ssh_port"] = max(
+        1,
+        min(65535, int(payload.get("reachy_mic_ssh_port", config.get("reachy_mic_ssh_port", DEFAULT_REACHY_MIC_SSH_PORT)))),
+    )
+    config["reachy_mic_ssh_user"] = (
+        str(payload.get("reachy_mic_ssh_user", config.get("reachy_mic_ssh_user", DEFAULT_REACHY_MIC_SSH_USER))).strip()
+        or DEFAULT_REACHY_MIC_SSH_USER
+    )
+    config["reachy_mic_ssh_password"] = (
+        str(payload.get("reachy_mic_ssh_password", config.get("reachy_mic_ssh_password", DEFAULT_REACHY_MIC_SSH_PASSWORD))).strip()
+        or DEFAULT_REACHY_MIC_SSH_PASSWORD
+    )
+    config["reachy_mic_device_spec"] = str(
+        payload.get("reachy_mic_device_spec", config.get("reachy_mic_device_spec", ""))
+    ).strip()
+
+    requested_mode = normalize_audio_source_mode(config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
+    reachy_connected = parse_bool(config.get("reachy_mic_robot_connected"), False) and bool(
+        str(config.get("reachy_mic_ssh_host", "")).strip()
+    )
+    if not reachy_connected:
+        effective_mode = "pc"
+        pc_enabled = True
+        reachy_enabled = False
+    elif requested_mode == "pc":
+        effective_mode = "pc"
+        pc_enabled = True
+        reachy_enabled = False
+    elif requested_mode == "reachy":
+        effective_mode = "reachy"
+        pc_enabled = False
+        reachy_enabled = True
+    else:
+        effective_mode = "blend"
+        pc_enabled = True
+        reachy_enabled = True
+
+    message = f"Microphone routing updated: requested={requested_mode}, effective={effective_mode}."
+    if not reachy_connected and requested_mode != "pc":
+        message += " No real robot connection is active, so the PC mic stays active."
+
+    return {
+        "ok": True,
+        "message": message,
+        "requested_mode": requested_mode,
+        "effective_mode": effective_mode,
+        "pc_enabled": pc_enabled,
+        "reachy_enabled": reachy_enabled,
+        "reachy_host": str(config.get("reachy_mic_ssh_host", "")).strip(),
+    }
 
 
 def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
@@ -1354,6 +1467,15 @@ class State:
         self.tts_speaking = False
         self.selected_input_device_name = ""
         self.selected_input_device_index = -1
+        self.audio_source_mode = normalize_audio_source_mode(
+            config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
+        self.audio_source_effective = "pc"
+        self.local_input_device_name = ""
+        self.local_input_device_index = -1
+        self.reachy_input_device_name = ""
+        self.reachy_mic_connected = False
+        self.reachy_mic_available = False
+        self.reachy_mic_last_error = ""
         self.ai_mode = str(config.get("ai_mode", "local")).strip().lower() or "local"
         self.online_ai_enabled = parse_bool(config.get("online_ai_enabled"), False)
         self.online_model = str(config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
@@ -1474,6 +1596,31 @@ class State:
             self.selected_input_device_index = int(device_index)
             self.selected_input_device_name = str(device_name or "").strip()
 
+    def set_audio_source_status(
+        self,
+        *,
+        requested_mode: str,
+        effective_mode: str,
+        display_name: str,
+        local_device_index: int,
+        local_device_name: str,
+        reachy_device_name: str,
+        reachy_connected: bool,
+        reachy_available: bool,
+        reachy_error: str,
+    ) -> None:
+        with self.lock:
+            self.audio_source_mode = normalize_audio_source_mode(requested_mode)
+            self.audio_source_effective = normalize_audio_source_mode(effective_mode)
+            self.selected_input_device_index = int(local_device_index)
+            self.selected_input_device_name = str(display_name or "").strip()
+            self.local_input_device_index = int(local_device_index)
+            self.local_input_device_name = str(local_device_name or "").strip()
+            self.reachy_input_device_name = str(reachy_device_name or "").strip()
+            self.reachy_mic_connected = bool(reachy_connected)
+            self.reachy_mic_available = bool(reachy_available)
+            self.reachy_mic_last_error = str(reachy_error or "").strip()
+
     def set_tts_speaking(self, speaking: bool) -> None:
         with self.lock:
             self.tts_speaking = bool(speaking)
@@ -1590,6 +1737,8 @@ class State:
                 "mic_active": self.mic_active,
                 "listening": self.listening,
                 "stt_backend": self.stt_backend,
+                "audio_source_mode": self.audio_source_mode,
+                "audio_source_effective": self.audio_source_effective,
                 "has_intent": False,
                 "message": "Voice bridge poll OK (idle).",
             }
@@ -1623,6 +1772,14 @@ class State:
                 "last_transcript_is_final": self.last_transcript_is_final,
                 "selected_input_device_index": self.selected_input_device_index,
                 "selected_input_device_name": self.selected_input_device_name,
+                "audio_source_mode": self.audio_source_mode,
+                "audio_source_effective": self.audio_source_effective,
+                "local_input_device_index": self.local_input_device_index,
+                "local_input_device_name": self.local_input_device_name,
+                "reachy_input_device_name": self.reachy_input_device_name,
+                "reachy_mic_connected": self.reachy_mic_connected,
+                "reachy_mic_available": self.reachy_mic_available,
+                "reachy_mic_last_error": self.reachy_mic_last_error,
                 "last_help_answer": self.last_help_answer,
                 "ai_mode": self.ai_mode,
                 "simulation_only_mode": parse_bool(self.config.get("simulation_only_mode"), False),
@@ -2102,39 +2259,757 @@ class MicrophoneSTTBase:
         raise NotImplementedError
 
 
-class VoskSTT:
-    def __init__(self, config: dict, state: State, parser: Parser, online_orchestrator: OnlineAIOrchestrator) -> None:
+class ReachyRemoteMicrophoneStream:
+    def __init__(self, config: dict, state: State, sample_rate_hz: int, blocksize: int) -> None:
         self.config = config
         self.state = state
-        self.parser = parser
-        self.online_orchestrator = online_orchestrator
-        self.backend_name = "vosk"
-        self.enabled = True
+        self.sample_rate_hz = max(8000, int(sample_rate_hz))
+        self.blocksize = max(160, int(blocksize))
+        self.bytes_per_chunk = self.blocksize * 2
+        self.audio_q: "queue.Queue[bytes]" = queue.Queue(maxsize=120)
         self.stop_event = threading.Event()
         self.thread = None
+        self._signature = ""
+        self._ssh_host = ""
+        self._ssh_port = DEFAULT_REACHY_MIC_SSH_PORT
+        self._ssh_user = DEFAULT_REACHY_MIC_SSH_USER
+        self._ssh_password = DEFAULT_REACHY_MIC_SSH_PASSWORD
+        self._device_spec_override = ""
+        self._process = None
+        self._process_lock = threading.Lock()
+        self._paramiko_client = None
+        self._paramiko_channel = None
+        self._device_name = ""
+        self._last_error = ""
+        self._available = False
 
-    def start(self) -> None:
-        if not self.enabled:
-            self.state.set_runtime(False, False, self.backend_name)
-            self.state.log("info", "STT disabled (set stt_backend to 'vosk' to enable).")
+    @property
+    def device_name(self) -> str:
+        return self._device_name
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def ensure_running(
+        self,
+        enabled: bool,
+        *,
+        ssh_host: str,
+        ssh_port: int,
+        ssh_user: str,
+        ssh_password: str,
+        device_spec_override: str,
+    ) -> None:
+        if not enabled:
+            self.stop()
+            self._available = False
+            self._device_name = ""
             return
-        self.thread = threading.Thread(target=self._run, daemon=True, name="vosk-stt")
+
+        signature = "|".join(
+            (
+                str(ssh_host or "").strip(),
+                str(max(1, int(ssh_port))),
+                str(ssh_user or "").strip(),
+                str(device_spec_override or "").strip(),
+            )
+        )
+        if self.thread is not None and self.thread.is_alive() and signature == self._signature:
+            return
+
+        self.stop()
+        self._signature = signature
+        self._ssh_host = str(ssh_host or "").strip()
+        self._ssh_port = max(1, int(ssh_port))
+        self._ssh_user = str(ssh_user or "").strip() or DEFAULT_REACHY_MIC_SSH_USER
+        self._ssh_password = str(ssh_password or "").strip()
+        self._device_spec_override = str(device_spec_override or "").strip()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="reachy-remote-mic",
+        )
         self.thread.start()
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._terminate_active_capture()
+        self._clear_queue_nonblocking()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
+        self.thread = None
+        self._available = False
 
-    @staticmethod
-    def _drain_audio_queue(audio_q: "queue.Queue[bytes]") -> int:
-        drained = 0
+    def read_chunk(self, timeout: float) -> bytes | None:
+        try:
+            return self.audio_q.get(timeout=max(0.0, float(timeout)))
+        except queue.Empty:
+            return None
+
+    def _clear_queue_nonblocking(self) -> None:
         while True:
             try:
-                audio_q.get_nowait()
-                drained += 1
+                self.audio_q.get_nowait()
             except queue.Empty:
-                return drained
+                return
+
+    def _set_last_error(self, message: str) -> None:
+        detail = str(message or "").strip()
+        if detail == self._last_error:
+            return
+        self._last_error = detail
+        if detail:
+            self.state.log("warn", f"Reachy microphone: {detail}")
+
+    def _set_active_process(self, proc) -> None:
+        with self._process_lock:
+            self._process = proc
+
+    def _terminate_active_capture(self) -> None:
+        try:
+            if self._paramiko_channel is not None:
+                try:
+                    self._paramiko_channel.close()
+                except Exception:
+                    pass
+                self._paramiko_channel = None
+
+            if self._paramiko_client is not None:
+                try:
+                    self._paramiko_client.close()
+                except Exception:
+                    pass
+                self._paramiko_client = None
+
+            proc = None
+            with self._process_lock:
+                proc = self._process
+                self._process = None
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=0.6)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        finally:
+            self._available = False
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            if not self._ssh_host:
+                self._set_last_error("robot host is empty.")
+                break
+
+            try:
+                self._capture_until_disconnect()
+                if not self.stop_event.is_set():
+                    self._set_last_error("remote audio capture ended unexpectedly.")
+            except Exception as exc:
+                self._set_last_error(str(exc))
+            finally:
+                self._terminate_active_capture()
+
+            if self.stop_event.is_set():
+                break
+            time.sleep(2.0)
+
+    def _capture_until_disconnect(self) -> None:
+        backend_name = self._select_transport_backend()
+        listing = self._query_device_listing(backend_name)
+        device_spec, device_name = self._resolve_device_spec(listing)
+        self._device_name = device_name
+        self._last_error = ""
+        self.state.log(
+            "info",
+            f"Reachy microphone capture starting on {self._ssh_user}@{self._ssh_host}:{self._ssh_port} ({device_spec}).")
+
+        if backend_name == "paramiko":
+            self._start_paramiko_capture(device_spec)
+            self._drain_paramiko_channel()
+            return
+
+        self._start_subprocess_capture(device_spec, backend_name)
+        self._drain_subprocess_stdout()
+
+    def _select_transport_backend(self) -> str:
+        try:
+            import paramiko  # type: ignore  # noqa: F401
+            return "paramiko"
+        except Exception:
+            pass
+
+        if shutil.which("plink"):
+            return "plink"
+
+        if shutil.which("ssh"):
+            if self._ssh_password:
+                raise RuntimeError(
+                    "password-based Reachy mic capture needs paramiko or plink in PATH; native ssh fallback is key-based only."
+                )
+            return "ssh"
+
+        raise RuntimeError("no SSH transport is available for Reachy mic capture (install paramiko or plink/ssh).")
+
+    def _query_device_listing(self, backend_name: str) -> str:
+        command_text = "arecord -l 2>/dev/null || true"
+        if backend_name == "paramiko":
+            return self._run_paramiko_query(command_text)
+        return self._run_subprocess_query(command_text, backend_name)
+
+    def _resolve_device_spec(self, listing: str) -> tuple[str, str]:
+        configured = self._device_spec_override or str(self.config.get("reachy_mic_device_spec", "")).strip()
+        fallback_spec = configured or DEFAULT_REACHY_MIC_DEVICE_SPEC
+        fallback_name = DEFAULT_REACHY_MIC_DEVICE_LABEL if not configured else configured
+        pattern = re.compile(
+            r"card\s+(\d+):\s*([^\[]+)\[([^\]]+)\],\s*device\s+(\d+):\s*([^\[]+)\[([^\]]+)\]",
+            re.IGNORECASE,
+        )
+        best_score = -10**9
+        best_spec = fallback_spec
+        best_name = fallback_name
+
+        for raw_line in str(listing or "").splitlines():
+            match = pattern.search(raw_line)
+            if not match:
+                continue
+            card_number = match.group(1)
+            device_number = match.group(4)
+            labels = " ".join(
+                (
+                    match.group(2).strip(),
+                    match.group(3).strip(),
+                    match.group(5).strip(),
+                    match.group(6).strip(),
+                )
+            ).strip()
+            lowered = labels.lower()
+            score = 0
+            if "respeaker" in lowered:
+                score += 1000
+            if "mic array" in lowered:
+                score += 240
+            if "usb audio" in lowered:
+                score += 60
+            if device_number == "0":
+                score += 12
+            if score <= best_score:
+                continue
+            best_score = score
+            best_spec = f"plughw:{card_number},{device_number}"
+            best_name = labels or f"card {card_number}, device {device_number}"
+
+        return best_spec, best_name
+
+    def _run_paramiko_query(self, command_text: str) -> str:
+        try:
+            import paramiko  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"paramiko is unavailable: {exc}") from exc
+
+        timeout_seconds = 6.0
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(
+                hostname=self._ssh_host,
+                port=self._ssh_port,
+                username=self._ssh_user,
+                password=self._ssh_password or None,
+                timeout=timeout_seconds,
+                banner_timeout=timeout_seconds,
+                auth_timeout=timeout_seconds,
+                look_for_keys=True,
+                allow_agent=True,
+            )
+            _stdin, stdout, stderr = client.exec_command(command_text, timeout=timeout_seconds)
+            output = stdout.read().decode("utf-8", errors="replace")
+            error_text = stderr.read().decode("utf-8", errors="replace").strip()
+            exit_status = stdout.channel.recv_exit_status()
+            if exit_status != 0 and error_text:
+                raise RuntimeError(error_text)
+            return output
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+    def _run_subprocess_query(self, command_text: str, backend_name: str) -> str:
+        cmd = self._build_subprocess_command(command_text, backend_name)
+        try:
+            completed = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=6.0,
+                check=False,
+                text=True,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"{backend_name} device query failed: {exc}") from exc
+
+        if completed.returncode != 0:
+            stderr_text = (completed.stderr or "").strip()
+            if stderr_text:
+                raise RuntimeError(stderr_text)
+        return completed.stdout or ""
+
+    def _start_paramiko_capture(self, device_spec: str) -> None:
+        try:
+            import paramiko  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"paramiko is unavailable: {exc}") from exc
+
+        timeout_seconds = 8.0
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(
+            hostname=self._ssh_host,
+            port=self._ssh_port,
+            username=self._ssh_user,
+            password=self._ssh_password or None,
+            timeout=timeout_seconds,
+            banner_timeout=timeout_seconds,
+            auth_timeout=timeout_seconds,
+            look_for_keys=True,
+            allow_agent=True,
+        )
+
+        command_text = self._build_arecord_command_text(device_spec)
+        transport = client.get_transport()
+        if transport is None:
+            client.close()
+            raise RuntimeError("paramiko transport was not created.")
+
+        channel = transport.open_session()
+        channel.exec_command(command_text)
+        self._paramiko_client = client
+        self._paramiko_channel = channel
+        self._available = True
+
+    def _drain_paramiko_channel(self) -> None:
+        channel = self._paramiko_channel
+        if channel is None:
+            raise RuntimeError("paramiko capture channel is not open.")
+
+        pending = bytearray()
+        while not self.stop_event.is_set():
+            if channel.recv_ready():
+                chunk = channel.recv(max(512, self.bytes_per_chunk))
+                if not chunk:
+                    break
+                self._available = True
+                pending.extend(chunk)
+                self._flush_capture_chunks(pending)
+                continue
+
+            if channel.exit_status_ready():
+                stderr_text = b""
+                try:
+                    if channel.recv_stderr_ready():
+                        stderr_text = channel.recv_stderr(4096)
+                except Exception:
+                    stderr_text = b""
+                detail = stderr_text.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(detail or "remote capture process exited.")
+
+            time.sleep(0.01)
+
+    def _start_subprocess_capture(self, device_spec: str, backend_name: str) -> None:
+        cmd = self._build_subprocess_command(
+            self._build_arecord_command_text(device_spec),
+            backend_name,
+        )
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"{backend_name} capture start failed: {exc}") from exc
+
+        self._set_active_process(proc)
+        self._available = True
+
+    def _drain_subprocess_stdout(self) -> None:
+        proc = None
+        with self._process_lock:
+            proc = self._process
+        if proc is None or proc.stdout is None:
+            raise RuntimeError("remote capture process did not provide stdout.")
+
+        pending = bytearray()
+        while not self.stop_event.is_set():
+            chunk = proc.stdout.read(max(512, self.bytes_per_chunk))
+            if not chunk:
+                break
+            self._available = True
+            pending.extend(chunk)
+            self._flush_capture_chunks(pending)
+
+        stderr_text = ""
+        try:
+            if proc.stderr is not None:
+                stderr_text = proc.stderr.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            stderr_text = ""
+
+        if self.stop_event.is_set():
+            return
+        raise RuntimeError(stderr_text or "remote capture process ended.")
+
+    def _flush_capture_chunks(self, pending: bytearray) -> None:
+        while len(pending) >= self.bytes_per_chunk:
+            frame = bytes(pending[: self.bytes_per_chunk])
+            del pending[: self.bytes_per_chunk]
+            try:
+                self.audio_q.put_nowait(frame)
+            except queue.Full:
+                try:
+                    self.audio_q.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self.audio_q.put_nowait(frame)
+                except queue.Full:
+                    pass
+
+    def _build_arecord_command_text(self, device_spec: str) -> str:
+        quoted_spec = shlex.quote(device_spec or DEFAULT_REACHY_MIC_DEVICE_SPEC)
+        return (
+            "exec arecord -q "
+            f"-D {quoted_spec} "
+            "-f S16_LE "
+            f"-r {self.sample_rate_hz} "
+            "-c 1 "
+            "-t raw -"
+        )
+
+    def _build_subprocess_command(self, command_text: str, backend_name: str) -> list[str]:
+        target = f"{self._ssh_user}@{self._ssh_host}"
+        if backend_name == "plink":
+            cmd = ["plink", "-batch", "-P", str(self._ssh_port)]
+            if self._ssh_password:
+                cmd.extend(["-pw", self._ssh_password])
+            cmd.extend([target, command_text])
+            return cmd
+
+        return [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-p",
+            str(self._ssh_port),
+            target,
+            command_text,
+        ]
+
+
+class HybridAudioInput:
+    def __init__(
+        self,
+        owner: MicrophoneSTTBase,
+        sd_module,
+        sample_rate_hz: int,
+        blocksize: int,
+    ) -> None:
+        self.owner = owner
+        self.config = owner.config
+        self.state = owner.state
+        self.sd = sd_module
+        self.sample_rate_hz = max(8000, int(sample_rate_hz))
+        self.blocksize = max(160, int(blocksize))
+        self.local_q: "queue.Queue[bytes]" = queue.Queue(maxsize=120)
+        self.local_stream = None
+        self.local_device_index = -1
+        self.local_device_name = ""
+        self.local_error = ""
+        self.last_route_signature = ""
+        self.requested_mode = DEFAULT_AUDIO_SOURCE_MODE
+        self.effective_mode = "pc"
+        self.local_enabled = False
+        self.reachy_enabled = False
+        self.reachy_connected = False
+        self.remote_stream = ReachyRemoteMicrophoneStream(self.config, self.state, self.sample_rate_hz, self.blocksize)
+
+    def close(self) -> None:
+        self._close_local_stream()
+        self.remote_stream.stop()
+        self._update_state()
+
+    def clear_buffers(self) -> None:
+        while True:
+            try:
+                self.local_q.get_nowait()
+            except queue.Empty:
+                break
+        self.remote_stream._clear_queue_nonblocking()
+
+    def has_active_source(self) -> bool:
+        return self.local_stream is not None or self.remote_stream.available
+
+    def describe_route(self) -> str:
+        display_name = self.state.selected_input_device_name
+        return display_name or self.effective_mode
+
+    def read_chunk(self, timeout: float) -> bytes | None:
+        self._sync_sources()
+        deadline = time.time() + max(0.02, float(timeout))
+        local_chunk = None
+        reachy_chunk = None
+
+        while time.time() < deadline:
+            if local_chunk is None and self.local_stream is not None:
+                local_chunk = self._try_get_queue_item(self.local_q, 0.01)
+            if reachy_chunk is None and self.reachy_enabled:
+                reachy_chunk = self.remote_stream.read_chunk(0.01)
+
+            if local_chunk is not None or reachy_chunk is not None:
+                if local_chunk is None and self.local_stream is not None:
+                    local_chunk = self._try_get_queue_item(self.local_q, 0.015)
+                if reachy_chunk is None and self.reachy_enabled:
+                    reachy_chunk = self.remote_stream.read_chunk(0.015)
+                break
+
+        if local_chunk is None and reachy_chunk is None:
+            self._update_state()
+            return None
+
+        mixed = self._mix_chunks(local_chunk, reachy_chunk)
+        self._update_state()
+        return mixed
+
+    @staticmethod
+    def _try_get_queue_item(audio_q: "queue.Queue[bytes]", timeout: float) -> bytes | None:
+        try:
+            return audio_q.get(timeout=max(0.0, float(timeout)))
+        except queue.Empty:
+            return None
+
+    def _sync_sources(self) -> None:
+        requested_mode = normalize_audio_source_mode(
+            self.config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
+        reachy_host = str(self.config.get("reachy_mic_ssh_host", "")).strip()
+        reachy_connected = parse_bool(self.config.get("reachy_mic_robot_connected"), False) and bool(reachy_host)
+        if not reachy_connected:
+            effective_mode = "pc"
+            local_enabled = True
+            reachy_enabled = False
+        elif requested_mode == "pc":
+            effective_mode = "pc"
+            local_enabled = True
+            reachy_enabled = False
+        elif requested_mode == "reachy":
+            effective_mode = "reachy"
+            local_enabled = False
+            reachy_enabled = True
+        else:
+            effective_mode = "blend"
+            local_enabled = True
+            reachy_enabled = True
+
+        self.requested_mode = requested_mode
+        self.effective_mode = effective_mode
+        self.local_enabled = local_enabled
+        self.reachy_enabled = reachy_enabled
+        self.reachy_connected = reachy_connected
+
+        route_signature = "|".join(
+            (
+                requested_mode,
+                effective_mode,
+                "1" if local_enabled else "0",
+                "1" if reachy_enabled else "0",
+                reachy_host,
+                str(self.config.get("audio_input_device_name", "")).strip(),
+                "1" if parse_bool(self.config.get("prefer_non_virtual_input_device"), True) else "0",
+            )
+        )
+        if route_signature == self.last_route_signature:
+            return
+
+        self.last_route_signature = route_signature
+
+        if local_enabled:
+            self._ensure_local_stream()
+        else:
+            self._close_local_stream()
+
+        self.remote_stream.ensure_running(
+            reachy_enabled,
+            ssh_host=reachy_host,
+            ssh_port=int(self.config.get("reachy_mic_ssh_port", DEFAULT_REACHY_MIC_SSH_PORT)),
+            ssh_user=str(self.config.get("reachy_mic_ssh_user", DEFAULT_REACHY_MIC_SSH_USER)).strip(),
+            ssh_password=str(self.config.get("reachy_mic_ssh_password", DEFAULT_REACHY_MIC_SSH_PASSWORD)).strip(),
+            device_spec_override=str(self.config.get("reachy_mic_device_spec", "")).strip(),
+        )
+        self._update_state()
+
+    def _ensure_local_stream(self) -> None:
+        if self.sd is None:
+            if self.local_error != "sounddevice unavailable":
+                self.local_error = "sounddevice unavailable"
+                self.state.log("warn", "PC microphone is unavailable because sounddevice is not installed.")
+            self._close_local_stream()
+            return
+
+        selected_device_index, selected_device_name, select_err = self.owner._select_input_device(self.sd)
+        if selected_device_index is None:
+            if select_err and select_err != self.local_error:
+                self.local_error = select_err
+                self.state.log("warn", f"PC microphone selection failed: {select_err}")
+            self._close_local_stream()
+            return
+
+        if (
+            self.local_stream is not None and
+            self.local_device_index == selected_device_index and
+            self.local_device_name == selected_device_name
+        ):
+            self.local_error = ""
+            return
+
+        self._close_local_stream()
+
+        def callback(indata, _frames, _time_info, status):
+            if status:
+                self.state.log("warn", f"Audio callback status: {status}")
+            try:
+                self.local_q.put_nowait(bytes(indata))
+            except queue.Full:
+                pass
+
+        try:
+            stream = self.sd.RawInputStream(
+                device=selected_device_index,
+                samplerate=self.sample_rate_hz,
+                blocksize=self.blocksize,
+                dtype="int16",
+                channels=1,
+                callback=callback,
+            )
+            stream.start()
+        except Exception as exc:
+            self.local_error = str(exc)
+            self.state.log("warn", f"PC microphone open failed: {exc}")
+            self._close_local_stream()
+            return
+
+        self.local_stream = stream
+        self.local_device_index = selected_device_index
+        self.local_device_name = selected_device_name
+        self.local_error = ""
+
+    def _close_local_stream(self) -> None:
+        if self.local_stream is not None:
+            try:
+                self.local_stream.stop()
+            except Exception:
+                pass
+            try:
+                self.local_stream.close()
+            except Exception:
+                pass
+            self.local_stream = None
+        self.local_device_index = -1
+        self.local_device_name = ""
+        while True:
+            try:
+                self.local_q.get_nowait()
+            except queue.Empty:
+                break
+
+    def _update_state(self) -> None:
+        display_parts: list[str] = []
+        selected_index = self.local_device_index if self.local_stream is not None else -1
+
+        if self.local_stream is not None and self.local_device_name:
+            display_parts.append(f"PC [{self.local_device_index}] {self.local_device_name}")
+        elif self.local_enabled and self.local_error and self.requested_mode == "pc":
+            display_parts.append("PC microphone unavailable")
+
+        if self.reachy_enabled:
+            if self.remote_stream.device_name:
+                display_parts.append(f"Reachy {self.remote_stream.device_name}")
+            elif self.remote_stream.last_error:
+                display_parts.append("Reachy microphone unavailable")
+
+        if not display_parts:
+            if self.effective_mode == "reachy":
+                display_name = "Reachy microphone unavailable"
+            else:
+                display_name = "No microphone source active"
+        elif len(display_parts) == 1:
+            display_name = display_parts[0]
+        else:
+            display_name = "Blend: " + " + ".join(display_parts)
+
+        self.state.set_audio_source_status(
+            requested_mode=self.requested_mode,
+            effective_mode=self.effective_mode,
+            display_name=display_name,
+            local_device_index=selected_index,
+            local_device_name=self.local_device_name,
+            reachy_device_name=self.remote_stream.device_name,
+            reachy_connected=self.reachy_connected,
+            reachy_available=self.remote_stream.available,
+            reachy_error=self.remote_stream.last_error,
+        )
+
+    @staticmethod
+    def _mix_chunks(first: bytes | None, second: bytes | None) -> bytes | None:
+        if first and not second:
+            return first
+        if second and not first:
+            return second
+        if not first or not second:
+            return None
+
+        sample_bytes = min(len(first), len(second))
+        sample_bytes -= sample_bytes % 2
+        if sample_bytes <= 0:
+            return first or second
+
+        first_view = memoryview(first[:sample_bytes]).cast("h")
+        second_view = memoryview(second[:sample_bytes]).cast("h")
+        mixed = bytearray(sample_bytes)
+        mixed_view = memoryview(mixed).cast("h")
+        for index in range(len(mixed_view)):
+            value = int((int(first_view[index]) + int(second_view[index])) / 2)
+            if value > 32767:
+                value = 32767
+            elif value < -32768:
+                value = -32768
+            mixed_view[index] = value
+        return bytes(mixed)
+class VoskSTT(MicrophoneSTTBase):
+    def __init__(self, config: dict, state: State, parser: Parser, online_orchestrator: OnlineAIOrchestrator) -> None:
+        super().__init__(
+            config,
+            state,
+            parser,
+            online_orchestrator,
+            backend_name="vosk",
+            thread_name="vosk-stt",
+        )
 
     @staticmethod
     def _reset_recognizer(recognizer) -> None:
@@ -2146,106 +3021,18 @@ class VoskSTT:
             # Reset support is recognizer-version dependent; ignore failures.
             pass
 
-    @staticmethod
-    def _is_virtual_input_name(name: str) -> bool:
-        lowered = (name or "").strip().lower()
-        if not lowered:
-            return False
-
-        virtual_tokens = (
-            "virtual",
-            "stereo mix",
-            "vb-audio",
-            "voicemeeter",
-            "cable output",
-            "cable input",
-            "loopback",
-            "what u hear",
-            "wave out",
-            "wave out mix",
-            "monitor",
-            "obs",
-            "ndi",
-            "blackhole",
-            "soundflower",
-            "sunflower",
-        )
-        return any(tok in lowered for tok in virtual_tokens)
-
-    def _score_input_device(
-        self,
-        device_name: str,
-        preferred_name: str,
-        prefer_non_virtual: bool,
-    ) -> int:
-        lowered = (device_name or "").strip().lower()
-        score = 0
-        is_virtual = self._is_virtual_input_name(lowered)
-        if prefer_non_virtual:
-            score += -220 if is_virtual else 120
-        elif is_virtual:
-            score -= 40
-
-        preferred = (preferred_name or "").strip().lower()
-        if preferred:
-            if lowered == preferred:
-                score += 900
-            elif preferred in lowered or lowered in preferred:
-                score += 320
-
-        if "headset" in lowered:
-            score += 30
-        if "microphone" in lowered or "mic" in lowered:
-            score += 20
-        if "array" in lowered:
-            score += 8
-        return score
-
-    def _select_input_device(self, sd_module) -> tuple[int | None, str, str]:
-        try:
-            devices = sd_module.query_devices()
-        except Exception as exc:
-            return None, "", f"Audio device query failed: {exc}"
-
-        candidates: list[tuple[int, str]] = []
-        for idx, device in enumerate(devices):
-            try:
-                max_input = int(device.get("max_input_channels", 0))
-            except Exception:
-                max_input = 0
-            if max_input <= 0:
-                continue
-            name = str(device.get("name", "")).strip() or f"input_{idx}"
-            candidates.append((idx, name))
-
-        if not candidates:
-            return None, "", "No audio input devices available."
-
-        preferred_name = str(self.config.get("audio_input_device_name", "")).strip()
-        prefer_non_virtual = parse_bool(
-            self.config.get("prefer_non_virtual_input_device"),
-            True)
-
-        best_index = None
-        best_name = ""
-        best_score = -10**9
-        for idx, name in candidates:
-            score = self._score_input_device(name, preferred_name, prefer_non_virtual)
-            if best_index is None or score > best_score:
-                best_index = idx
-                best_name = name
-                best_score = score
-
-        return best_index, best_name, ""
-
     def _run(self) -> None:
         try:
             import vosk  # type: ignore
-            import sounddevice as sd  # type: ignore
         except Exception as exc:
             self.state.set_runtime(False, False, "none")
-            self.state.log("error", f"Vosk/sounddevice unavailable; STT disabled: {exc}")
+            self.state.log("error", f"Vosk unavailable; STT disabled: {exc}")
             return
+
+        try:
+            import sounddevice as sd  # type: ignore
+        except Exception:
+            sd = None
 
         model_path = resolve_config_relative_path(self.config, self.config.get("stt_model_path", ""))
         if not model_path.exists():
@@ -2261,99 +3048,82 @@ class VoskSTT:
             self.state.log("error", f"Failed to initialize Vosk model: {exc}")
             return
 
-        selected_device_index, selected_device_name, select_err = self._select_input_device(sd)
-        if selected_device_index is None:
-            self.state.set_runtime(False, False, "none")
-            self.state.log("error", f"Failed to select input device: {select_err}")
-            return
-        self.state.set_selected_input_device(selected_device_index, selected_device_name)
-
-        audio_q = queue.Queue(maxsize=80)
-
-        def callback(indata, _frames, _time_info, status):
-            if status:
-                self.state.log("warn", f"Audio callback status: {status}")
-            try:
-                audio_q.put_nowait(bytes(indata))
-            except queue.Full:
-                pass
-
-        self.state.set_runtime(True, self.state.is_listening_enabled(), "vosk")
-        self.state.log(
-            "info",
-            f"Vosk STT worker started (device [{selected_device_index}] {selected_device_name}).")
+        audio_input = None
+        audio_input = HybridAudioInput(
+            self,
+            sd,
+            int(self.config["stt_sample_rate_hz"]),
+            4000,
+        )
+        self.state.set_runtime(audio_input.has_active_source(), self.state.is_listening_enabled(), "vosk")
+        self.state.log("info", f"Vosk STT worker started ({audio_input.describe_route()}).")
 
         try:
-            with sd.RawInputStream(
-                device=selected_device_index,
-                samplerate=int(self.config["stt_sample_rate_hz"]),
-                blocksize=4000,
-                dtype="int16",
-                channels=1,
-                callback=callback,
-            ):
-                last_listening_state = None
-                tts_gate_active = False
-                while not self.stop_event.is_set():
-                    try:
-                        chunk = audio_q.get(timeout=0.25)
-                    except queue.Empty:
-                        listening_enabled = self.state.is_listening_enabled() and not self.state.is_tts_speaking()
-                        if listening_enabled != last_listening_state:
-                            self.state.set_runtime(True, listening_enabled, "vosk")
-                            last_listening_state = listening_enabled
-                        continue
-
-                    tts_speaking = self.state.is_tts_speaking()
-                    if tts_speaking:
-                        if last_listening_state is not False:
-                            self.state.set_runtime(True, False, "vosk")
-                            last_listening_state = False
-                        if not tts_gate_active:
-                            tts_gate_active = True
-                            self.state.clear_pending_partial()
-                            self._reset_recognizer(recognizer)
-                            self.state.log("info", "STT input gated while TTS is speaking.")
-                        continue
-                    if tts_gate_active:
-                        tts_gate_active = False
-                        self._drain_audio_queue(audio_q)
-                        self._reset_recognizer(recognizer)
-                        self.state.log("info", "STT input resumed after TTS completed.")
-
-                    listening_enabled = self.state.is_listening_enabled()
+            last_listening_state = None
+            tts_gate_active = False
+            while not self.stop_event.is_set():
+                chunk = audio_input.read_chunk(0.25)
+                if chunk is None:
+                    listening_enabled = self.state.is_listening_enabled() and not self.state.is_tts_speaking()
                     if listening_enabled != last_listening_state:
-                        self.state.set_runtime(True, listening_enabled, "vosk")
+                        self.state.set_runtime(audio_input.has_active_source(), listening_enabled, "vosk")
                         last_listening_state = listening_enabled
+                    continue
 
-                    if not listening_enabled:
-                        continue
+                tts_speaking = self.state.is_tts_speaking()
+                if tts_speaking:
+                    if last_listening_state is not False:
+                        self.state.set_runtime(audio_input.has_active_source(), False, "vosk")
+                        last_listening_state = False
+                    if not tts_gate_active:
+                        tts_gate_active = True
+                        self.state.clear_pending_partial()
+                        self._reset_recognizer(recognizer)
+                        self.state.log("info", "STT input gated while TTS is speaking.")
+                    continue
+                if tts_gate_active:
+                    tts_gate_active = False
+                    self._reset_recognizer(recognizer)
+                    self.state.log("info", "STT input resumed after TTS completed.")
 
-                    if recognizer.AcceptWaveform(chunk):
-                        payload = json.loads(recognizer.Result())
-                        text = str(payload.get("text", "")).strip()
-                        if text:
-                            self.state.process_transcript(
-                                text,
-                                float(self.config["transcript_default_confidence"]),
-                                True,
-                                self.parser,
-                                self.online_orchestrator,
-                            )
-                    else:
-                        payload = json.loads(recognizer.PartialResult())
-                        partial = str(payload.get("partial", "")).strip()
-                        if partial:
-                            self.state.process_transcript(
-                                partial,
-                                float(self.config["transcript_default_confidence"]),
-                                False,
-                                self.parser,
-                                self.online_orchestrator,
-                            )
+                listening_enabled = self.state.is_listening_enabled()
+                if listening_enabled != last_listening_state:
+                    self.state.set_runtime(audio_input.has_active_source(), listening_enabled, "vosk")
+                    last_listening_state = listening_enabled
+
+                if not listening_enabled:
+                    continue
+
+                if recognizer.AcceptWaveform(chunk):
+                    payload = json.loads(recognizer.Result())
+                    text = str(payload.get("text", "")).strip()
+                    if text:
+                        self.state.process_transcript(
+                            text,
+                            float(self.config["transcript_default_confidence"]),
+                            True,
+                            self.parser,
+                            self.online_orchestrator,
+                        )
+                else:
+                    payload = json.loads(recognizer.PartialResult())
+                    partial = str(payload.get("partial", "")).strip()
+                    if partial:
+                        self.state.process_transcript(
+                            partial,
+                            float(self.config["transcript_default_confidence"]),
+                            False,
+                            self.parser,
+                            self.online_orchestrator,
+                        )
         except Exception as exc:
             self.state.log("error", f"Vosk STT runtime failed: {exc}")
         finally:
+            if audio_input is not None:
+                try:
+                    audio_input.close()
+                except Exception:
+                    pass
             self.state.set_runtime(False, False, "vosk")
             self.state.log("warn", "Vosk STT worker stopped.")
 
@@ -2372,10 +3142,8 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
     def _run(self) -> None:
         try:
             import sounddevice as sd  # type: ignore
-        except Exception as exc:
-            self.state.set_runtime(False, False, "none")
-            self.state.log("error", f"sounddevice unavailable; OpenAI STT disabled: {exc}")
-            return
+        except Exception:
+            sd = None
 
         api_key, env_var = self._read_openai_api_key()
         if not api_key:
@@ -2385,13 +3153,6 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                 f"OpenAI STT requires an API key in the local secret store or env var '{env_var}'.",
             )
             return
-
-        selected_device_index, selected_device_name, select_err = self._select_input_device(sd)
-        if selected_device_index is None:
-            self.state.set_runtime(False, False, "none")
-            self.state.log("error", f"Failed to select input device: {select_err}")
-            return
-        self.state.set_selected_input_device(selected_device_index, selected_device_name)
 
         sample_rate = int(self.config.get("stt_sample_rate_hz", 16000))
         blocksize = 1600
@@ -2408,8 +3169,6 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
         trailing_silence_seconds = 0.0
         speech_active = False
 
-        audio_q = queue.Queue(maxsize=120)
-
         def reset_segment() -> None:
             nonlocal active_chunks, active_duration_seconds, trailing_silence_seconds, speech_active
             active_chunks = []
@@ -2418,121 +3177,109 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
             speech_active = False
             pre_roll_chunks.clear()
 
-        def callback(indata, _frames, _time_info, status):
-            if status:
-                self.state.log("warn", f"Audio callback status: {status}")
-            try:
-                audio_q.put_nowait(bytes(indata))
-            except queue.Full:
-                pass
-
-        self.state.set_runtime(True, self.state.is_listening_enabled(), self.backend_name)
-        self.state.log(
-            "info",
-            f"OpenAI STT worker started (device [{selected_device_index}] {selected_device_name}).")
+        audio_input = None
+        audio_input = HybridAudioInput(self, sd, sample_rate, blocksize)
+        self.state.set_runtime(audio_input.has_active_source(), self.state.is_listening_enabled(), self.backend_name)
+        self.state.log("info", f"OpenAI STT worker started ({audio_input.describe_route()}).")
 
         try:
-            with sd.RawInputStream(
-                device=selected_device_index,
-                samplerate=sample_rate,
-                blocksize=blocksize,
-                dtype="int16",
-                channels=1,
-                callback=callback,
-            ):
-                last_listening_state = None
-                tts_gate_active = False
-                while not self.stop_event.is_set():
-                    try:
-                        chunk = audio_q.get(timeout=0.25)
-                    except queue.Empty:
-                        listening_enabled = self.state.is_listening_enabled() and not self.state.is_tts_speaking()
-                        if listening_enabled != last_listening_state:
-                            self.state.set_runtime(True, listening_enabled, self.backend_name)
-                            last_listening_state = listening_enabled
-                        continue
-
-                    tts_speaking = self.state.is_tts_speaking()
-                    if tts_speaking:
-                        if last_listening_state is not False:
-                            self.state.set_runtime(True, False, self.backend_name)
-                            last_listening_state = False
-                        if not tts_gate_active:
-                            tts_gate_active = True
-                            self.state.clear_pending_partial()
-                            reset_segment()
-                            self._drain_audio_queue(audio_q)
-                            self.state.log("info", "STT input gated while TTS is speaking.")
-                        continue
-                    if tts_gate_active:
-                        tts_gate_active = False
-                        reset_segment()
-                        self._drain_audio_queue(audio_q)
-                        self.state.log("info", "STT input resumed after TTS completed.")
-
-                    listening_enabled = self.state.is_listening_enabled()
+            last_listening_state = None
+            tts_gate_active = False
+            while not self.stop_event.is_set():
+                chunk = audio_input.read_chunk(0.25)
+                if chunk is None:
+                    listening_enabled = self.state.is_listening_enabled() and not self.state.is_tts_speaking()
                     if listening_enabled != last_listening_state:
-                        self.state.set_runtime(True, listening_enabled, self.backend_name)
+                        self.state.set_runtime(audio_input.has_active_source(), listening_enabled, self.backend_name)
                         last_listening_state = listening_enabled
+                    continue
 
-                    if not listening_enabled:
+                tts_speaking = self.state.is_tts_speaking()
+                if tts_speaking:
+                    if last_listening_state is not False:
+                        self.state.set_runtime(audio_input.has_active_source(), False, self.backend_name)
+                        last_listening_state = False
+                    if not tts_gate_active:
+                        tts_gate_active = True
+                        self.state.clear_pending_partial()
                         reset_segment()
-                        continue
-
-                    rms = pcm16_rms(chunk)
-                    is_speech_chunk = rms >= rms_threshold
-
-                    if speech_active:
-                        active_chunks.append(chunk)
-                        active_duration_seconds += chunk_duration_seconds
-                        trailing_silence_seconds = 0.0 if is_speech_chunk else (
-                            trailing_silence_seconds + chunk_duration_seconds)
-                    else:
-                        if pre_roll_chunk_count > 0:
-                            pre_roll_chunks.append(chunk)
-                        if not is_speech_chunk:
-                            continue
-                        speech_active = True
-                        active_chunks = list(pre_roll_chunks) if pre_roll_chunk_count > 0 else []
-                        active_chunks.append(chunk)
-                        active_duration_seconds = chunk_duration_seconds * float(len(active_chunks))
-                        trailing_silence_seconds = 0.0
-
-                    clip_ready = (
-                        active_duration_seconds >= max_clip_seconds or
-                        trailing_silence_seconds >= silence_seconds
-                    )
-                    if not clip_ready:
-                        continue
-
-                    clip_duration_seconds = active_duration_seconds
-                    clip_audio = b"".join(active_chunks)
+                        audio_input.clear_buffers()
+                        self.state.log("info", "STT input gated while TTS is speaking.")
+                    continue
+                if tts_gate_active:
+                    tts_gate_active = False
                     reset_segment()
+                    audio_input.clear_buffers()
+                    self.state.log("info", "STT input resumed after TTS completed.")
 
-                    if clip_duration_seconds < min_clip_seconds or not clip_audio:
+                listening_enabled = self.state.is_listening_enabled()
+                if listening_enabled != last_listening_state:
+                    self.state.set_runtime(audio_input.has_active_source(), listening_enabled, self.backend_name)
+                    last_listening_state = listening_enabled
+
+                if not listening_enabled:
+                    reset_segment()
+                    continue
+
+                rms = pcm16_rms(chunk)
+                is_speech_chunk = rms >= rms_threshold
+
+                if speech_active:
+                    active_chunks.append(chunk)
+                    active_duration_seconds += chunk_duration_seconds
+                    trailing_silence_seconds = 0.0 if is_speech_chunk else (
+                        trailing_silence_seconds + chunk_duration_seconds)
+                else:
+                    if pre_roll_chunk_count > 0:
+                        pre_roll_chunks.append(chunk)
+                    if not is_speech_chunk:
                         continue
+                    speech_active = True
+                    active_chunks = list(pre_roll_chunks) if pre_roll_chunk_count > 0 else []
+                    active_chunks.append(chunk)
+                    active_duration_seconds = chunk_duration_seconds * float(len(active_chunks))
+                    trailing_silence_seconds = 0.0
 
-                    try:
-                        transcript = self._transcribe_clip(clip_audio, sample_rate)
-                    except Exception as exc:
-                        error_message = str(exc).strip() or "Unknown OpenAI transcription error."
-                        friendly = OnlineAIOrchestrator._summarize_online_request_error(error_message)
-                        self.state.log("error", f"OpenAI transcription failed: {friendly}")
-                        continue
+                clip_ready = (
+                    active_duration_seconds >= max_clip_seconds or
+                    trailing_silence_seconds >= silence_seconds
+                )
+                if not clip_ready:
+                    continue
 
-                    if not transcript:
-                        continue
+                clip_duration_seconds = active_duration_seconds
+                clip_audio = b"".join(active_chunks)
+                reset_segment()
 
-                    self.state.process_transcript(
-                        transcript,
-                        float(self.config["transcript_default_confidence"]),
-                        True,
-                        self.parser,
-                        self.online_orchestrator,
-                    )
+                if clip_duration_seconds < min_clip_seconds or not clip_audio:
+                    continue
+
+                try:
+                    transcript = self._transcribe_clip(clip_audio, sample_rate)
+                except Exception as exc:
+                    error_message = str(exc).strip() or "Unknown OpenAI transcription error."
+                    friendly = OnlineAIOrchestrator._summarize_online_request_error(error_message)
+                    self.state.log("error", f"OpenAI transcription failed: {friendly}")
+                    continue
+
+                if not transcript:
+                    continue
+
+                self.state.process_transcript(
+                    transcript,
+                    float(self.config["transcript_default_confidence"]),
+                    True,
+                    self.parser,
+                    self.online_orchestrator,
+                )
         except Exception as exc:
             self.state.log("error", f"OpenAI transcription runtime failed: {exc}")
         finally:
+            if audio_input is not None:
+                try:
+                    audio_input.close()
+                except Exception:
+                    pass
             self.state.set_runtime(False, False, self.backend_name)
             self.state.log("warn", "OpenAI STT worker stopped.")
 
@@ -4308,6 +5055,15 @@ class Handler(BaseHTTPRequestHandler):
             self.app.state.set_listening_enabled(enabled)
             self.app.state.log("info", f"/listening -> {'enabled' if enabled else 'disabled'}")
             self._send(HTTPStatus.OK, {"ok": True, "enabled": enabled})
+            return
+
+        if path == "/microphone-source":
+            result = apply_microphone_routing_payload(self.app.config, payload)
+            self.app.state.log(
+                "info",
+                f"/microphone-source -> requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
+            )
+            self._send(HTTPStatus.OK, result)
             return
 
         if path == "/online-test":

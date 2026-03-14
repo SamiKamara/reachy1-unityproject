@@ -36,6 +36,9 @@ To enable microphone STT (`openai_transcribe` or local `vosk`) and local TTS (`p
 pip install -r ./requirements-optional.txt
 ```
 
+For Reachy 2021 robot-mic capture over SSH, `paramiko` is now included in `requirements-optional.txt`.
+If you prefer not to install it, the sidecar also tries `plink` and then key-based native `ssh` as fallbacks.
+
 On Windows, install `llama-cpp-python` from prebuilt CPU wheels (recommended) to avoid local C/C++ build toolchain issues:
 ```powershell
 pip install --upgrade --prefer-binary llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
@@ -70,6 +73,8 @@ Then set config values:
 - `help_max_answer_chars`: trims long generated answers to keep UI speech concise
 - `audio_input_device_name`: optional preferred input device name (empty = auto)
 - `prefer_non_virtual_input_device`: prefer physical mic-like inputs over virtual loopback devices
+- `audio_source_mode`: `"pc"`, `"reachy"`, or `"blend"` (`"blend"` keeps the PC mic and mixes in Reachy's mic when a real robot session is active)
+- `reachy_mic_*`: optional runtime SSH details for the Reachy 2021 ReSpeaker microphone path
 
 For optional local LLM help mode:
 - install `llama-cpp-python` (already listed in `requirements-optional.txt`)
@@ -184,6 +189,10 @@ In Unity Local AI Agent panel keep these defaults (or set explicitly):
   - `Prefer physical mic` + `Auto mic` heuristics for default selection
   - microphone selector dropdown to choose a specific device
   - hold-to-record mic test button that plays captured audio on release
+- Connections view now also has a `Microphones` panel:
+  - `PC Mic`, `Reachy Mic`, and `Blend Both` routing modes
+  - `Blend Both` is the default and falls back to PC mic only until a real robot session is active
+  - Reachy 2021 mic audio is captured over SSH from the robot computer with default credentials `reachy / reachy`
 
 If `Auto-start sidecar` is enabled in Unity, pressing `Enable local AI agent` starts the sidecar first and only enables bridge polling after the sidecar is reachable.
 

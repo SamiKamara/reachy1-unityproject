@@ -26,6 +26,7 @@
   "listening_endpoint": "http://127.0.0.1:8099/listening",
   "preferred_microphone_device_name": "",
   "ignore_virtual_microphone_devices": true,
+  "microphone_source_mode": "blend",
   "auto_start_sidecar": true,
   "auto_stop_autostarted_sidecar_on_disable": true,
   "sidecar_sync_config_on_start": true,

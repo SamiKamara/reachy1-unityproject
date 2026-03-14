@@ -48,6 +48,20 @@ namespace Reachy.ControlApp
             "Use Online AI"
         };
 
+        private enum ConnectionMicrophoneSourceMode
+        {
+            PcOnly = 0,
+            ReachyOnly = 1,
+            Blend = 2
+        }
+
+        private static readonly string[] ConnectionMicrophoneSourceModeLabels =
+        {
+            "PC Mic",
+            "Reachy Mic",
+            "Blend Both"
+        };
+
         private const float DesignMarginPixels = 10f;
         private const float DesignPanelGap = 10f;
         private const float DesignViewTopBarHeight = 42f;
@@ -88,6 +102,7 @@ namespace Reachy.ControlApp
         private const string RobotSpeakerTtsMirrorPath = "speak";
         private const string RobotSpeakerAudioMirrorPath = "play-audio";
         private const string RobotSpeakerStopPath = "stop";
+        private const string SidecarMicrophoneSourcePath = "/microphone-source";
         private const int RobotSpeakerAudioMirrorTimeoutSeconds = 15;
         private const string ReachyIntroductionActedSequenceName = "Reachy introduction";
         private const string ReachyIntroductionHelloWavePoseName = "Hello Pose D";
@@ -110,6 +125,7 @@ namespace Reachy.ControlApp
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
         private const int DefaultRobotSpeakerTtsPort = 8101;
+        private const int DefaultReachyMicrophoneSshPort = 22;
         private const int RobotSpeakerFallbackTtsPort = 8099;
         private const int RobotSpeakerHealthProbeTimeoutMs = 1200;
         private const float RobotSpeakerHealthProbeRetrySeconds = 20f;
@@ -744,6 +760,8 @@ namespace Reachy.ControlApp
         [SerializeField] private string localAiAgentListeningEndpoint = VoiceAgentBridge.DefaultListeningEndpoint;
         [SerializeField] private string localAiAgentPreferredMicrophoneDeviceName = string.Empty;
         [SerializeField] private bool localAiAgentIgnoreVirtualMicrophones = true;
+        [SerializeField] private ConnectionMicrophoneSourceMode localAiAgentConnectionMicrophoneSourceMode =
+            ConnectionMicrophoneSourceMode.Blend;
         [SerializeField] private bool localAiAgentAutoStartSidecar = true;
         [SerializeField] private bool localAiAgentAutoStopAutoStartedSidecarOnDisable = true;
         [SerializeField] private bool localAiAgentSyncSidecarConfigOnStart = true;
@@ -952,6 +970,11 @@ namespace Reachy.ControlApp
         private bool _onlineAiShowApiKeySecretInput;
         private Task<SidecarProbeResult> _onlineAiStatusTask;
         private Task<OnlineAiTestResult> _onlineAiTestTask;
+        private Task<MicrophoneRoutingUpdateResult> _microphoneRoutingTask;
+        private string _microphoneRoutingStatus =
+            "PC mic works exactly like before. Blend mode adds Reachy's mic only while a real robot session is active.";
+        private string _microphoneRoutingLastPayloadKey = string.Empty;
+        private string _microphoneRoutingLastAppliedKey = string.Empty;
         private bool _sidecarShutdownCleanupDone;
 
         private struct SidecarProbeResult
@@ -989,6 +1012,15 @@ namespace Reachy.ControlApp
             public string Error;
         }
 
+        private struct MicrophoneRoutingUpdateResult
+        {
+            public bool Success;
+            public string RequestedMode;
+            public string EffectiveMode;
+            public string Message;
+            public string Error;
+        }
+
         private struct RobotSpeakerProbeResult
         {
             public bool Reachable;
@@ -1015,6 +1047,14 @@ namespace Reachy.ControlApp
             public bool tts_speaking;
             public int selected_input_device_index = -1;
             public string selected_input_device_name = string.Empty;
+            public string audio_source_mode = string.Empty;
+            public string audio_source_effective = string.Empty;
+            public int local_input_device_index = -1;
+            public string local_input_device_name = string.Empty;
+            public string reachy_input_device_name = string.Empty;
+            public bool reachy_mic_connected;
+            public bool reachy_mic_available;
+            public string reachy_mic_last_error = string.Empty;
             public string ai_mode = string.Empty;
             public bool online_ai_enabled;
             public string online_ai_model = string.Empty;
@@ -1055,6 +1095,29 @@ namespace Reachy.ControlApp
             public string reply_text = string.Empty;
             public string message = string.Empty;
             public string http_error = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class MicrophoneRoutingPayload
+        {
+            public string audio_source_mode = "blend";
+            public string audio_input_device_name = string.Empty;
+            public bool prefer_non_virtual_input_device = true;
+            public bool reachy_mic_robot_connected;
+            public string reachy_mic_ssh_host = string.Empty;
+            public int reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort;
+            public string reachy_mic_ssh_user = "reachy";
+            public string reachy_mic_ssh_password = "reachy";
+            public string reachy_mic_device_spec = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class MicrophoneRoutingResponseEnvelope
+        {
+            public bool ok;
+            public string requested_mode = string.Empty;
+            public string effective_mode = string.Empty;
+            public string message = string.Empty;
         }
 
         [Serializable]
@@ -1108,6 +1171,7 @@ namespace Reachy.ControlApp
             public string listening_endpoint = VoiceAgentBridge.DefaultListeningEndpoint;
             public string preferred_microphone_device_name = string.Empty;
             public bool ignore_virtual_microphone_devices = true;
+            public string microphone_source_mode = "blend";
             public bool auto_start_sidecar = true;
             public bool auto_stop_autostarted_sidecar_on_disable = true;
             public bool sidecar_sync_config_on_start = true;
@@ -1174,6 +1238,13 @@ namespace Reachy.ControlApp
             public int help_max_answer_chars = 360;
             public string audio_input_device_name = string.Empty;
             public bool prefer_non_virtual_input_device = true;
+            public string audio_source_mode = "blend";
+            public bool reachy_mic_robot_connected = false;
+            public string reachy_mic_ssh_host = string.Empty;
+            public int reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort;
+            public string reachy_mic_ssh_user = "reachy";
+            public string reachy_mic_ssh_password = "reachy";
+            public string reachy_mic_device_spec = string.Empty;
             public bool start_listening_enabled = true;
             public int min_transcript_chars = 4;
             public int min_transcript_words = 1;
@@ -3090,6 +3161,7 @@ namespace Reachy.ControlApp
                 localAiAgentRetryBackoffMaxSeconds,
                 localAiAgentDegradedFailureThreshold);
             _voiceAgentBridge.SetEnabled(bridgeShouldBeEnabled, Time.unscaledTime);
+            UpdateRemoteMicrophoneRouting();
             ConsumeOnlineAiStatusTaskIfReady();
             ConsumeOnlineAiTestTaskIfReady();
 
@@ -3700,6 +3772,196 @@ namespace Reachy.ControlApp
             _voiceLastRequestedListeningEnabled = enabled;
         }
 
+        private MicrophoneRoutingPayload BuildMicrophoneRoutingPayload()
+        {
+            return new MicrophoneRoutingPayload
+            {
+                audio_source_mode = GetConnectionMicrophoneSourceModeConfigValue(),
+                audio_input_device_name = localAiAgentPreferredMicrophoneDeviceName ?? string.Empty,
+                prefer_non_virtual_input_device = localAiAgentIgnoreVirtualMicrophones,
+                reachy_mic_robot_connected = IsRealRobotSessionActive(),
+                reachy_mic_ssh_host = GetReachyMicrophoneTargetHost(),
+                reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort,
+                reachy_mic_ssh_user = string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim(),
+                reachy_mic_ssh_password = string.IsNullOrWhiteSpace(robotSshPassword) ? "reachy" : robotSshPassword,
+                reachy_mic_device_spec = string.Empty
+            };
+        }
+
+        private static string BuildMicrophoneRoutingPayloadKey(string endpoint, MicrophoneRoutingPayload payload)
+        {
+            if (payload == null)
+            {
+                return endpoint ?? string.Empty;
+            }
+
+            return string.Join(
+                "|",
+                endpoint ?? string.Empty,
+                payload.audio_source_mode ?? string.Empty,
+                payload.audio_input_device_name ?? string.Empty,
+                payload.prefer_non_virtual_input_device ? "phys" : "all",
+                payload.reachy_mic_robot_connected ? "robot-on" : "robot-off",
+                payload.reachy_mic_ssh_host ?? string.Empty,
+                payload.reachy_mic_ssh_user ?? string.Empty,
+                payload.reachy_mic_ssh_password ?? string.Empty);
+        }
+
+        private void UpdateRemoteMicrophoneRouting()
+        {
+            ConsumeMicrophoneRoutingTaskIfReady();
+
+            if (!_localAiAgentSidecarReady)
+            {
+                _microphoneRoutingLastAppliedKey = string.Empty;
+                if (IsRealRobotSessionActive())
+                {
+                    _microphoneRoutingStatus = "Waiting for the local sidecar before Reachy mic routing can be applied.";
+                }
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            if (!TryBuildSiblingEndpoint(intentEndpoint, SidecarMicrophoneSourcePath, out string endpoint))
+            {
+                _microphoneRoutingStatus = "Could not build the sidecar microphone-source endpoint URL.";
+                return;
+            }
+
+            if (_microphoneRoutingTask != null)
+            {
+                return;
+            }
+
+            MicrophoneRoutingPayload payload = BuildMicrophoneRoutingPayload();
+            string payloadKey = BuildMicrophoneRoutingPayloadKey(endpoint, payload);
+            if (string.Equals(payloadKey, _microphoneRoutingLastAppliedKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _microphoneRoutingLastPayloadKey = payloadKey;
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 500, 10000);
+            _microphoneRoutingTask = Task.Run(() => SendMicrophoneRoutingUpdate(endpoint, timeoutMs, payload));
+        }
+
+        private void ConsumeMicrophoneRoutingTaskIfReady()
+        {
+            if (_microphoneRoutingTask == null || !_microphoneRoutingTask.IsCompleted)
+            {
+                return;
+            }
+
+            MicrophoneRoutingUpdateResult result;
+            try
+            {
+                result = _microphoneRoutingTask.Result;
+            }
+            catch (Exception ex)
+            {
+                _microphoneRoutingTask = null;
+                _microphoneRoutingStatus = $"Mic routing update crashed: {ex.Message}";
+                return;
+            }
+
+            _microphoneRoutingTask = null;
+            if (result.Success)
+            {
+                _microphoneRoutingLastAppliedKey = _microphoneRoutingLastPayloadKey;
+                _microphoneRoutingStatus = string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Mic routing synced (requested={result.RequestedMode}, effective={result.EffectiveMode})."
+                    : result.Message;
+                return;
+            }
+
+            _microphoneRoutingStatus = string.IsNullOrWhiteSpace(result.Error)
+                ? "Mic routing update failed."
+                : $"Mic routing update failed: {result.Error}";
+        }
+
+        private static MicrophoneRoutingUpdateResult SendMicrophoneRoutingUpdate(
+            string endpoint,
+            int timeoutMs,
+            MicrophoneRoutingPayload payload)
+        {
+            try
+            {
+                string jsonBody = JsonUtility.ToJson(payload);
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.ContentType = "application/json; charset=utf-8";
+                request.Accept = "application/json";
+                request.ContentLength = bodyBytes.Length;
+                request.Proxy = null;
+
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string responseText = reader.ReadToEnd();
+                    MicrophoneRoutingResponseEnvelope parsed =
+                        string.IsNullOrWhiteSpace(responseText)
+                            ? null
+                            : JsonUtility.FromJson<MicrophoneRoutingResponseEnvelope>(responseText);
+                    bool ok = parsed == null || parsed.ok;
+                    return new MicrophoneRoutingUpdateResult
+                    {
+                        Success = ok,
+                        RequestedMode = parsed?.requested_mode ?? string.Empty,
+                        EffectiveMode = parsed?.effective_mode ?? string.Empty,
+                        Message = parsed?.message ?? "Mic routing update accepted.",
+                        Error = ok ? string.Empty : (parsed?.message ?? "Mic routing update was rejected.")
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = webEx.Message;
+                if (webEx.Response != null)
+                {
+                    using (Stream responseStream = webEx.Response.GetResponseStream())
+                    using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                    {
+                        string responseText = reader.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(responseText))
+                        {
+                            detail = $"{detail} ({responseText})";
+                        }
+                    }
+                }
+
+                return new MicrophoneRoutingUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = string.Empty,
+                    EffectiveMode = string.Empty,
+                    Message = "Mic routing update failed.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                return new MicrophoneRoutingUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = string.Empty,
+                    EffectiveMode = string.Empty,
+                    Message = "Mic routing update failed.",
+                    Error = ex.Message
+                };
+            }
+        }
+
         private void UpdateLocalAiAgentSidecarStartup(bool enableRequested)
         {
             if (!enableRequested)
@@ -4293,6 +4555,74 @@ namespace Reachy.ControlApp
             {
                 localAiAgentPreferredMicrophoneDeviceName = orderedDevices[0];
             }
+        }
+
+        private static ConnectionMicrophoneSourceMode ParseConnectionMicrophoneSourceMode(string value)
+        {
+            string normalized = string.IsNullOrWhiteSpace(value)
+                ? "blend"
+                : value.Trim().ToLowerInvariant();
+            switch (normalized)
+            {
+                case "pc":
+                case "pc_only":
+                case "local":
+                case "local_only":
+                    return ConnectionMicrophoneSourceMode.PcOnly;
+                case "reachy":
+                case "robot":
+                case "reachy_only":
+                case "robot_only":
+                    return ConnectionMicrophoneSourceMode.ReachyOnly;
+                default:
+                    return ConnectionMicrophoneSourceMode.Blend;
+            }
+        }
+
+        private string GetConnectionMicrophoneSourceModeConfigValue()
+        {
+            switch (localAiAgentConnectionMicrophoneSourceMode)
+            {
+                case ConnectionMicrophoneSourceMode.PcOnly:
+                    return "pc";
+                case ConnectionMicrophoneSourceMode.ReachyOnly:
+                    return "reachy";
+                default:
+                    return "blend";
+            }
+        }
+
+        private string GetReachyMicrophoneTargetHost()
+        {
+            if (_client != null &&
+                _client.IsConnected &&
+                IsConnectionForMode(ReachyControlMode.RealRobot) &&
+                !string.IsNullOrWhiteSpace(_client.ConnectedHost))
+            {
+                return _client.ConnectedHost.Trim();
+            }
+
+            return string.IsNullOrWhiteSpace(robotHost) ? string.Empty : robotHost.Trim();
+        }
+
+        private string GetMicrophoneRoutingStatusForUi()
+        {
+            if (!IsRealRobotSessionActive())
+            {
+                if (localAiAgentConnectionMicrophoneSourceMode == ConnectionMicrophoneSourceMode.PcOnly)
+                {
+                    return "PC mic only. Behavior is identical to the current version while no real robot session is active.";
+                }
+
+                return "No real robot session is active. The sidecar falls back to the PC mic path exactly like before.";
+            }
+
+            if (!string.IsNullOrWhiteSpace(_microphoneRoutingStatus))
+            {
+                return _microphoneRoutingStatus;
+            }
+
+            return "Reachy mic routing has not been synced to the sidecar yet.";
         }
 
         private void EnsureMicTestAudioSource()
@@ -7799,6 +8129,9 @@ namespace Reachy.ControlApp
                 bool hasPreferredMicField = json.IndexOf(
                     "\"preferred_microphone_device_name\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasMicrophoneSourceModeField = json.IndexOf(
+                    "\"microphone_source_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
                 bool hasMirrorRobotSpeakerField = json.IndexOf(
                     "\"mirror_tts_to_robot_speaker\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
@@ -7908,6 +8241,9 @@ namespace Reachy.ControlApp
                 localAiAgentPreferredMicrophoneDeviceName = hasPreferredMicField
                     ? (config.preferred_microphone_device_name ?? string.Empty)
                     : string.Empty;
+                localAiAgentConnectionMicrophoneSourceMode = hasMicrophoneSourceModeField
+                    ? ParseConnectionMicrophoneSourceMode(config.microphone_source_mode)
+                    : ConnectionMicrophoneSourceMode.Blend;
                 EnsurePreferredMicrophoneDevice();
                 localAiAgentAutoStartSidecar = config.auto_start_sidecar;
                 localAiAgentAutoStopAutoStartedSidecarOnDisable =
@@ -8076,6 +8412,7 @@ namespace Reachy.ControlApp
                 config.ignore_virtual_microphone_devices = localAiAgentIgnoreVirtualMicrophones;
                 config.preferred_microphone_device_name =
                     localAiAgentPreferredMicrophoneDeviceName ?? string.Empty;
+                config.microphone_source_mode = GetConnectionMicrophoneSourceModeConfigValue();
                 config.auto_start_sidecar = localAiAgentAutoStartSidecar;
                 config.auto_stop_autostarted_sidecar_on_disable =
                     localAiAgentAutoStopAutoStartedSidecarOnDisable;
@@ -8259,6 +8596,12 @@ namespace Reachy.ControlApp
                 config.help_max_answer_chars = Mathf.Clamp(localAiAgentHelpMaxAnswerChars, 80, 1200);
                 config.audio_input_device_name = localAiAgentPreferredMicrophoneDeviceName ?? string.Empty;
                 config.prefer_non_virtual_input_device = localAiAgentIgnoreVirtualMicrophones;
+                config.audio_source_mode = GetConnectionMicrophoneSourceModeConfigValue();
+                config.reachy_mic_robot_connected = IsRealRobotSessionActive();
+                config.reachy_mic_ssh_host = GetReachyMicrophoneTargetHost();
+                config.reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort;
+                config.reachy_mic_ssh_user = string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim();
+                config.reachy_mic_ssh_password = string.IsNullOrWhiteSpace(robotSshPassword) ? "reachy" : robotSshPassword;
                 config.online_ai_enabled = enableOnlineAiAgent;
                 config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
                     ? DefaultOnlineAiModel
@@ -8343,6 +8686,9 @@ namespace Reachy.ControlApp
                 bool hasPreferNonVirtualInputField = json.IndexOf(
                     "\"prefer_non_virtual_input_device\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasAudioSourceModeField = json.IndexOf(
+                    "\"audio_source_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
 
                 LocalVoiceAgentSidecarConfig config =
                     JsonUtility.FromJson<LocalVoiceAgentSidecarConfig>(json);
@@ -8382,6 +8728,9 @@ namespace Reachy.ControlApp
                 localAiAgentIgnoreVirtualMicrophones = hasPreferNonVirtualInputField
                     ? config.prefer_non_virtual_input_device
                     : true;
+                localAiAgentConnectionMicrophoneSourceMode = hasAudioSourceModeField
+                    ? ParseConnectionMicrophoneSourceMode(config.audio_source_mode)
+                    : ConnectionMicrophoneSourceMode.Blend;
                 enableOnlineAiAgent = config.online_ai_enabled;
                 onlineAiModel = string.IsNullOrWhiteSpace(config.online_ai_model)
                     ? DefaultOnlineAiModel
@@ -9488,6 +9837,8 @@ namespace Reachy.ControlApp
                 GUILayout.Height(bodyHeight));
 
             DrawConnectionSection();
+            GUILayout.Space(10f);
+            DrawMicrophoneConnectionsSection();
             GUILayout.Space(10f);
             DrawAutomationSection();
 
@@ -13203,6 +13554,105 @@ namespace Reachy.ControlApp
                     GUILayout.Label($"Auto-reconnect in {inSeconds:F1}s.");
                 }
             }
+        }
+
+        private void DrawMicrophoneConnectionsSection()
+        {
+            GUILayout.Label("Microphones", _titleStyle);
+            GUILayout.Label(
+                "PC mic keeps the current sidecar path. In a real robot session you can keep PC-only input, use Reachy only, or blend both into one feed.");
+
+            localAiAgentConnectionMicrophoneSourceMode = (ConnectionMicrophoneSourceMode)GUILayout.Toolbar(
+                (int)localAiAgentConnectionMicrophoneSourceMode,
+                ConnectionMicrophoneSourceModeLabels);
+
+            GUILayout.Label(GetMicrophoneRoutingStatusForUi());
+            string targetHost = GetReachyMicrophoneTargetHost();
+            GUILayout.Label(
+                string.IsNullOrWhiteSpace(targetHost)
+                    ? "Reachy mic target host: not set yet."
+                    : $"Reachy mic target host: {targetHost}:{DefaultReachyMicrophoneSshPort} (SSH).");
+
+            GUILayout.BeginHorizontal();
+            localAiAgentIgnoreVirtualMicrophones = GUILayout.Toggle(
+                localAiAgentIgnoreVirtualMicrophones,
+                "Prefer physical PC mic",
+                GUILayout.Width(160f));
+            if (GUILayout.Button("Auto PC mic", GUILayout.Width(86f), GUILayout.Height(22f)))
+            {
+                EnsurePreferredMicrophoneDevice(forceAuto: true);
+            }
+            if (GUILayout.Button("Refresh PC mics", GUILayout.Width(110f), GUILayout.Height(22f)))
+            {
+                EnsurePreferredMicrophoneDevice();
+            }
+            GUILayout.EndHorizontal();
+
+            string[] orderedMicDevices = GetOrderedMicrophoneDevices();
+            string selectedMicLabel = string.IsNullOrWhiteSpace(localAiAgentPreferredMicrophoneDeviceName)
+                ? "No PC microphone detected"
+                : localAiAgentPreferredMicrophoneDeviceName;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("PC mic", GUILayout.Width(60f));
+            float micButtonWidth = Mathf.Max(84f, 260f);
+            if (GUILayout.Button(selectedMicLabel, GUILayout.Width(micButtonWidth), GUILayout.Height(22f)))
+            {
+                _localAiMicDropdownOpen = !_localAiMicDropdownOpen;
+            }
+
+            bool holdMicTest = GUILayout.RepeatButton(
+                _localAiMicTestRecording ? "Release: play test" : "Hold: test PC mic",
+                GUILayout.Width(138f),
+                GUILayout.Height(22f));
+            HandleMicTestButtonFromGui(holdMicTest, Event.current.type);
+            GUILayout.EndHorizontal();
+
+            if (_localAiMicDropdownOpen)
+            {
+                _localAiMicDropdownScroll = GUILayout.BeginScrollView(
+                    _localAiMicDropdownScroll,
+                    false,
+                    true,
+                    GUILayout.Height(110f));
+
+                if (orderedMicDevices.Length == 0)
+                {
+                    GUILayout.Label("No PC microphone devices detected.");
+                }
+                else
+                {
+                    for (int i = 0; i < orderedMicDevices.Length; i++)
+                    {
+                        string deviceName = orderedMicDevices[i];
+                        bool isSelected = DeviceNameEquals(deviceName, localAiAgentPreferredMicrophoneDeviceName);
+                        string virtualTag = IsLikelyVirtualMicrophone(deviceName) ? " (virtual)" : string.Empty;
+                        string buttonLabel = (isSelected ? "> " : "  ") + deviceName + virtualTag;
+                        if (GUILayout.Button(buttonLabel, GUILayout.Height(22f)))
+                        {
+                            localAiAgentPreferredMicrophoneDeviceName = deviceName;
+                            _localAiMicDropdownOpen = false;
+                            _voiceLastActionResult = $"Selected microphone: {deviceName}";
+                        }
+                    }
+                }
+
+                GUILayout.EndScrollView();
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("SSH user", GUILayout.Width(60f));
+            robotSshUser = GUILayout.TextField(robotSshUser, GUILayout.Width(90f));
+            GUILayout.Label("SSH pass", GUILayout.Width(60f));
+            robotSshPassword = robotSshShowPassword
+                ? GUILayout.TextField(robotSshPassword, GUILayout.Width(110f))
+                : GUILayout.PasswordField(robotSshPassword, '*', GUILayout.Width(110f));
+            robotSshShowPassword = GUILayout.Toggle(robotSshShowPassword, "Show", GUILayout.Width(56f));
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label(
+                localAiAgentConnectionMicrophoneSourceMode == ConnectionMicrophoneSourceMode.PcOnly
+                    ? "PC mic only keeps behavior identical to the current app, even while the real robot is connected."
+                    : "Reachy 2021 mic capture uses SSH to the robot computer, then the sidecar keeps PC mic input and mixes both by default.");
         }
 
         private void DrawAutomationSection()
