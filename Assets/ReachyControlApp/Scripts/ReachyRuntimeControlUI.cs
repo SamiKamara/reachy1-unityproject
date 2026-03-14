@@ -139,6 +139,12 @@ namespace Reachy.ControlApp
         private const string DefaultOnlineAiBaseUrl = "https://api.openai.com/v1";
         private const string DefaultOnlineAiApiKeyEnvVar = "OPENAI_API_KEY";
         private const string ManagedVoiceSttBackend = "auto";
+        private static readonly string[] SpeechDrivenLoopingAnimationNames =
+        {
+            SpeechLoopingAnimationName,
+            SpeechLoopingAnimationBName,
+            SpeechLoopingAnimationCName
+        };
         private static readonly string[] DefaultSidecarKnownPoses =
         {
             "Neutral Arms",
@@ -854,6 +860,8 @@ namespace Reachy.ControlApp
         private bool _actedSequenceSpeechInProgress;
         private Coroutine _loopingAnimationCoroutine;
         private string _activeLoopingAnimationName = string.Empty;
+        private bool _speechDrivenLoopingAnimationActive;
+        private bool _speechDrivenVoiceOutputActive;
         private Coroutine _voiceShowMovementCoroutine;
         private Coroutine _voiceMotionSequenceCoroutine;
         private string _activeVoiceMotionSequenceName = string.Empty;
@@ -3399,6 +3407,7 @@ namespace Reachy.ControlApp
 
             if (!aiEnabledNow)
             {
+                UpdateSpeechDrivenVoiceLoopingAnimation(speechOutputActive: false);
                 _voiceHasPendingAction = false;
                 _voiceLastSpokenFeedback = string.Empty;
                 _voicePendingSpokenFeedback.Clear();
@@ -3414,6 +3423,7 @@ namespace Reachy.ControlApp
 
             if (!bridgeShouldBeEnabled)
             {
+                UpdateSpeechDrivenVoiceLoopingAnimation(speechOutputActive: false);
                 _voiceHasPendingAction = false;
                 _voiceLastSpokenFeedback = string.Empty;
                 _voicePendingSpokenFeedback.Clear();
@@ -3510,6 +3520,7 @@ namespace Reachy.ControlApp
                 }
             }
 
+            UpdateSpeechDrivenVoiceLoopingAnimation(bridgeSnapshot.TtsInFlight);
             RefreshVoiceAgentStatusState();
         }
 
@@ -3557,6 +3568,189 @@ namespace Reachy.ControlApp
             }
 
             LogRuntimeEvent(category, title, detail, severity);
+        }
+
+        private void UpdateSpeechDrivenVoiceLoopingAnimation(bool speechOutputActive)
+        {
+            if (_speechDrivenLoopingAnimationActive &&
+                (_loopingAnimationCoroutine == null || !IsSpeechDrivenLoopingAnimationName(_activeLoopingAnimationName)))
+            {
+                _speechDrivenLoopingAnimationActive = false;
+            }
+
+            if (!speechOutputActive)
+            {
+                bool speechLoopWasActive = _speechDrivenLoopingAnimationActive;
+                if (speechLoopWasActive)
+                {
+                    StopSpeechDrivenLoopingAnimation("AI speech output ended.");
+                }
+
+                if (_speechDrivenVoiceOutputActive)
+                {
+                    _speechDrivenVoiceOutputActive = false;
+                    TryReturnSpeechDrivenVoiceToNeutralWhenIdle(ignorePoseMotion: speechLoopWasActive);
+                }
+
+                return;
+            }
+
+            _speechDrivenVoiceOutputActive = true;
+            if (HasHigherPriorityMotionForSpeechAnimation())
+            {
+                if (_speechDrivenLoopingAnimationActive)
+                {
+                    StopSpeechDrivenLoopingAnimation("Preempted by higher-priority motion.");
+                }
+
+                return;
+            }
+
+            if (_speechDrivenLoopingAnimationActive || _loopingAnimationCoroutine != null)
+            {
+                return;
+            }
+
+            if (!TryStartSpeechDrivenLoopingAnimation(out string startMessage) &&
+                !string.IsNullOrWhiteSpace(startMessage))
+            {
+                LogRuntimeEvent("voice", "speech-animation-blocked", startMessage, "WARN");
+            }
+        }
+
+        private bool HasHigherPriorityMotionForSpeechAnimation(bool ignorePoseMotion = false)
+        {
+            if (_isConnectAttemptInProgress || _client == null || !_client.IsConnected)
+            {
+                return true;
+            }
+
+            if (_actedSequenceCoroutine != null ||
+                _voiceShowMovementCoroutine != null ||
+                _voiceMotionSequenceCoroutine != null ||
+                _voiceHelloReturnCoroutine != null)
+            {
+                return true;
+            }
+
+            if (_loopingAnimationCoroutine != null && !_speechDrivenLoopingAnimationActive)
+            {
+                return true;
+            }
+
+            bool includeKeyboardAssistInput =
+                _manualControllerInputSource == ManualControllerInputSource.Gamepad &&
+                _activeMenuView == RuntimeMenuView.ManualControl;
+            if (_manualControllerBaseWasActiveLastFrame ||
+                HasManualControllerMotionIntent(_manualControllerSnapshot, includeKeyboardAssistInput))
+            {
+                return true;
+            }
+
+            return !ignorePoseMotion &&
+                   _client.HasActivePoseMotion &&
+                   !_speechDrivenLoopingAnimationActive;
+        }
+
+        private bool TryStartSpeechDrivenLoopingAnimation(out string message)
+        {
+            message = string.Empty;
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Speech animation start blocked: robot is not connected.";
+                return false;
+            }
+
+            if (_loopingAnimationCoroutine != null || _speechDrivenLoopingAnimationActive)
+            {
+                message = "Speech animation start blocked: another looping animation is already active.";
+                return false;
+            }
+
+            string animationName = PickRandomSpeechDrivenLoopingAnimationName();
+            LoopingAnimationDefinition definition = FindLoopingAnimationDefinition(animationName);
+            if (definition == null)
+            {
+                message = $"Speech animation start blocked: looping animation '{animationName}' is missing.";
+                return false;
+            }
+
+            if (definition.Keyframes == null || definition.Keyframes.Count == 0)
+            {
+                message = $"Speech animation start blocked: looping animation '{definition.Name}' has no keyframes.";
+                return false;
+            }
+
+            _activeLoopingAnimationName = definition.Name;
+            _loopingAnimationCoroutine = StartCoroutine(RunLoopingAnimationCoroutine(definition));
+            _speechDrivenLoopingAnimationActive = true;
+            LogMotionEvent(
+                "voice",
+                "speech-animation-start",
+                $"animation={definition.Name}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: IsRealRobotSessionActive());
+            return true;
+        }
+
+        private bool StopSpeechDrivenLoopingAnimation(string reason)
+        {
+            bool wasSpeechLoopActive = _speechDrivenLoopingAnimationActive ||
+                                       IsSpeechDrivenLoopingAnimationName(_activeLoopingAnimationName);
+            bool stopped = StopLoopingAnimation(updateStatus: false, reason: reason);
+            _speechDrivenLoopingAnimationActive = false;
+            return stopped || wasSpeechLoopActive;
+        }
+
+        private void TryReturnSpeechDrivenVoiceToNeutralWhenIdle(bool ignorePoseMotion)
+        {
+            if (HasHigherPriorityMotionForSpeechAnimation(ignorePoseMotion))
+            {
+                return;
+            }
+
+            bool wasConnected = _client != null && _client.IsConnected;
+            if (!wasConnected)
+            {
+                return;
+            }
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            bool neutralOk = _client.SendNeutralArmsPreset(out string neutralMessage);
+            HandlePotentialDisconnectAfterOperation("speech-driven voice neutral return", wasConnected);
+            LogMotionEvent(
+                "voice",
+                "speech-animation-return-neutral",
+                $"pose={VoiceHelloReturnPoseName}; result={(neutralOk ? "ok" : "failed")}; detail={neutralMessage}",
+                success: neutralOk,
+                targetsRealRobot: targetsRealRobot);
+        }
+
+        private static bool IsSpeechDrivenLoopingAnimationName(string animationName)
+        {
+            if (string.IsNullOrWhiteSpace(animationName))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < SpeechDrivenLoopingAnimationNames.Length; i++)
+            {
+                if (string.Equals(
+                        SpeechDrivenLoopingAnimationNames[i],
+                        animationName.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string PickRandomSpeechDrivenLoopingAnimationName()
+        {
+            int index = UnityEngine.Random.Range(0, SpeechDrivenLoopingAnimationNames.Length);
+            return SpeechDrivenLoopingAnimationNames[index];
         }
 
         private void TrackPendingVoiceFeedback(string message, bool interrupt)
@@ -10883,18 +11077,20 @@ namespace Reachy.ControlApp
                 return false;
             }
 
+            bool wasSpeechDrivenLoop = _speechDrivenLoopingAnimationActive;
             string stoppedAnimationName = string.IsNullOrWhiteSpace(_activeLoopingAnimationName)
                 ? "Looping animation"
                 : _activeLoopingAnimationName;
             StopCoroutine(_loopingAnimationCoroutine);
             _loopingAnimationCoroutine = null;
             _activeLoopingAnimationName = string.Empty;
+            _speechDrivenLoopingAnimationActive = false;
             _client?.CancelActivePoseMotion();
 
             string message = string.IsNullOrWhiteSpace(reason)
                 ? $"Looping animation '{stoppedAnimationName}' stopped."
                 : $"Looping animation '{stoppedAnimationName}' stopped. {reason}";
-            LogRuntimeEvent("looping-animation", "stopped", message, "WARN");
+            LogRuntimeEvent("looping-animation", "stopped", message, wasSpeechDrivenLoop ? "INFO" : "WARN");
             if (updateStatus)
             {
                 SetStatus("Looping animation stopped", message);

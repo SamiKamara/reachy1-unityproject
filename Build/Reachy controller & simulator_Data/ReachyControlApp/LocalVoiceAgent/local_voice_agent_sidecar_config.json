@@ -1,7 +1,7 @@
 ﻿{
     "bind_host": "127.0.0.1",
     "bind_port": 8099,
-    "ai_mode": "local",
+    "ai_mode": "online",
     "stt_backend": "auto",
     "stt_model_path": "../../../../.local_voice_models/vosk-model-small-en-us-0.15",
     "stt_sample_rate_hz": 16000,
@@ -163,7 +163,7 @@
     "reject_out_of_range_joint_commands": true,
     "joint_min_degrees": -180.0,
     "joint_max_degrees": 180.0,
-    "online_ai_enabled": false,
+    "online_ai_enabled": true,
     "online_ai_model": "gpt-5.4",
     "online_ai_transcription_model": "gpt-4o-mini-transcribe",
     "online_ai_api_key_env_var": "OPENAI_API_KEY",
