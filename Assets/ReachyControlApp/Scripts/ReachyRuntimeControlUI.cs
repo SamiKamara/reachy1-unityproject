@@ -62,6 +62,18 @@ namespace Reachy.ControlApp
             "Blend Both"
         };
 
+        private enum TtsMode
+        {
+            Online = 0,
+            Local = 1
+        }
+
+        private static readonly string[] TtsModeLabels =
+        {
+            "Online TTS",
+            "Local TTS"
+        };
+
         private const float DesignMarginPixels = 10f;
         private const float DesignPanelGap = 10f;
         private const float DesignViewTopBarHeight = 42f;
@@ -124,6 +136,8 @@ namespace Reachy.ControlApp
             "We would like you to draw some pictures and write down some thoughts about how you envision " +
             "the future of robotics. In the name of science and stuff. Pretty please.";
         private const float LoopingAnimationMinimumPlaybackSpeedScale = 0.35f;
+        private const float SpeechDrivenVoiceLoopHoldSeconds = 0.35f;
+        private const float SpeechDrivenTtsProbeIntervalSeconds = 0.1f;
         private const int RuntimeRunLogHistoryCount = 5;
         private const string RuntimeRunLogFilePrefix = "runtime_run_";
         private const int DefaultRobotSpeakerTtsPort = 8101;
@@ -132,10 +146,14 @@ namespace Reachy.ControlApp
         private const int RobotSpeakerHealthProbeTimeoutMs = 1200;
         private const float RobotSpeakerHealthProbeRetrySeconds = 20f;
         private const float RobotSpeakerHealthProbeRefreshSeconds = 45f;
+        private const string SidecarTtsModePath = "/tts-mode";
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private const string DefaultOnlineAiModel = "gpt-5.4";
+        private const int DefaultOnlineAiMaxOutputTokens = 480;
         private const string DefaultOnlineAiTranscriptionModel = "gpt-4o-mini-transcribe";
+        private const string DefaultOnlineTtsModel = "gpt-4o-mini-tts";
+        private const string DefaultOnlineTtsVoice = "alloy";
         private const string DefaultOnlineAiBaseUrl = "https://api.openai.com/v1";
         private const string DefaultOnlineAiApiKeyEnvVar = "OPENAI_API_KEY";
         private const string ManagedVoiceSttBackend = "auto";
@@ -755,6 +773,7 @@ namespace Reachy.ControlApp
         [SerializeField] private bool localAiAgentSimulationOnlyMode;
         [SerializeField] private bool localAiAgentEnableTtsFeedback = true;
         [SerializeField] private string localAiAgentTtsEndpoint = VoiceAgentBridge.DefaultTtsEndpoint;
+        [SerializeField] private TtsMode localAiAgentTtsMode = TtsMode.Online;
         [SerializeField] private float localAiAgentTtsMinIntervalSeconds = 0.35f;
         [SerializeField] private bool localAiAgentMirrorTtsToRobotSpeaker = true;
         [SerializeField] private int localAiAgentRobotSpeakerPort = DefaultRobotSpeakerTtsPort;
@@ -801,7 +820,7 @@ namespace Reachy.ControlApp
         [SerializeField] private string onlineAiBaseUrl = DefaultOnlineAiBaseUrl;
         [SerializeField] private float onlineAiTimeoutSeconds = 15f;
         [SerializeField] private float onlineAiTemperature = 0.2f;
-        [SerializeField] private int onlineAiMaxOutputTokens = 180;
+        [SerializeField] private int onlineAiMaxOutputTokens = DefaultOnlineAiMaxOutputTokens;
         [SerializeField]
         [TextArea(3, 8)]
         private string onlineAiSystemPrompt = "You are Reachy's online conversational AI.";
@@ -862,6 +881,8 @@ namespace Reachy.ControlApp
         private string _activeLoopingAnimationName = string.Empty;
         private bool _speechDrivenLoopingAnimationActive;
         private bool _speechDrivenVoiceOutputActive;
+        private float _speechDrivenVoiceOutputHoldUntil;
+        private float _speechDrivenLowPriorityPoseMotionUntil;
         private Coroutine _voiceShowMovementCoroutine;
         private Coroutine _voiceMotionSequenceCoroutine;
         private string _activeVoiceMotionSequenceName = string.Empty;
@@ -915,6 +936,7 @@ namespace Reachy.ControlApp
         private string _voiceLastActionResult = "Idle.";
         private string _voiceLastSpokenFeedback = string.Empty;
         private readonly Queue<string> _voicePendingSpokenFeedback = new Queue<string>();
+        private readonly Queue<float> _voicePendingSpokenFeedbackDurations = new Queue<float>();
         private string _voiceLastRawIntentPayload = string.Empty;
         private string _voiceLastLogExportPath = string.Empty;
         private int _voiceLastHandledHelpSuccessCount;
@@ -935,6 +957,10 @@ namespace Reachy.ControlApp
         private int _robotSpeakerAudioMirrorRequestVersion;
         private bool _localAiMicTestRecording;
         private bool _localAiMicTestButtonHeld;
+        private float _speechDrivenEstimatedVoiceOutputUntil;
+        private Task<SidecarProbeResult> _speechDrivenTtsProbeTask;
+        private float _speechDrivenNextTtsProbeAt;
+        private bool _speechDrivenTtsSpeaking;
         private string _localAiMicTestDevice = string.Empty;
         private bool _localAiAgentSidecarReady;
         private bool _localAiAgentSidecarStartupActive;
@@ -985,6 +1011,9 @@ namespace Reachy.ControlApp
             "PC mic works exactly like before. Blend mode adds Reachy's mic only while a real robot session is active.";
         private string _microphoneRoutingLastPayloadKey = string.Empty;
         private string _microphoneRoutingLastAppliedKey = string.Empty;
+        private Task<TtsModeUpdateResult> _ttsModeUpdateTask;
+        private string _ttsModeLastPayloadKey = string.Empty;
+        private string _ttsModeLastAppliedKey = string.Empty;
         private bool _sidecarShutdownCleanupDone;
 
         private struct SidecarProbeResult
@@ -1023,6 +1052,15 @@ namespace Reachy.ControlApp
         }
 
         private struct MicrophoneRoutingUpdateResult
+        {
+            public bool Success;
+            public string RequestedMode;
+            public string EffectiveMode;
+            public string Message;
+            public string Error;
+        }
+
+        private struct TtsModeUpdateResult
         {
             public bool Success;
             public string RequestedMode;
@@ -1131,6 +1169,21 @@ namespace Reachy.ControlApp
         }
 
         [Serializable]
+        private sealed class TtsModeUpdatePayload
+        {
+            public string tts_mode = "online";
+        }
+
+        [Serializable]
+        private sealed class TtsModeUpdateResponseEnvelope
+        {
+            public bool ok;
+            public string requested_mode = string.Empty;
+            public string effective_mode = string.Empty;
+            public string message = string.Empty;
+        }
+
+        [Serializable]
         private sealed class RobotSpeakerAudioMirrorPayload
         {
             public string audio_base64 = string.Empty;
@@ -1167,6 +1220,7 @@ namespace Reachy.ControlApp
             public bool simulation_only_mode = false;
             public bool tts_feedback_enabled = true;
             public string tts_endpoint = VoiceAgentBridge.DefaultTtsEndpoint;
+            public string tts_mode = "online";
             public float tts_min_interval_seconds = 0.35f;
             public bool mirror_tts_to_robot_speaker = true;
             public int robot_speaker_port = DefaultRobotSpeakerTtsPort;
@@ -1208,7 +1262,7 @@ namespace Reachy.ControlApp
             public string online_ai_base_url = DefaultOnlineAiBaseUrl;
             public float online_ai_timeout_seconds = 15f;
             public float online_ai_temperature = 0.2f;
-            public int online_ai_max_output_tokens = 180;
+            public int online_ai_max_output_tokens = DefaultOnlineAiMaxOutputTokens;
             public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
             public bool online_ai_allow_direct_joint_commands = true;
             public bool online_ai_require_motion_confirmation = false;
@@ -1229,6 +1283,7 @@ namespace Reachy.ControlApp
             public float transcript_default_confidence = 0.85f;
             public float intent_confidence_threshold = VoiceCommandRouter.DefaultConfidenceThreshold;
             public string tts_backend = "pyttsx3";
+            public string tts_mode = "online";
             public int tts_rate = 175;
             public float tts_timeout_seconds = 30f;
             public string tts_voice_name = string.Empty;
@@ -1268,13 +1323,16 @@ namespace Reachy.ControlApp
             public bool online_ai_enabled = false;
             public string online_ai_model = DefaultOnlineAiModel;
             public string online_ai_transcription_model = DefaultOnlineAiTranscriptionModel;
+            public string online_tts_model = DefaultOnlineTtsModel;
+            public string online_tts_voice = DefaultOnlineTtsVoice;
+            public bool online_tts_stream_partial_replies = true;
             public string online_ai_api_key_env_var = DefaultOnlineAiApiKeyEnvVar;
             public string online_ai_api_key_file_path = string.Empty;
             public string online_ai_base_url = DefaultOnlineAiBaseUrl;
             public float online_ai_timeout_seconds = 15f;
             public string[] openai_transcribe_language_hints = { "en", "fi" };
             public float online_ai_temperature = 0.2f;
-            public int online_ai_max_output_tokens = 180;
+            public int online_ai_max_output_tokens = DefaultOnlineAiMaxOutputTokens;
             public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
             public bool online_ai_allow_direct_joint_commands = true;
             public bool online_ai_require_motion_confirmation = false;
@@ -3368,6 +3426,7 @@ namespace Reachy.ControlApp
                 localAiAgentDegradedFailureThreshold);
             _voiceAgentBridge.SetEnabled(bridgeShouldBeEnabled, Time.unscaledTime);
             UpdateRemoteMicrophoneRouting();
+            UpdateRemoteTtsMode();
             ConsumeOnlineAiStatusTaskIfReady();
             ConsumeOnlineAiTestTaskIfReady();
 
@@ -3409,8 +3468,7 @@ namespace Reachy.ControlApp
             {
                 UpdateSpeechDrivenVoiceLoopingAnimation(speechOutputActive: false);
                 _voiceHasPendingAction = false;
-                _voiceLastSpokenFeedback = string.Empty;
-                _voicePendingSpokenFeedback.Clear();
+                ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: true);
                 _voiceLastRequestedListeningEnabled = null;
                 _voiceLastCommandFingerprint = string.Empty;
                 _voiceWarnedSttInactive = false;
@@ -3425,8 +3483,7 @@ namespace Reachy.ControlApp
             {
                 UpdateSpeechDrivenVoiceLoopingAnimation(speechOutputActive: false);
                 _voiceHasPendingAction = false;
-                _voiceLastSpokenFeedback = string.Empty;
-                _voicePendingSpokenFeedback.Clear();
+                ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: true);
                 _voiceLastCommandFingerprint = string.Empty;
                 _voiceWarnedSttInactive = false;
                 _voiceLastActionResult = _localAiAgentSidecarStatus;
@@ -3520,7 +3577,8 @@ namespace Reachy.ControlApp
                 }
             }
 
-            UpdateSpeechDrivenVoiceLoopingAnimation(bridgeSnapshot.TtsInFlight);
+            UpdateSpeechDrivenTtsPlaybackProbe(bridgeSnapshot);
+            UpdateSpeechDrivenVoiceLoopingAnimation(bridgeSnapshot);
             RefreshVoiceAgentStatusState();
         }
 
@@ -3572,6 +3630,95 @@ namespace Reachy.ControlApp
 
         private void UpdateSpeechDrivenVoiceLoopingAnimation(bool speechOutputActive)
         {
+            UpdateSpeechDrivenVoiceLoopingAnimation(new VoiceAgentBridge.BridgeSnapshot
+            {
+                TtsInFlight = speechOutputActive,
+                QueuedTtsCount = speechOutputActive ? 1 : 0
+            });
+        }
+
+        private void UpdateSpeechDrivenTtsPlaybackProbe(VoiceAgentBridge.BridgeSnapshot bridgeSnapshot)
+        {
+            if (_speechDrivenTtsProbeTask != null && _speechDrivenTtsProbeTask.IsCompleted)
+            {
+                try
+                {
+                    SidecarProbeResult probeResult = _speechDrivenTtsProbeTask.Result;
+                    _speechDrivenTtsSpeaking =
+                        probeResult.Success &&
+                        probeResult.Reachable &&
+                        probeResult.HealthAvailable &&
+                        probeResult.TtsSpeaking;
+                }
+                catch
+                {
+                    _speechDrivenTtsSpeaking = false;
+                }
+                finally
+                {
+                    _speechDrivenTtsProbeTask = null;
+                }
+            }
+
+            bool shouldProbePlayback =
+                ShouldActedSequenceTrackLocalTtsPlayback() &&
+                (bridgeSnapshot.TtsInFlight ||
+                 bridgeSnapshot.QueuedTtsCount > 0 ||
+                 _speechDrivenVoiceOutputActive ||
+                 _speechDrivenTtsSpeaking ||
+                 Time.unscaledTime < _speechDrivenEstimatedVoiceOutputUntil ||
+                 ShouldContinuouslyProbeSpeechDrivenTtsPlayback());
+            if (!shouldProbePlayback)
+            {
+                if (_speechDrivenTtsProbeTask == null)
+                {
+                    _speechDrivenTtsSpeaking = false;
+                    _speechDrivenNextTtsProbeAt = 0f;
+                }
+
+                return;
+            }
+
+            if (_speechDrivenTtsProbeTask != null || Time.unscaledTime < _speechDrivenNextTtsProbeAt)
+            {
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            int probeTimeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 150, 1000);
+            _speechDrivenTtsProbeTask = Task.Run(() => ProbeSidecar(intentEndpoint, probeTimeoutMs));
+            _speechDrivenNextTtsProbeAt = Time.unscaledTime + SpeechDrivenTtsProbeIntervalSeconds;
+        }
+
+        private bool ShouldContinuouslyProbeSpeechDrivenTtsPlayback()
+        {
+            return IsCurrentAiModeEnabled() &&
+                   localAiAgentEnableTtsFeedback &&
+                   IsOnlineAiModeSelected() &&
+                   localAiAgentTtsMode == TtsMode.Online;
+        }
+
+        private void UpdateSpeechDrivenVoiceLoopingAnimation(VoiceAgentBridge.BridgeSnapshot bridgeSnapshot)
+        {
+            bool speechOutputActive =
+                bridgeSnapshot.TtsInFlight ||
+                bridgeSnapshot.QueuedTtsCount > 0 ||
+                _speechDrivenTtsSpeaking;
+            if (speechOutputActive)
+            {
+                _speechDrivenVoiceOutputHoldUntil = Time.unscaledTime + SpeechDrivenVoiceLoopHoldSeconds;
+            }
+            else if (Time.unscaledTime < _speechDrivenEstimatedVoiceOutputUntil)
+            {
+                speechOutputActive = true;
+            }
+            else if (_speechDrivenVoiceOutputActive && Time.unscaledTime < _speechDrivenVoiceOutputHoldUntil)
+            {
+                speechOutputActive = true;
+            }
+
             if (_speechDrivenLoopingAnimationActive &&
                 (_loopingAnimationCoroutine == null || !IsSpeechDrivenLoopingAnimationName(_activeLoopingAnimationName)))
             {
@@ -3589,6 +3736,7 @@ namespace Reachy.ControlApp
                 if (_speechDrivenVoiceOutputActive)
                 {
                     _speechDrivenVoiceOutputActive = false;
+                    _speechDrivenVoiceOutputHoldUntil = 0f;
                     TryReturnSpeechDrivenVoiceToNeutralWhenIdle(ignorePoseMotion: speechLoopWasActive);
                 }
 
@@ -3596,6 +3744,7 @@ namespace Reachy.ControlApp
             }
 
             _speechDrivenVoiceOutputActive = true;
+            CancelSpeechDrivenVoiceLoopBlockers();
             if (HasHigherPriorityMotionForSpeechAnimation())
             {
                 if (_speechDrivenLoopingAnimationActive)
@@ -3620,6 +3769,19 @@ namespace Reachy.ControlApp
 
         private bool HasHigherPriorityMotionForSpeechAnimation(bool ignorePoseMotion = false)
         {
+            if (HasExplicitHigherPriorityMotionForSpeechAnimation())
+            {
+                return true;
+            }
+
+            return !ignorePoseMotion &&
+                   _client.HasActivePoseMotion &&
+                   !_speechDrivenLoopingAnimationActive &&
+                   !HasTrackedSpeechLowPriorityPoseMotion();
+        }
+
+        private bool HasExplicitHigherPriorityMotionForSpeechAnimation()
+        {
             if (_isConnectAttemptInProgress || _client == null || !_client.IsConnected)
             {
                 return true;
@@ -3627,8 +3789,7 @@ namespace Reachy.ControlApp
 
             if (_actedSequenceCoroutine != null ||
                 _voiceShowMovementCoroutine != null ||
-                _voiceMotionSequenceCoroutine != null ||
-                _voiceHelloReturnCoroutine != null)
+                _voiceMotionSequenceCoroutine != null)
             {
                 return true;
             }
@@ -3647,9 +3808,33 @@ namespace Reachy.ControlApp
                 return true;
             }
 
-            return !ignorePoseMotion &&
-                   _client.HasActivePoseMotion &&
-                   !_speechDrivenLoopingAnimationActive;
+            return false;
+        }
+
+        private void CancelSpeechDrivenVoiceLoopBlockers()
+        {
+            // A delayed hello return is not an active override, but it can still fire mid-speech and
+            // prevent the low-priority speech loop from ever getting a start window.
+            if (_voiceHelloReturnCoroutine != null)
+            {
+                StopVoiceHelloReturnTimer(
+                    updateStatus: false,
+                    reason: "Interrupted by speech-driven voice output.");
+            }
+
+            if (HasExplicitHigherPriorityMotionForSpeechAnimation() ||
+                !HasTrackedSpeechLowPriorityPoseMotion())
+            {
+                return;
+            }
+
+            _client.CancelActivePoseMotion();
+            _speechDrivenLowPriorityPoseMotionUntil = 0f;
+            LogRuntimeEvent(
+                "voice",
+                "speech-animation-cleared-neutral-cleanup",
+                "Canceled a low-priority neutral return so speech animation can start.",
+                "INFO");
         }
 
         private bool TryStartSpeechDrivenLoopingAnimation(out string message)
@@ -3716,8 +3901,15 @@ namespace Reachy.ControlApp
             }
 
             bool targetsRealRobot = IsRealRobotSessionActive();
-            bool neutralOk = _client.SendNeutralArmsPreset(out string neutralMessage);
+            bool neutralOk = _client.SendPresetPose(
+                VoiceHelloReturnPoseName,
+                out string neutralMessage,
+                out float neutralDurationSeconds);
             HandlePotentialDisconnectAfterOperation("speech-driven voice neutral return", wasConnected);
+            if (neutralOk)
+            {
+                TrackSpeechDrivenLowPriorityPoseMotion(neutralDurationSeconds);
+            }
             LogMotionEvent(
                 "voice",
                 "speech-animation-return-neutral",
@@ -3753,17 +3945,90 @@ namespace Reachy.ControlApp
             return SpeechDrivenLoopingAnimationNames[index];
         }
 
+        private static float EstimateSpeechDrivenVoiceDurationSeconds(string message)
+        {
+            string trimmedMessage = (message ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedMessage))
+            {
+                return 0.8f;
+            }
+
+            string[] words = trimmedMessage.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            int punctuationCount = 0;
+            for (int i = 0; i < trimmedMessage.Length; i++)
+            {
+                char ch = trimmedMessage[i];
+                if (ch == '.' || ch == '!' || ch == '?' || ch == ',' || ch == ';' || ch == ':')
+                {
+                    punctuationCount++;
+                }
+            }
+
+            float estimatedSeconds =
+                (Mathf.Max(1, words.Length) / 2.8f) +
+                (punctuationCount * 0.12f) +
+                0.75f;
+            return Mathf.Clamp(estimatedSeconds, 1.25f, 45f);
+        }
+
+        private bool HasTrackedSpeechLowPriorityPoseMotion()
+        {
+            if (_speechDrivenLowPriorityPoseMotionUntil <= 0f)
+            {
+                return false;
+            }
+
+            if (_client == null ||
+                !_client.HasActivePoseMotion ||
+                Time.unscaledTime >= _speechDrivenLowPriorityPoseMotionUntil)
+            {
+                _speechDrivenLowPriorityPoseMotionUntil = 0f;
+                return false;
+            }
+
+            return true;
+        }
+
+        private void TrackSpeechDrivenLowPriorityPoseMotion(float scheduledDurationSeconds)
+        {
+            float clampedDurationSeconds = Mathf.Clamp(scheduledDurationSeconds, 0.05f, 8f);
+            _speechDrivenLowPriorityPoseMotionUntil = Mathf.Max(
+                _speechDrivenLowPriorityPoseMotionUntil,
+                Time.unscaledTime + clampedDurationSeconds);
+        }
+
+        private void ClearSpeechDrivenVoiceTracking(bool clearLastSpokenFeedback)
+        {
+            if (clearLastSpokenFeedback)
+            {
+                _voiceLastSpokenFeedback = string.Empty;
+            }
+
+            _voicePendingSpokenFeedback.Clear();
+            _voicePendingSpokenFeedbackDurations.Clear();
+            _speechDrivenEstimatedVoiceOutputUntil = 0f;
+            _speechDrivenTtsSpeaking = false;
+            _speechDrivenTtsProbeTask = null;
+            _speechDrivenNextTtsProbeAt = 0f;
+        }
+
         private void TrackPendingVoiceFeedback(string message, bool interrupt)
         {
             string trimmedMessage = string.IsNullOrWhiteSpace(message) ? string.Empty : message.Trim();
             if (interrupt)
             {
                 _voicePendingSpokenFeedback.Clear();
+                _voicePendingSpokenFeedbackDurations.Clear();
+                _speechDrivenEstimatedVoiceOutputUntil = Time.unscaledTime;
             }
 
             if (!string.IsNullOrWhiteSpace(trimmedMessage))
             {
                 _voicePendingSpokenFeedback.Enqueue(trimmedMessage);
+                float estimatedDurationSeconds = EstimateSpeechDrivenVoiceDurationSeconds(trimmedMessage);
+                _voicePendingSpokenFeedbackDurations.Enqueue(estimatedDurationSeconds);
+                float estimatedStartAt = Mathf.Max(Time.unscaledTime, _speechDrivenEstimatedVoiceOutputUntil);
+                _speechDrivenEstimatedVoiceOutputUntil = estimatedStartAt + estimatedDurationSeconds;
             }
         }
 
@@ -3772,13 +4037,35 @@ namespace Reachy.ControlApp
             string trackedMessage = _voicePendingSpokenFeedback.Count > 0
                 ? _voicePendingSpokenFeedback.Dequeue()
                 : string.Empty;
+            float trackedDurationSeconds = _voicePendingSpokenFeedbackDurations.Count > 0
+                ? _voicePendingSpokenFeedbackDurations.Dequeue()
+                : 0f;
             if (success)
             {
                 if (!string.IsNullOrWhiteSpace(trackedMessage))
                 {
                     _voiceLastSpokenFeedback = trackedMessage;
                 }
+
+                if (trackedDurationSeconds > 0f &&
+                    !_speechDrivenTtsSpeaking &&
+                    !snapshot.TtsInFlight &&
+                    snapshot.QueuedTtsCount <= 0)
+                {
+                    _speechDrivenEstimatedVoiceOutputUntil = Mathf.Max(
+                        _speechDrivenEstimatedVoiceOutputUntil,
+                        Time.unscaledTime + Mathf.Min(0.6f, trackedDurationSeconds * 0.25f));
+                }
+
                 return;
+            }
+
+            if (!snapshot.TtsInFlight &&
+                snapshot.QueuedTtsCount <= 0 &&
+                !_speechDrivenTtsSpeaking &&
+                _voicePendingSpokenFeedbackDurations.Count <= 0)
+            {
+                _speechDrivenEstimatedVoiceOutputUntil = 0f;
             }
 
             if (!string.IsNullOrWhiteSpace(snapshot.LastTtsError))
@@ -3811,6 +4098,7 @@ namespace Reachy.ControlApp
                 incomingIntent.source_mode,
                 "online",
                 StringComparison.OrdinalIgnoreCase);
+            bool replyAlreadySpoken = incomingIntent.reply_already_spoken;
             if (isOnlineIntent)
             {
                 _onlineAiLastSourceMode = "online";
@@ -3820,6 +4108,10 @@ namespace Reachy.ControlApp
                 if (!string.IsNullOrWhiteSpace(incomingIntent.reply_text))
                 {
                     _onlineAiLastReplyText = incomingIntent.reply_text.Trim();
+                }
+                if (replyAlreadySpoken && !string.IsNullOrWhiteSpace(incomingIntent.reply_text))
+                {
+                    _voiceLastSpokenFeedback = incomingIntent.reply_text.Trim();
                 }
                 if (!string.IsNullOrWhiteSpace(incomingIntent.validation_status))
                 {
@@ -3953,7 +4245,7 @@ namespace Reachy.ControlApp
                 _voiceLastActionResult = string.IsNullOrWhiteSpace(incomingIntent.reply_text)
                     ? "Online AI returned no robot action."
                     : "Online AI reply received.";
-                if (!string.IsNullOrWhiteSpace(incomingIntent.reply_text))
+                if (!replyAlreadySpoken && !string.IsNullOrWhiteSpace(incomingIntent.reply_text))
                 {
                     QueueVoiceFeedback(incomingIntent.reply_text, interrupt: false);
                 }
@@ -3964,7 +4256,7 @@ namespace Reachy.ControlApp
             _voiceLastActionResult = actionMessage;
             string feedbackText = string.IsNullOrWhiteSpace(incomingIntent.reply_text)
                 ? actionMessage
-                : incomingIntent.reply_text.Trim();
+                : (replyAlreadySpoken ? string.Empty : incomingIntent.reply_text.Trim());
             bool shouldSpeakActionMessage =
                 !string.IsNullOrWhiteSpace(feedbackText) &&
                 !(routedAction.Kind == VoiceCommandRouter.VoiceActionKind.Help &&
@@ -4130,7 +4422,7 @@ namespace Reachy.ControlApp
 
             _voiceNextAllowedTtsAt = now + localAiAgentTtsMinIntervalSeconds;
             string trimmedMessage = message.Trim();
-            _voiceAgentBridge.EnqueueTtsFeedback(trimmedMessage, interrupt);
+            _voiceAgentBridge.EnqueueTtsFeedback(trimmedMessage, interrupt, GetTtsModeConfigValue());
             TrackPendingVoiceFeedback(trimmedMessage, interrupt);
         }
 
@@ -4197,6 +4489,22 @@ namespace Reachy.ControlApp
                 payload.reachy_mic_ssh_host ?? string.Empty,
                 payload.reachy_mic_ssh_user ?? string.Empty,
                 payload.reachy_mic_ssh_password ?? string.Empty);
+        }
+
+        private TtsModeUpdatePayload BuildTtsModeUpdatePayload()
+        {
+            return new TtsModeUpdatePayload
+            {
+                tts_mode = GetTtsModeConfigValue()
+            };
+        }
+
+        private static string BuildTtsModeUpdatePayloadKey(string endpoint, TtsModeUpdatePayload payload)
+        {
+            return string.Join(
+                "|",
+                endpoint ?? string.Empty,
+                payload?.tts_mode ?? string.Empty);
         }
 
         private void UpdateRemoteMicrophoneRouting()
@@ -4271,6 +4579,66 @@ namespace Reachy.ControlApp
             _microphoneRoutingStatus = string.IsNullOrWhiteSpace(result.Error)
                 ? "Mic routing update failed."
                 : $"Mic routing update failed: {result.Error}";
+        }
+
+        private void UpdateRemoteTtsMode()
+        {
+            ConsumeTtsModeUpdateTaskIfReady();
+
+            if (!_localAiAgentSidecarReady)
+            {
+                _ttsModeLastAppliedKey = string.Empty;
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            if (!TryBuildSiblingEndpoint(intentEndpoint, SidecarTtsModePath, out string endpoint))
+            {
+                return;
+            }
+
+            if (_ttsModeUpdateTask != null)
+            {
+                return;
+            }
+
+            TtsModeUpdatePayload payload = BuildTtsModeUpdatePayload();
+            string payloadKey = BuildTtsModeUpdatePayloadKey(endpoint, payload);
+            if (string.Equals(payloadKey, _ttsModeLastAppliedKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _ttsModeLastPayloadKey = payloadKey;
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 500, 10000);
+            _ttsModeUpdateTask = Task.Run(() => SendTtsModeUpdate(endpoint, timeoutMs, payload));
+        }
+
+        private void ConsumeTtsModeUpdateTaskIfReady()
+        {
+            if (_ttsModeUpdateTask == null || !_ttsModeUpdateTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                TtsModeUpdateResult result = _ttsModeUpdateTask.Result;
+                if (result.Success)
+                {
+                    _ttsModeLastAppliedKey = _ttsModeLastPayloadKey;
+                }
+            }
+            catch
+            {
+                // Ignore transient live-update failures; future frames will retry.
+            }
+            finally
+            {
+                _ttsModeUpdateTask = null;
+            }
         }
 
         private static MicrophoneRoutingUpdateResult SendMicrophoneRoutingUpdate(
@@ -4349,6 +4717,87 @@ namespace Reachy.ControlApp
                     RequestedMode = string.Empty,
                     EffectiveMode = string.Empty,
                     Message = "Mic routing update failed.",
+                    Error = ex.Message
+                };
+            }
+        }
+
+        private static TtsModeUpdateResult SendTtsModeUpdate(
+            string endpoint,
+            int timeoutMs,
+            TtsModeUpdatePayload payload)
+        {
+            try
+            {
+                string jsonBody = JsonUtility.ToJson(payload);
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.ContentType = "application/json; charset=utf-8";
+                request.Accept = "application/json";
+                request.ContentLength = bodyBytes.Length;
+                request.Proxy = null;
+
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string responseText = reader.ReadToEnd();
+                    TtsModeUpdateResponseEnvelope parsed =
+                        string.IsNullOrWhiteSpace(responseText)
+                            ? null
+                            : JsonUtility.FromJson<TtsModeUpdateResponseEnvelope>(responseText);
+                    bool ok = parsed == null || parsed.ok;
+                    return new TtsModeUpdateResult
+                    {
+                        Success = ok,
+                        RequestedMode = parsed?.requested_mode ?? string.Empty,
+                        EffectiveMode = parsed?.effective_mode ?? string.Empty,
+                        Message = parsed?.message ?? "TTS mode update accepted.",
+                        Error = ok ? string.Empty : (parsed?.message ?? "TTS mode update was rejected.")
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = webEx.Message;
+                if (webEx.Response != null)
+                {
+                    using (Stream responseStream = webEx.Response.GetResponseStream())
+                    using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                    {
+                        string responseText = reader.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(responseText))
+                        {
+                            detail = $"{detail} ({responseText})";
+                        }
+                    }
+                }
+
+                return new TtsModeUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = string.Empty,
+                    EffectiveMode = string.Empty,
+                    Message = "TTS mode update failed.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                return new TtsModeUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = string.Empty,
+                    EffectiveMode = string.Empty,
+                    Message = "TTS mode update failed.",
                     Error = ex.Message
                 };
             }
@@ -4982,6 +5431,19 @@ namespace Reachy.ControlApp
                 default:
                     return "blend";
             }
+        }
+
+        private static TtsMode ParseTtsMode(string value)
+        {
+            string normalized = string.IsNullOrWhiteSpace(value)
+                ? "online"
+                : value.Trim().ToLowerInvariant();
+            return normalized == "local" ? TtsMode.Local : TtsMode.Online;
+        }
+
+        private string GetTtsModeConfigValue()
+        {
+            return localAiAgentTtsMode == TtsMode.Local ? "local" : "online";
         }
 
         private string GetReachyMicrophoneTargetHost()
@@ -5944,17 +6406,49 @@ namespace Reachy.ControlApp
             return Directory.Exists(Path.Combine(path, "Assets", "ReachyControlApp"));
         }
 
-        private string GetOnlineAiApiKeySecretStorePath()
+        private string GetProjectOnlineAiApiKeySecretStorePath()
         {
             string projectRoot = GetProjectRootPath();
-            if (IsReachyProjectRootPath(projectRoot))
+            if (!IsReachyProjectRootPath(projectRoot))
             {
-                return Path.Combine(
-                    projectRoot,
-                    "UserSettings",
-                    "ReachyControlApp",
-                    "Secrets",
-                    "online_ai_api_key.json");
+                return string.Empty;
+            }
+
+            return Path.Combine(
+                projectRoot,
+                "UserSettings",
+                "ReachyControlApp",
+                "Secrets",
+                "online_ai_api_key.json");
+        }
+
+        private static string GetLocalAppDataOnlineAiApiKeySecretStorePath()
+        {
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localAppData))
+            {
+                return string.Empty;
+            }
+
+            return Path.Combine(
+                localAppData,
+                "ReachyControlApp",
+                "Secrets",
+                "online_ai_api_key.json");
+        }
+
+        private string GetPreferredOnlineAiApiKeySecretStorePath()
+        {
+            string localAppDataStorePath = GetLocalAppDataOnlineAiApiKeySecretStorePath();
+            if (!string.IsNullOrWhiteSpace(localAppDataStorePath))
+            {
+                return localAppDataStorePath;
+            }
+
+            string projectStorePath = GetProjectOnlineAiApiKeySecretStorePath();
+            if (!string.IsNullOrWhiteSpace(projectStorePath))
+            {
+                return projectStorePath;
             }
 
             return Path.Combine(
@@ -5962,6 +6456,83 @@ namespace Reachy.ControlApp
                 "ReachyControlApp",
                 "Secrets",
                 "online_ai_api_key.json");
+        }
+
+        private List<string> GetOnlineAiApiKeySecretStoreCandidatePaths()
+        {
+            var candidates = new List<string>();
+            AddRuntimeCandidate(candidates, GetPreferredOnlineAiApiKeySecretStorePath());
+            AddRuntimeCandidate(candidates, GetProjectOnlineAiApiKeySecretStorePath());
+            AddRuntimeCandidate(
+                candidates,
+                Path.Combine(
+                    Application.persistentDataPath,
+                    "ReachyControlApp",
+                    "Secrets",
+                    "online_ai_api_key.json"));
+            return candidates;
+        }
+
+        private bool TryWriteStoredOnlineAiApiKeySecret(
+            string storePath,
+            string envVarName,
+            string secret,
+            out string message)
+        {
+            message = string.Empty;
+            if (string.IsNullOrWhiteSpace(storePath))
+            {
+                message = "API key store path is empty.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(secret))
+            {
+                message = "API key is empty.";
+                return false;
+            }
+
+            try
+            {
+                string directory = Path.GetDirectoryName(storePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var payload = new StoredOnlineApiKeySecret
+                {
+                    env_var = envVarName,
+                    api_key = secret,
+                    saved_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
+                };
+                string json = JsonUtility.ToJson(payload, true);
+                File.WriteAllText(storePath, json + Environment.NewLine, Encoding.UTF8);
+                message = $"Saved API key to local secret file '{storePath}'.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to save API key to local secret file '{storePath}': {ex.Message}";
+                return false;
+            }
+        }
+
+        private void TryMirrorStoredOnlineAiApiKeySecret(string sourceStorePath, string envVarName, string secret)
+        {
+            string preferredStorePath = GetPreferredOnlineAiApiKeySecretStorePath();
+            if (string.IsNullOrWhiteSpace(preferredStorePath) ||
+                string.Equals(preferredStorePath, sourceStorePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (File.Exists(preferredStorePath))
+            {
+                return;
+            }
+
+            TryWriteStoredOnlineAiApiKeySecret(preferredStorePath, envVarName, secret, out _);
         }
 
         private bool TryReadStoredOnlineAiApiKeySecret(
@@ -5972,58 +6543,75 @@ namespace Reachy.ControlApp
         {
             secret = string.Empty;
             envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
-            storePath = GetOnlineAiApiKeySecretStorePath();
+            storePath = string.Empty;
             message = string.Empty;
+            List<string> candidatePaths = GetOnlineAiApiKeySecretStoreCandidatePaths();
+            string lastFailure = string.Empty;
 
-            if (!File.Exists(storePath))
+            for (int i = 0; i < candidatePaths.Count; i++)
             {
-                message = $"Local API key store not found at '{storePath}'.";
-                return false;
+                string candidatePath = candidatePaths[i];
+                if (string.IsNullOrWhiteSpace(candidatePath))
+                {
+                    continue;
+                }
+
+                if (!File.Exists(candidatePath))
+                {
+                    lastFailure = $"Local API key store not found at '{candidatePath}'.";
+                    continue;
+                }
+
+                try
+                {
+                    string json = File.ReadAllText(candidatePath, Encoding.UTF8);
+                    if (string.IsNullOrWhiteSpace(json))
+                    {
+                        lastFailure = $"Local API key store is empty: '{candidatePath}'.";
+                        continue;
+                    }
+
+                    StoredOnlineApiKeySecret payload = JsonUtility.FromJson<StoredOnlineApiKeySecret>(json);
+                    if (payload == null)
+                    {
+                        lastFailure = $"Local API key store is invalid: '{candidatePath}'.";
+                        continue;
+                    }
+
+                    string storedEnvVarName = string.IsNullOrWhiteSpace(payload.env_var)
+                        ? envVarName
+                        : payload.env_var.Trim();
+                    if (!string.Equals(storedEnvVarName, envVarName, StringComparison.Ordinal))
+                    {
+                        lastFailure =
+                            $"Local API key store targets '{storedEnvVarName}', but the app is configured for '{envVarName}'.";
+                        continue;
+                    }
+
+                    string storedSecret = (payload.api_key ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(storedSecret))
+                    {
+                        lastFailure = $"Local API key store does not contain a key: '{candidatePath}'.";
+                        continue;
+                    }
+
+                    secret = storedSecret;
+                    envVarName = storedEnvVarName;
+                    storePath = candidatePath;
+                    TryMirrorStoredOnlineAiApiKeySecret(candidatePath, storedEnvVarName, storedSecret);
+                    message = $"Loaded API key from local secret store '{candidatePath}'.";
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = $"Failed to read local API key store '{candidatePath}': {ex.Message}";
+                }
             }
 
-            try
-            {
-                string json = File.ReadAllText(storePath, Encoding.UTF8);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    message = $"Local API key store is empty: '{storePath}'.";
-                    return false;
-                }
-
-                StoredOnlineApiKeySecret payload = JsonUtility.FromJson<StoredOnlineApiKeySecret>(json);
-                if (payload == null)
-                {
-                    message = $"Local API key store is invalid: '{storePath}'.";
-                    return false;
-                }
-
-                string storedEnvVarName = string.IsNullOrWhiteSpace(payload.env_var)
-                    ? envVarName
-                    : payload.env_var.Trim();
-                if (!string.Equals(storedEnvVarName, envVarName, StringComparison.Ordinal))
-                {
-                    message =
-                        $"Local API key store targets '{storedEnvVarName}', but the app is configured for '{envVarName}'.";
-                    return false;
-                }
-
-                string storedSecret = (payload.api_key ?? string.Empty).Trim();
-                if (string.IsNullOrWhiteSpace(storedSecret))
-                {
-                    message = $"Local API key store does not contain a key: '{storePath}'.";
-                    return false;
-                }
-
-                secret = storedSecret;
-                envVarName = storedEnvVarName;
-                message = $"Loaded API key from local secret store '{storePath}'.";
-                return true;
-            }
-            catch (Exception ex)
-            {
-                message = $"Failed to read local API key store '{storePath}': {ex.Message}";
-                return false;
-            }
+            message = string.IsNullOrWhiteSpace(lastFailure)
+                ? $"Local API key store not found. Probed: {SummarizeCandidatePaths(candidatePaths, 3)}"
+                : $"{lastFailure} Probed: {SummarizeCandidatePaths(candidatePaths, 3)}";
+            return false;
         }
 
         private bool TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out string message)
@@ -6176,33 +6764,21 @@ namespace Reachy.ControlApp
             }
 
             string envVarName = GetSanitizedOnlineAiApiKeyEnvVarName();
-            string storePath = GetOnlineAiApiKeySecretStorePath();
+            string storePath = GetPreferredOnlineAiApiKeySecretStorePath();
             bool sidecarConfigSynced = false;
             string sidecarConfigSyncMessage = string.Empty;
+            string writeMessage = string.Empty;
+
+            if (!TryWriteStoredOnlineAiApiKeySecret(storePath, envVarName, secret, out writeMessage))
+            {
+                _voiceLastActionResult = $"API key save failed: {writeMessage}";
+                return;
+            }
 
             try
             {
-                string directory = Path.GetDirectoryName(storePath);
-                if (!string.IsNullOrWhiteSpace(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
-
-                var payload = new StoredOnlineApiKeySecret
-                {
-                    env_var = envVarName,
-                    api_key = secret,
-                    saved_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture)
-                };
-                string json = JsonUtility.ToJson(payload, true);
-                File.WriteAllText(storePath, json + Environment.NewLine, Encoding.UTF8);
                 Environment.SetEnvironmentVariable(envVarName, secret, EnvironmentVariableTarget.Process);
                 sidecarConfigSynced = TrySyncLocalSidecarConfigFromUi(out sidecarConfigSyncMessage);
-            }
-            catch (Exception ex)
-            {
-                _voiceLastActionResult = $"API key save failed: {ex.Message}";
-                return;
             }
             finally
             {
@@ -6218,7 +6794,7 @@ namespace Reachy.ControlApp
                 : "API key saved in the local secret store. Sidecar config sync failed, so manually restarted sidecars may need attention.";
             _onlineAiLastHttpError = string.Empty;
 
-            string persistenceMessage = $"Saved API key to local secret file '{storePath}'.";
+            string persistenceMessage = writeMessage;
             if (!sidecarConfigSynced && !string.IsNullOrWhiteSpace(sidecarConfigSyncMessage))
             {
                 persistenceMessage += $" Sidecar config sync failed: {sidecarConfigSyncMessage}";
@@ -7178,10 +7754,17 @@ namespace Reachy.ControlApp
                 $"sequence={safeSequenceName}; pose={VoiceHelloReturnPoseName}",
                 success: true,
                 targetsRealRobot: targetsRealRobot);
-            bool neutralOk = _client.SendNeutralArmsPreset(out string neutralMessage);
+            bool neutralOk = _client.SendPresetPose(
+                VoiceHelloReturnPoseName,
+                out string neutralMessage,
+                out float neutralDurationSeconds);
             HandlePotentialDisconnectAfterOperation(
                 $"voice motion sequence '{safeSequenceName}' return to neutral",
                 neutralWasConnected);
+            if (neutralOk)
+            {
+                TrackSpeechDrivenLowPriorityPoseMotion(neutralDurationSeconds);
+            }
             LogMotionEvent(
                 "voice",
                 "motion-sequence-return-neutral-result",
@@ -7404,10 +7987,17 @@ namespace Reachy.ControlApp
                 $"pose={VoiceHelloReturnPoseName}",
                 success: true,
                 targetsRealRobot: targetsRealRobot);
-            bool neutralOk = _client.SendPresetPose(VoiceHelloReturnPoseName, out string neutralMessage);
+            bool neutralOk = _client.SendPresetPose(
+                VoiceHelloReturnPoseName,
+                out string neutralMessage,
+                out float neutralDurationSeconds);
             HandlePotentialDisconnectAfterOperation(
                 $"voice hello return pose '{VoiceHelloReturnPoseName}'",
                 wasConnected);
+            if (neutralOk)
+            {
+                TrackSpeechDrivenLowPriorityPoseMotion(neutralDurationSeconds);
+            }
             LogMotionEvent(
                 "voice",
                 "hello-return-result",
@@ -8588,6 +9178,7 @@ namespace Reachy.ControlApp
                 {
                     localAiAgentTtsEndpoint = config.tts_endpoint.Trim();
                 }
+                localAiAgentTtsMode = ParseTtsMode(config.tts_mode);
                 if (config.tts_min_interval_seconds > 0f)
                 {
                     localAiAgentTtsMinIntervalSeconds = Mathf.Max(0.05f, config.tts_min_interval_seconds);
@@ -8783,6 +9374,7 @@ namespace Reachy.ControlApp
                 config.tts_endpoint = string.IsNullOrWhiteSpace(localAiAgentTtsEndpoint)
                     ? VoiceAgentBridge.DefaultTtsEndpoint
                     : localAiAgentTtsEndpoint.Trim();
+                config.tts_mode = GetTtsModeConfigValue();
                 config.tts_min_interval_seconds = Mathf.Max(0.05f, localAiAgentTtsMinIntervalSeconds);
                 config.mirror_tts_to_robot_speaker = localAiAgentMirrorTtsToRobotSpeaker;
                 config.robot_speaker_port = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
@@ -8958,6 +9550,7 @@ namespace Reachy.ControlApp
                 config.transcript_default_confidence = Mathf.Clamp01(localAiAgentTranscriptConfidence);
                 config.ai_mode = GetCurrentAiModeConfigValue();
                 config.stt_backend = GetManagedVoiceSttBackend();
+                config.tts_mode = GetTtsModeConfigValue();
                 string normalizedSttModelPath = !string.IsNullOrWhiteSpace(voiceConfigSttModelPath)
                     ? voiceConfigSttModelPath
                     : BuildUiHelpModelPathFromSidecar(config.stt_model_path, sidecarConfigPath);
@@ -9001,19 +9594,14 @@ namespace Reachy.ControlApp
                 config.online_ai_transcription_model = string.IsNullOrWhiteSpace(config.online_ai_transcription_model)
                     ? DefaultOnlineAiTranscriptionModel
                     : config.online_ai_transcription_model.Trim();
+                config.online_tts_model = string.IsNullOrWhiteSpace(config.online_tts_model)
+                    ? DefaultOnlineTtsModel
+                    : config.online_tts_model.Trim();
+                config.online_tts_voice = string.IsNullOrWhiteSpace(config.online_tts_voice)
+                    ? DefaultOnlineTtsVoice
+                    : config.online_tts_voice.Trim();
                 config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
-                string onlineAiApiKeySecretStorePath = GetOnlineAiApiKeySecretStorePath();
-                string sidecarDirectory = Path.GetDirectoryName(sidecarConfigPath);
-                if (!string.IsNullOrWhiteSpace(sidecarDirectory) &&
-                    TryMakeRelativePath(sidecarDirectory, onlineAiApiKeySecretStorePath, out string relativeSecretStorePath) &&
-                    !string.IsNullOrWhiteSpace(relativeSecretStorePath))
-                {
-                    config.online_ai_api_key_file_path = relativeSecretStorePath.Replace('\\', '/');
-                }
-                else
-                {
-                    config.online_ai_api_key_file_path = onlineAiApiKeySecretStorePath.Replace('\\', '/');
-                }
+                config.online_ai_api_key_file_path = string.Empty;
                 config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
                     ? DefaultOnlineAiBaseUrl
                     : onlineAiBaseUrl.Trim();
@@ -9120,6 +9708,7 @@ namespace Reachy.ControlApp
                 localAiAgentIgnoreVirtualMicrophones = hasPreferNonVirtualInputField
                     ? config.prefer_non_virtual_input_device
                     : true;
+                localAiAgentTtsMode = ParseTtsMode(config.tts_mode);
                 localAiAgentConnectionMicrophoneSourceMode = hasAudioSourceModeField
                     ? ParseConnectionMicrophoneSourceMode(config.audio_source_mode)
                     : ConnectionMicrophoneSourceMode.Blend;
@@ -10232,6 +10821,8 @@ namespace Reachy.ControlApp
             GUILayout.Space(10f);
             DrawMicrophoneConnectionsSection();
             GUILayout.Space(10f);
+            DrawTtsConnectionsSection();
+            GUILayout.Space(10f);
             DrawAutomationSection();
 
             GUILayout.EndScrollView();
@@ -10948,6 +11539,7 @@ namespace Reachy.ControlApp
 
             bool neutralSent = false;
             string neutralMessage = string.Empty;
+            float neutralDurationSeconds = 0f;
             if (shouldReturnToNeutral && _client != null && _client.IsConnected)
             {
                 neutralSent = TrySendActedSequencePresetPose(
@@ -10957,7 +11549,11 @@ namespace Reachy.ControlApp
                     1,
                     1,
                     out neutralMessage,
-                    out _);
+                    out neutralDurationSeconds);
+                if (neutralSent)
+                {
+                    TrackSpeechDrivenLowPriorityPoseMotion(neutralDurationSeconds);
+                }
             }
 
             ClearActedSequenceState();
@@ -11187,7 +11783,7 @@ namespace Reachy.ControlApp
                 ? $"Acted sequence '{sequenceName}' stopped."
                 : $"Acted sequence '{sequenceName}' stopped. {reason}";
             _voiceAgentBridge.InterruptTtsFeedback(interruptReason);
-            _voicePendingSpokenFeedback.Clear();
+            ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: false);
         }
 
         private bool TryReturnStoppedActedSequenceToNeutralPose(string sequenceName, out string message)
@@ -11205,9 +11801,10 @@ namespace Reachy.ControlApp
                 1,
                 1,
                 out message,
-                out _);
+                out float neutralDurationSeconds);
             if (neutralSent)
             {
+                TrackSpeechDrivenLowPriorityPoseMotion(neutralDurationSeconds);
                 ResetManualControllerTargetsToDefaults();
             }
 
@@ -11752,7 +12349,7 @@ namespace Reachy.ControlApp
             VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
             baselineSuccessfulTtsCount = snapshot.SuccessfulTtsCount;
             baselineFailedTtsCount = snapshot.FailedTtsCount;
-            _voiceAgentBridge.EnqueueTtsFeedback(trimmedText, interrupt: true);
+            _voiceAgentBridge.EnqueueTtsFeedback(trimmedText, interrupt: true, ttsMode: GetTtsModeConfigValue());
             TrackPendingVoiceFeedback(trimmedText, interrupt: true);
             _actedSequenceSpeechInProgress = true;
             message = "Queued acted sequence speech.";
@@ -12851,7 +13448,7 @@ namespace Reachy.ControlApp
                 GUILayout.Width(AiW(56f, aiWidthScale)));
             GUILayout.EndHorizontal();
             GUILayout.Label("Temporary secret input. Press the save button to store it in a local secret file outside tracked Unity JSON config files.");
-            GUILayout.Label($"Secret store path: {GetOnlineAiApiKeySecretStorePath()}");
+            GUILayout.Label($"Secret store path: {GetPreferredOnlineAiApiKeySecretStorePath()}");
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Save key permanently", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
@@ -14047,6 +14644,27 @@ namespace Reachy.ControlApp
                 localAiAgentConnectionMicrophoneSourceMode == ConnectionMicrophoneSourceMode.PcOnly
                     ? "PC mic only keeps behavior identical to the current app, even while the real robot is connected."
                     : "Reachy 2021 mic capture uses SSH to the robot computer, then the sidecar keeps PC mic input and mixes both by default.");
+        }
+
+        private void DrawTtsConnectionsSection()
+        {
+            GUILayout.Label("Speech", _titleStyle);
+            GUILayout.Label(
+                "Select whether spoken output prefers OpenAI TTS or the built-in local engine. Online is the default and local remains the automatic fallback when OpenAI is unavailable.");
+
+            localAiAgentTtsMode = (TtsMode)GUILayout.Toolbar(
+                (int)localAiAgentTtsMode,
+                TtsModeLabels);
+
+            GUILayout.Label(
+                localAiAgentTtsMode == TtsMode.Online
+                    ? "OpenAI TTS is preferred for all speech output. If the API key is missing or a request fails, the existing local TTS path takes over automatically."
+                    : "Local TTS is forced for all speech output, even if a working OpenAI API key is available.");
+
+            string apiKeyStatus = string.IsNullOrWhiteSpace(_onlineAiApiKeyStatus)
+                ? "Unknown."
+                : _onlineAiApiKeyStatus;
+            GUILayout.Label($"OpenAI key status: {apiKeyStatus}");
         }
 
         private void DrawAutomationSection()

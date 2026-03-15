@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import tempfile
 import unicodedata
 import wave
 from collections import deque
@@ -98,6 +99,9 @@ DEFAULT_ONLINE_AI_MODEL = "gpt-5.4"
 DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
 DEFAULT_ONLINE_AI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
+DEFAULT_TTS_MODE = "online"
+DEFAULT_ONLINE_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_ONLINE_TTS_VOICE = "alloy"
 DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS = 480
 DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS = ["en", "fi"]
 DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS = len(DEFAULT_JOINTS)
@@ -738,6 +742,7 @@ def load_config(path: Path) -> dict:
         "transcript_default_confidence": 0.85,
         "intent_confidence_threshold": 0.78,
         "tts_backend": "pyttsx3",
+        "tts_mode": DEFAULT_TTS_MODE,
         "tts_rate": 175,
         "tts_timeout_seconds": 30.0,
         "tts_voice_name": "",
@@ -777,6 +782,9 @@ def load_config(path: Path) -> dict:
         "online_ai_enabled": False,
         "online_ai_model": DEFAULT_ONLINE_AI_MODEL,
         "online_ai_transcription_model": DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL,
+        "online_tts_model": DEFAULT_ONLINE_TTS_MODEL,
+        "online_tts_voice": DEFAULT_ONLINE_TTS_VOICE,
+        "online_tts_stream_partial_replies": True,
         "online_ai_api_key_env_var": DEFAULT_ONLINE_AI_API_KEY_ENV_VAR,
         "online_ai_api_key_file_path": "",
         "online_ai_base_url": DEFAULT_ONLINE_AI_BASE_URL,
@@ -822,6 +830,7 @@ def load_config(path: Path) -> dict:
         config["ai_mode"] = "local"
     config["stt_backend"] = normalize_stt_backend(config.get("stt_backend", "auto"))
     config["tts_backend"] = str(config.get("tts_backend", "none")).strip().lower()
+    config["tts_mode"] = normalize_tts_mode(config.get("tts_mode", DEFAULT_TTS_MODE))
     config["stt_sample_rate_hz"] = max(8000, int(config.get("stt_sample_rate_hz", 16000)))
     config["transcript_default_confidence"] = max(0.0, min(1.0, float(config.get("transcript_default_confidence", 0.85))))
     config["intent_confidence_threshold"] = max(0.0, min(1.0, float(config.get("intent_confidence_threshold", 0.78))))
@@ -899,6 +908,15 @@ def load_config(path: Path) -> dict:
     config["online_ai_transcription_model"] = (
         str(config.get("online_ai_transcription_model", DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL)).strip()
         or DEFAULT_ONLINE_AI_TRANSCRIBE_MODEL)
+    config["online_tts_model"] = (
+        str(config.get("online_tts_model", DEFAULT_ONLINE_TTS_MODEL)).strip()
+        or DEFAULT_ONLINE_TTS_MODEL)
+    config["online_tts_voice"] = (
+        str(config.get("online_tts_voice", DEFAULT_ONLINE_TTS_VOICE)).strip()
+        or DEFAULT_ONLINE_TTS_VOICE)
+    config["online_tts_stream_partial_replies"] = parse_bool(
+        config.get("online_tts_stream_partial_replies"),
+        True)
     config["online_ai_api_key_env_var"] = (
         str(config.get("online_ai_api_key_env_var", DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)).strip()
         or DEFAULT_ONLINE_AI_API_KEY_ENV_VAR)
@@ -1001,6 +1019,15 @@ def normalize_stt_backend(value) -> str:
     return "auto"
 
 
+def normalize_tts_mode(value) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in ("", "default"):
+        return DEFAULT_TTS_MODE
+    if normalized in ("online", "local"):
+        return normalized
+    return DEFAULT_TTS_MODE
+
+
 def resolve_effective_stt_backend(config: dict, api_key_available: bool) -> str:
     requested = normalize_stt_backend(config.get("stt_backend", "auto"))
     if requested in ("none", "vosk", "openai_transcribe"):
@@ -1022,6 +1049,17 @@ def build_openai_audio_transcriptions_endpoint(base_url: str) -> str:
     if trimmed.endswith("/v1"):
         return f"{trimmed}/audio/transcriptions"
     return f"{trimmed}/v1/audio/transcriptions"
+
+
+def build_openai_audio_speech_endpoint(base_url: str) -> str:
+    trimmed = str(base_url or "").strip().rstrip("/")
+    if not trimmed:
+        trimmed = DEFAULT_ONLINE_AI_BASE_URL
+    if trimmed.endswith("/audio/speech"):
+        return trimmed
+    if trimmed.endswith("/v1"):
+        return f"{trimmed}/audio/speech"
+    return f"{trimmed}/v1/audio/speech"
 
 
 def pcm16_rms(chunk: bytes) -> float:
@@ -1114,6 +1152,17 @@ def apply_microphone_routing_payload(config: dict, payload: dict) -> dict:
     }
 
 
+def apply_tts_mode_payload(config: dict, payload: dict) -> dict:
+    requested_mode = normalize_tts_mode(payload.get("tts_mode", config.get("tts_mode", DEFAULT_TTS_MODE)))
+    config["tts_mode"] = requested_mode
+    return {
+        "ok": True,
+        "message": f"TTS mode updated: requested={requested_mode}, effective={requested_mode}.",
+        "requested_mode": requested_mode,
+        "effective_mode": requested_mode,
+    }
+
+
 def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
     text = str(raw_path or "").strip()
     candidate = Path(text)
@@ -1180,44 +1229,90 @@ def discover_project_root(start_path: str) -> Path | None:
     return None
 
 
-def build_default_online_api_key_store_path(config: dict) -> Path:
-    config_dir = str(config.get("_config_dir", "")).strip()
-    project_root = discover_project_root(config_dir)
-    if project_root is not None:
-        return project_root / "UserSettings" / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json"
+def build_default_online_api_key_store_paths(config: dict) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add_candidate(path: Path | None) -> None:
+        if path is None:
+            return
+        normalized = str(path).strip()
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
 
     local_app_data = str(os.environ.get("LOCALAPPDATA", "") or "").strip()
     if local_app_data:
-        return Path(local_app_data) / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json"
+        add_candidate(Path(local_app_data) / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json")
 
-    return Path.home() / ".reachy_control_app" / "secrets" / "online_ai_api_key.json"
+    config_dir = str(config.get("_config_dir", "")).strip()
+    project_root = discover_project_root(config_dir)
+    if project_root is not None:
+        add_candidate(project_root / "UserSettings" / "ReachyControlApp" / "Secrets" / "online_ai_api_key.json")
+
+    add_candidate(Path.home() / ".reachy_control_app" / "secrets" / "online_ai_api_key.json")
+    return candidates
+
+
+def resolve_online_api_key_store_paths(config: dict) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def add_candidate(path: Path | None) -> None:
+        if path is None:
+            return
+        normalized = str(path).strip()
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(path)
+
+    raw_path = str(config.get("online_ai_api_key_file_path", "") or "").strip()
+    if raw_path:
+        add_candidate(resolve_config_relative_path(config, raw_path))
+
+    for candidate in build_default_online_api_key_store_paths(config):
+        add_candidate(candidate)
+
+    return candidates
 
 
 def resolve_online_api_key_store_path(config: dict) -> Path:
-    raw_path = str(config.get("online_ai_api_key_file_path", "") or "").strip()
-    if raw_path:
-        return resolve_config_relative_path(config, raw_path)
-    return build_default_online_api_key_store_path(config)
+    candidates = resolve_online_api_key_store_paths(config)
+    if candidates:
+        return candidates[0]
+    return Path.home() / ".reachy_control_app" / "secrets" / "online_ai_api_key.json"
 
 
 def load_online_api_key_from_store(config: dict, env_var: str) -> str:
-    path = resolve_online_api_key_store_path(config)
-    if not path.exists():
-        return ""
+    for path in resolve_online_api_key_store_paths(config):
+        if not path.exists():
+            continue
 
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:
-        return ""
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
 
-    if not isinstance(payload, dict):
-        return ""
+        if not isinstance(payload, dict):
+            continue
 
-    stored_env_var = str(payload.get("env_var", "") or "").strip() or env_var
-    if stored_env_var != env_var:
-        return ""
+        stored_env_var = str(payload.get("env_var", "") or "").strip() or env_var
+        if stored_env_var != env_var:
+            continue
 
-    return str(payload.get("api_key", "") or "").strip()
+        secret = str(payload.get("api_key", "") or "").strip()
+        if secret:
+            return secret
+
+    return ""
 
 
 def build_missing_online_api_key_message(env_var: str) -> str:
@@ -1815,18 +1910,22 @@ class TTS:
     def __init__(self, config: dict, state: State) -> None:
         self.config = config
         self.state = state
-        self.enabled = str(config["tts_backend"]) == "pyttsx3"
+        self.local_backend_enabled = str(config.get("tts_backend", "none")) == "pyttsx3"
+        self.enabled = self.local_backend_enabled or (
+            normalize_tts_mode(config.get("tts_mode", DEFAULT_TTS_MODE)) == "online")
         self.queue = queue.Queue(maxsize=200)
         self.stop_event = threading.Event()
         self.interrupt_event = threading.Event()
         self._active_process = None
         self._active_process_lock = threading.Lock()
+        self._active_temp_audio_path = ""
+        self._active_temp_audio_path_lock = threading.Lock()
         self.thread = None
         self._pyttsx3_module = None
 
     def start(self) -> None:
         if not self.enabled:
-            self.state.log("info", "TTS disabled (set tts_backend to 'pyttsx3' to enable).")
+            self.state.log("info", "TTS disabled (no local backend and online TTS is not selected).")
             return
         self.thread = threading.Thread(target=self._worker, daemon=True, name="tts-worker")
         self.thread.start()
@@ -1844,7 +1943,13 @@ class TTS:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
 
-    def speak(self, text: str, interrupt: bool, wait_for_completion: bool = False) -> tuple[bool, str]:
+    def speak(
+        self,
+        text: str,
+        interrupt: bool,
+        wait_for_completion: bool = False,
+        tts_mode_override: str = "",
+    ) -> tuple[bool, str]:
         text = (text or "").strip()
         if not text:
             return False, "Speech text is empty."
@@ -1858,7 +1963,10 @@ class TTS:
                 self.interrupt_event.set()
                 self._clear_queue_nonblocking("TTS request cleared by interrupt.")
                 self._terminate_active_process()
-            self.queue.put_nowait((text, interrupt, completion_queue))
+            resolved_tts_mode = normalize_tts_mode(
+                tts_mode_override if str(tts_mode_override or "").strip() else self.config.get("tts_mode", DEFAULT_TTS_MODE)
+            )
+            self.queue.put_nowait((text, interrupt, completion_queue, resolved_tts_mode))
             if not wait_for_completion or completion_queue is None:
                 return True, "Speech queued."
 
@@ -1878,6 +1986,14 @@ class TTS:
         self.state.set_tts_speaking(False)
         return True, "TTS playback interrupted."
 
+    def should_stream_online_reply_audio(self) -> bool:
+        if normalize_tts_mode(self.config.get("tts_mode", DEFAULT_TTS_MODE)) != "online":
+            return False
+        if not parse_bool(self.config.get("online_tts_stream_partial_replies"), True):
+            return False
+        api_key, _env_var = self._read_openai_api_key()
+        return bool(api_key)
+
     def _clear_queue_nonblocking(self, cleared_message: str = "TTS request cleared before playback.") -> None:
         while True:
             try:
@@ -1886,9 +2002,12 @@ class TTS:
                 return
             if not isinstance(queued_item, tuple):
                 continue
-            if len(queued_item) < 3:
+            if len(queued_item) >= 4:
+                text, _interrupt, completion_queue, _tts_mode_override = queued_item
+            elif len(queued_item) >= 3:
+                text, _interrupt, completion_queue = queued_item
+            else:
                 continue
-            text, _interrupt, completion_queue = queued_item
             if not text or completion_queue is None:
                 continue
             try:
@@ -1899,6 +2018,23 @@ class TTS:
     def _set_active_process(self, proc) -> None:
         with self._active_process_lock:
             self._active_process = proc
+
+    def _set_active_temp_audio_path(self, path: str) -> None:
+        with self._active_temp_audio_path_lock:
+            self._active_temp_audio_path = str(path or "").strip()
+
+    def _cleanup_active_temp_audio_path(self) -> None:
+        path = ""
+        with self._active_temp_audio_path_lock:
+            path = self._active_temp_audio_path
+            self._active_temp_audio_path = ""
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
     def _get_active_process(self):
         with self._active_process_lock:
@@ -1922,6 +2058,7 @@ class TTS:
             pass
         finally:
             self._set_active_process(None)
+            self._cleanup_active_temp_audio_path()
 
     @staticmethod
     def _rate_to_windows_sapi_scale(tts_rate: int) -> int:
@@ -1935,6 +2072,7 @@ class TTS:
         encoded_text = base64.b64encode((text or "").encode("utf-8")).decode("ascii")
         encoded_voice = base64.b64encode(voice_name.encode("utf-8")).decode("ascii")
         return (
+            "$ErrorActionPreference = 'Stop'; "
             "Add-Type -AssemblyName System.Speech; "
             "$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
             f"$synth.Rate = {rate}; "
@@ -2053,18 +2191,259 @@ class TTS:
         except Exception as exc:
             return False, f"TTS playback failed: {exc}"
 
-    def _worker(self) -> None:
+    def _read_openai_api_key(self) -> tuple[str, str]:
+        api_key_found, env_var = self.state.refresh_online_key_status()
+        if not api_key_found:
+            return "", env_var
+        return os.environ.get(env_var, "").strip(), env_var
+
+    def _speak_local(self, text: str) -> tuple[bool, str]:
+        if not self.local_backend_enabled:
+            self.state.log("info", f"TTS stub: {text}")
+            return True, "TTS backend disabled; accepted as no-op."
         if sys.platform.startswith("win"):
+            return self._speak_with_subprocess(text)
+        return self._speak_with_fresh_engine(text)
+
+    def _build_online_tts_request_payload(self, text: str) -> dict:
+        return {
+            "model": (
+                str(self.config.get("online_tts_model", DEFAULT_ONLINE_TTS_MODEL)).strip()
+                or DEFAULT_ONLINE_TTS_MODEL
+            ),
+            "voice": (
+                str(self.config.get("online_tts_voice", DEFAULT_ONLINE_TTS_VOICE)).strip()
+                or DEFAULT_ONLINE_TTS_VOICE
+            ),
+            "input": str(text or "").strip(),
+            "response_format": "wav",
+        }
+
+    def _request_online_audio_bytes(self, text: str) -> tuple[bool, bytes, str]:
+        api_key, env_var = self._read_openai_api_key()
+        if not api_key:
+            return False, b"", build_missing_online_api_key_message(env_var)
+
+        endpoint = build_openai_audio_speech_endpoint(
+            str(self.config.get("online_ai_base_url", DEFAULT_ONLINE_AI_BASE_URL)))
+        timeout_seconds = float(self.config.get("online_ai_timeout_seconds", 15.0))
+        body = json.dumps(
+            self._build_online_tts_request_payload(text),
+            ensure_ascii=False).encode("utf-8")
+        request = urllib_request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "audio/wav",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                audio_bytes = response.read()
+        except urllib_error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or str(exc)
+            return False, b"", f"OpenAI TTS HTTP {exc.code}: {detail}"
+        except urllib_error.URLError as exc:
+            return False, b"", f"OpenAI TTS network error: {exc.reason}"
+        except Exception as exc:
+            return False, b"", f"OpenAI TTS request failed: {exc}"
+
+        if not audio_bytes:
+            return False, b"", "OpenAI TTS returned no audio."
+        return True, audio_bytes, "OpenAI TTS audio received."
+
+    @staticmethod
+    def _build_windows_wav_player_script(audio_path: str) -> str:
+        encoded_path = base64.b64encode(str(audio_path or "").encode("utf-8")).decode("ascii")
+        return (
+            "$ErrorActionPreference = 'Stop'; "
+            "Add-Type -AssemblyName System; "
+            f"$pathBytes = [System.Convert]::FromBase64String('{encoded_path}'); "
+            "$path = [System.Text.Encoding]::UTF8.GetString($pathBytes); "
+            "$player = New-Object System.Media.SoundPlayer; "
+            "$player.SoundLocation = $path; "
+            "$player.Load(); "
+            "$player.PlaySync(); "
+            "$player.Dispose();"
+        )
+
+    def _build_audio_player_command(self, audio_path: str) -> list[str]:
+        if sys.platform.startswith("win"):
+            script = self._build_windows_wav_player_script(audio_path)
+            encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+            return [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded_script,
+            ]
+        if shutil.which("ffplay"):
+            return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", audio_path]
+        if shutil.which("afplay"):
+            return ["afplay", audio_path]
+        if shutil.which("aplay"):
+            return ["aplay", audio_path]
+        if shutil.which("paplay"):
+            return ["paplay", audio_path]
+        return []
+
+    def _play_wav_bytes_with_subprocess(self, audio_bytes: bytes, text: str) -> tuple[bool, str]:
+        temp_path = ""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as handle:
+                handle.write(audio_bytes)
+                handle.flush()
+                temp_path = handle.name
+        except Exception as exc:
+            return False, f"Online TTS temp-file creation failed: {exc}"
+
+        cmd = self._build_audio_player_command(temp_path)
+        if not cmd:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            return False, "No system audio player is available for online TTS playback."
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+                text=True,
+            )
+        except Exception as exc:
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+            return False, f"Online TTS playback start failed: {exc}"
+
+        self._set_active_temp_audio_path(temp_path)
+        self._set_active_process(proc)
+        timeout_seconds = self._estimate_timeout_seconds(text)
+        started = time.time()
+        while True:
+            if self.stop_event.is_set():
+                self._terminate_active_process()
+                return False, "TTS stopped."
+            if self.interrupt_event.is_set():
+                self.interrupt_event.clear()
+                self._terminate_active_process()
+                return False, "TTS interrupted."
+
+            return_code = proc.poll()
+            if return_code is not None:
+                break
+
+            if (time.time() - started) > timeout_seconds:
+                self._terminate_active_process()
+                return False, f"Online TTS playback timed out after {timeout_seconds:.1f}s."
+
+            time.sleep(0.05)
+
+        self._set_active_process(None)
+        self._cleanup_active_temp_audio_path()
+        stdout_text = ""
+        stderr_text = ""
+        try:
+            stdout_text, stderr_text = proc.communicate(timeout=0.2)
+        except Exception:
+            pass
+
+        if return_code != 0:
+            detail = (stderr_text or stdout_text or "").strip()
+            if detail:
+                detail = f" {detail}"
+            return False, f"Online TTS playback exited with code {return_code}.{detail}"
+
+        return True, "OpenAI TTS spoke."
+
+    @staticmethod
+    def _normalize_wav_bytes(audio_bytes: bytes) -> bytes:
+        raw_bytes = bytes(audio_bytes or b"")
+        if not raw_bytes:
+            return raw_bytes
+
+        try:
+            with wave.open(io.BytesIO(raw_bytes), "rb") as src:
+                channel_count = src.getnchannels()
+                sample_width = src.getsampwidth()
+                sample_rate = src.getframerate()
+                frames = src.readframes(10**9)
+
+            with io.BytesIO() as buffer:
+                with wave.open(buffer, "wb") as dst:
+                    dst.setnchannels(channel_count)
+                    dst.setsampwidth(sample_width)
+                    dst.setframerate(sample_rate)
+                    dst.writeframes(frames)
+                return buffer.getvalue()
+        except Exception:
+            return raw_bytes
+
+    def _speak_online(self, text: str) -> tuple[bool, str]:
+        ok, audio_bytes, message = self._request_online_audio_bytes(text)
+        if not ok:
+            return False, message
+        audio_bytes = self._normalize_wav_bytes(audio_bytes)
+        if self.stop_event.is_set():
+            return False, "TTS stopped."
+        if self.interrupt_event.is_set():
+            self.interrupt_event.clear()
+            return False, "TTS interrupted."
+        return self._play_wav_bytes_with_subprocess(audio_bytes, text)
+
+    def _speak_with_selected_provider(self, text: str, tts_mode_override: str = "") -> tuple[bool, str]:
+        preferred_mode = normalize_tts_mode(
+            tts_mode_override if str(tts_mode_override or "").strip() else self.config.get("tts_mode", DEFAULT_TTS_MODE)
+        )
+        if preferred_mode != "online":
+            return self._speak_local(text)
+
+        ok, message = self._speak_online(text)
+        if ok:
+            return True, message
+
+        if not self.local_backend_enabled:
+            return False, message
+
+        self.state.log("warn", f"OpenAI TTS unavailable, falling back to local TTS. Reason: {message}")
+        local_ok, local_message = self._speak_local(text)
+        if local_ok:
+            return True, f"OpenAI TTS unavailable; local fallback spoke. Reason: {message}"
+        return False, f"OpenAI TTS failed: {message} Local fallback failed: {local_message}"
+
+    def _worker(self) -> None:
+        if self.local_backend_enabled and sys.platform.startswith("win"):
             self.state.log("info", "TTS backend windows_sapi initialized.")
-        else:
+        elif self.local_backend_enabled:
             try:
                 import pyttsx3  # type: ignore
                 self._pyttsx3_module = pyttsx3
                 self.state.log("info", "TTS backend pyttsx3 initialized.")
             except Exception as exc:
-                self.enabled = False
-                self.state.log("error", f"pyttsx3 unavailable; TTS disabled: {exc}")
-                return
+                self.local_backend_enabled = False
+                if normalize_tts_mode(self.config.get("tts_mode", DEFAULT_TTS_MODE)) != "online":
+                    self.enabled = False
+                    self.state.log("error", f"pyttsx3 unavailable; TTS disabled: {exc}")
+                    return
+                self.state.log("warn", f"pyttsx3 unavailable; local TTS fallback disabled: {exc}")
 
         while not self.stop_event.is_set():
             try:
@@ -2072,11 +2451,15 @@ class TTS:
             except queue.Empty:
                 continue
             if isinstance(queued_item, tuple):
-                if len(queued_item) >= 3:
+                if len(queued_item) >= 4:
+                    text, _interrupt, completion_queue, tts_mode_override = queued_item
+                elif len(queued_item) >= 3:
                     text, _interrupt, completion_queue = queued_item
+                    tts_mode_override = ""
                 elif len(queued_item) == 2:
                     text, _interrupt = queued_item
                     completion_queue = None
+                    tts_mode_override = ""
                 else:
                     continue
             else:
@@ -2089,10 +2472,7 @@ class TTS:
                 if self.interrupt_event.is_set():
                     self.interrupt_event.clear()
                 self.state.set_tts_speaking(True)
-                if sys.platform.startswith("win"):
-                    ok, message = self._speak_with_subprocess(text)
-                else:
-                    ok, message = self._speak_with_fresh_engine(text)
+                ok, message = self._speak_with_selected_provider(text, tts_mode_override)
                 if ok:
                     self.state.log("info", f"TTS spoke: {text}")
                 else:
@@ -3455,14 +3835,169 @@ def build_stt_runtime(
     return DisabledSTT(config, state, requested_backend)
 
 
+class OnlineReplySpeechStreamer:
+    def __init__(self, tts: TTS) -> None:
+        self.tts = tts
+        self._preface_buffer = ""
+        self._capturing_reply = False
+        self._reply_complete = False
+        self._escape_active = False
+        self._unicode_digits: str | None = None
+        self._pending_segment_buffer = ""
+        self.reply_already_spoken = False
+        self.failure_message = ""
+
+    def consume_delta(self, delta_text: str) -> None:
+        if self.failure_message or self._reply_complete:
+            return
+
+        text = str(delta_text or "")
+        if not text:
+            return
+
+        if not self._capturing_reply:
+            self._preface_buffer += text
+            match = re.search(r'"reply_text"\s*:\s*"', self._preface_buffer)
+            if not match:
+                if len(self._preface_buffer) > 512:
+                    self._preface_buffer = self._preface_buffer[-512:]
+                return
+
+            trailing = self._preface_buffer[match.end():]
+            self._preface_buffer = ""
+            self._capturing_reply = True
+            self._consume_reply_chars(trailing)
+            return
+
+        self._consume_reply_chars(text)
+
+    def finish(self) -> None:
+        if self.failure_message:
+            return
+        self._flush_pending_segments(final=True)
+
+    def _consume_reply_chars(self, text: str) -> None:
+        for ch in text:
+            if self._reply_complete:
+                return
+
+            if self._unicode_digits is not None:
+                self._unicode_digits += ch
+                if len(self._unicode_digits) >= 4:
+                    try:
+                        decoded = chr(int(self._unicode_digits[:4], 16))
+                    except Exception:
+                        decoded = ""
+                    self._unicode_digits = None
+                    self._append_decoded_reply_text(decoded)
+                continue
+
+            if self._escape_active:
+                self._escape_active = False
+                if ch == "u":
+                    self._unicode_digits = ""
+                    continue
+                escape_map = {
+                    '"': '"',
+                    "\\": "\\",
+                    "/": "/",
+                    "b": "\b",
+                    "f": "\f",
+                    "n": "\n",
+                    "r": "\r",
+                    "t": "\t",
+                }
+                self._append_decoded_reply_text(escape_map.get(ch, ch))
+                continue
+
+            if ch == "\\":
+                self._escape_active = True
+                continue
+
+            if ch == '"':
+                self._capturing_reply = False
+                self._reply_complete = True
+                self._flush_pending_segments(final=True)
+                return
+
+            self._append_decoded_reply_text(ch)
+
+    def _append_decoded_reply_text(self, text: str) -> None:
+        if not text or self.failure_message:
+            return
+        self._pending_segment_buffer += text
+        self._flush_pending_segments(final=False)
+
+    def _flush_pending_segments(self, final: bool) -> None:
+        if self.failure_message:
+            return
+
+        while True:
+            segment, remainder = self._extract_ready_segment(self._pending_segment_buffer, final)
+            if not segment:
+                self._pending_segment_buffer = remainder
+                return
+
+            ok, message = self.tts.speak(segment, interrupt=False, wait_for_completion=False)
+            self._pending_segment_buffer = remainder
+            if ok:
+                self.reply_already_spoken = True
+                continue
+
+            self.failure_message = str(message or "").strip() or "Streaming TTS segment enqueue failed."
+            return
+
+    @staticmethod
+    def _extract_ready_segment(buffer: str, final: bool) -> tuple[str, str]:
+        text = str(buffer or "")
+        if not text:
+            return "", ""
+
+        if final:
+            return text.strip(), ""
+
+        candidate_break = -1
+        for idx, ch in enumerate(text):
+            if ch == "\n":
+                candidate_break = idx + 1
+            elif ch in ".!?":
+                if idx + 1 >= len(text) or text[idx + 1].isspace():
+                    candidate_break = idx + 1
+            elif ch in ";:" and idx >= 18:
+                candidate_break = idx + 1
+            elif ch == "," and idx >= 64:
+                candidate_break = idx + 1
+
+        if candidate_break > 0:
+            return text[:candidate_break].strip(), text[candidate_break:].lstrip()
+
+        if len(text) >= 120:
+            split_at = text.rfind(" ", 40, 120)
+            if split_at > 0:
+                return text[:split_at].strip(), text[split_at + 1:].lstrip()
+
+        return "", text
+
+
 class OnlineAIOrchestrator:
-    def __init__(self, config: dict, state: State) -> None:
+    def __init__(self, config: dict, state: State, tts: TTS | None = None) -> None:
         self.config = config
         self.state = state
+        self.tts = tts
         self.source_backend = "openai_responses"
+        self._streaming_online_reply_ready = False
 
     def is_selected_mode(self) -> bool:
         return str(self.config.get("ai_mode", "local")).strip().lower() == "online"
+
+    def _build_reply_streamer(self, *, connection_test: bool) -> OnlineReplySpeechStreamer | None:
+        if connection_test or self.tts is None:
+            return None
+        if not self._streaming_online_reply_ready:
+            return None
+        if not self.tts.should_stream_online_reply_audio():
+            return None
+        return OnlineReplySpeechStreamer(self.tts)
 
     def handle_transcript(self, transcript: str, confidence: float) -> tuple[dict | None, str]:
         resolved_confidence = max(0.0, min(1.0, confidence if confidence > 0.0 else 0.85))
@@ -3529,10 +4064,15 @@ class OnlineAIOrchestrator:
                 validation_message=message,
             ), message
 
+        reply_streamer = self._build_reply_streamer(connection_test=False)
         self.state.record_online_request_started(model)
         request_started = time.perf_counter()
         try:
-            payload = self._request_online_turn(api_key, transcript)
+            payload = self._request_online_turn(
+                api_key,
+                transcript,
+                reply_streamer=reply_streamer,
+            )
             latency_ms = max(0.0, (time.perf_counter() - request_started) * 1000.0)
         except Exception as exc:
             latency_ms = max(0.0, (time.perf_counter() - request_started) * 1000.0)
@@ -3553,7 +4093,11 @@ class OnlineAIOrchestrator:
                 reply_text,
                 validation_status="http_error",
                 validation_message=error_message,
+                reply_already_spoken=bool(reply_streamer and reply_streamer.reply_already_spoken),
             ), f"online_http_error: {error_message}"
+
+        if reply_streamer is not None and reply_streamer.failure_message:
+            self.state.log("warn", f"Online reply speech streaming degraded: {reply_streamer.failure_message}")
 
         normalized_intent, message = self._validate_and_normalize(transcript, resolved_confidence, payload)
         semantic_override, semantic_message = self._try_build_semantic_motion_intent(
@@ -3567,6 +4111,8 @@ class OnlineAIOrchestrator:
         normalized_intent["source_backend"] = (
             str(normalized_intent.get("source_backend", "")).strip() or self.source_backend)
         normalized_intent["source_mode"] = "online"
+        normalized_intent["reply_already_spoken"] = bool(
+            reply_streamer is not None and reply_streamer.reply_already_spoken)
         self.state.record_online_response(
             reply_text=normalized_intent.get("reply_text", ""),
             validation_result=normalized_intent.get("validation_status", "validated"),
@@ -3576,6 +4122,7 @@ class OnlineAIOrchestrator:
             latency_ms=latency_ms,
             source_backend=normalized_intent.get("source_backend", self.source_backend),
         )
+        self._streaming_online_reply_ready = True
         return normalized_intent, message
 
     def test_connection(self) -> dict:
@@ -3648,6 +4195,7 @@ class OnlineAIOrchestrator:
                 http_error="",
                 model=model,
             )
+            self._streaming_online_reply_ready = True
             return {
                 "ok": True,
                 "message": result_message,
@@ -3946,6 +4494,7 @@ class OnlineAIOrchestrator:
                 f"Mapped an underspecified {family} request to preset pose '{resolved_pose}' "
                 f"using side='{side}'."
             ),
+            "reply_already_spoken": False,
             "transcript_is_final": True,
         }
         return intent, (
@@ -3953,7 +4502,7 @@ class OnlineAIOrchestrator:
             f"(family={family}, side={side})."
         )
 
-    def _request_online_turn(self, api_key: str, transcript: str, connection_test: bool = False) -> dict:
+    def _build_online_turn_request_payload(self, transcript: str, connection_test: bool) -> dict:
         system_prompt = self._build_system_prompt()
         user_payload = {
             "user_transcript": str(transcript or "").strip(),
@@ -4006,7 +4555,7 @@ class OnlineAIOrchestrator:
                 ],
             },
         }
-        request_payload = {
+        return {
             "model": str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL,
             "temperature": float(self.config.get("online_ai_temperature", 0.2)),
             "max_output_tokens": int(self.config.get("online_ai_max_output_tokens", DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS)),
@@ -4040,8 +4589,68 @@ class OnlineAIOrchestrator:
             },
         }
 
+    def _request_online_turn(
+        self,
+        api_key: str,
+        transcript: str,
+        connection_test: bool = False,
+        reply_streamer: OnlineReplySpeechStreamer | None = None,
+    ) -> dict:
+        request_payload = self._build_online_turn_request_payload(transcript, connection_test)
         endpoint = self._build_responses_endpoint()
         timeout_seconds = float(self.config.get("online_ai_timeout_seconds", 15.0))
+        if reply_streamer is not None:
+            response_payload: dict | None = None
+            response_text = ""
+            try:
+                response_text, response_payload = self._post_online_streaming_request(
+                    endpoint,
+                    api_key,
+                    timeout_seconds,
+                    request_payload,
+                    reply_streamer,
+                )
+            finally:
+                reply_streamer.finish()
+
+            if not response_text and response_payload is not None:
+                response_text = self._extract_response_text(response_payload)
+
+            if not response_text:
+                if not reply_streamer.reply_already_spoken:
+                    self.state.log(
+                        "warn",
+                        "Streaming online response returned no structured text; retrying once without streaming.",
+                    )
+                    return self._request_online_turn(
+                        api_key,
+                        transcript,
+                        connection_test=connection_test,
+                        reply_streamer=None,
+                    )
+                raise RuntimeError("Online AI response did not contain structured text output.")
+
+            try:
+                return json.loads(response_text)
+            except Exception as exc:
+                if not reply_streamer.reply_already_spoken:
+                    self.state.log(
+                        "warn",
+                        f"Streaming structured online response parse failed ({exc}); retrying once without streaming.",
+                    )
+                    return self._request_online_turn(
+                        api_key,
+                        transcript,
+                        connection_test=connection_test,
+                        reply_streamer=None,
+                    )
+
+                if self._response_hit_max_output_tokens(response_payload) or self._looks_like_truncated_json_output(response_text):
+                    raise RuntimeError(
+                        "Structured online response hit max_output_tokens and was truncated. "
+                        f"Current limit={int(request_payload['max_output_tokens'])}.")
+                raise RuntimeError(f"Structured online response was not valid JSON: {exc}")
+
         max_output_tokens = int(request_payload["max_output_tokens"])
         response_payload: dict | None = None
         response_text = ""
@@ -4093,6 +4702,149 @@ class OnlineAIOrchestrator:
 
         raise RuntimeError(
             "Structured online response could not be completed within the configured token budget.")
+
+    @staticmethod
+    def _post_online_streaming_request(
+        endpoint: str,
+        api_key: str,
+        timeout_seconds: float,
+        request_payload: dict,
+        reply_streamer: OnlineReplySpeechStreamer,
+    ) -> tuple[str, dict | None]:
+        streaming_payload = dict(request_payload)
+        streaming_payload["stream"] = True
+        body = json.dumps(streaming_payload, ensure_ascii=True).encode("utf-8")
+        request = urllib_request.Request(
+            endpoint,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            method="POST",
+        )
+
+        response_text_fragments: list[str] = []
+        final_response_payload: dict | None = None
+
+        def flush_event(event_name: str, data_lines: list[str]) -> tuple[bool, dict | None]:
+            return OnlineAIOrchestrator._process_online_stream_event(
+                event_name,
+                data_lines,
+                response_text_fragments,
+                reply_streamer,
+                final_response_payload,
+            )
+
+        try:
+            with urllib_request.urlopen(request, timeout=timeout_seconds) as response:
+                event_name = ""
+                data_lines: list[str] = []
+                while True:
+                    raw_line = response.readline()
+                    if not raw_line:
+                        break
+                    line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if not line:
+                        done, final_response_payload = flush_event(event_name, data_lines)
+                        event_name = ""
+                        data_lines = []
+                        if done:
+                            break
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                        continue
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+
+                if data_lines or event_name:
+                    _done, final_response_payload = flush_event(event_name, data_lines)
+        except urllib_error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8")
+            except Exception:
+                error_body = ""
+            detail = error_body.strip() or str(exc)
+            raise RuntimeError(f"HTTP {exc.code}: {detail}")
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Network error: {exc.reason}")
+
+        response_text = "".join(fragment for fragment in response_text_fragments if fragment).strip()
+        return response_text, final_response_payload
+
+    @staticmethod
+    def _process_online_stream_event(
+        event_name: str,
+        data_lines: list[str],
+        response_text_fragments: list[str],
+        reply_streamer: OnlineReplySpeechStreamer,
+        existing_response_payload: dict | None,
+    ) -> tuple[bool, dict | None]:
+        if not data_lines and not event_name:
+            return False, existing_response_payload
+
+        data_text = "\n".join(data_lines).strip()
+        if not data_text:
+            return False, existing_response_payload
+        if data_text == "[DONE]":
+            return True, existing_response_payload
+
+        try:
+            payload = json.loads(data_text)
+        except Exception as exc:
+            raise RuntimeError(f"Streaming online response contained invalid JSON event data: {exc}")
+
+        resolved_event_name = str(event_name or payload.get("type", "")).strip()
+        if resolved_event_name == "response.output_text.delta":
+            delta = str(payload.get("delta", "") or "")
+            if delta:
+                response_text_fragments.append(delta)
+                reply_streamer.consume_delta(delta)
+            return False, existing_response_payload
+
+        if resolved_event_name == "response.output_text.done":
+            text = payload.get("text")
+            if isinstance(text, str) and text.strip() and not response_text_fragments:
+                response_text_fragments.append(text.strip())
+            return False, existing_response_payload
+
+        if resolved_event_name in ("response.completed", "response.incomplete"):
+            response_payload = payload.get("response")
+            if isinstance(response_payload, dict):
+                return resolved_event_name == "response.incomplete", response_payload
+            if isinstance(payload, dict):
+                return resolved_event_name == "response.incomplete", payload
+
+        if resolved_event_name in ("response.failed", "error"):
+            raise RuntimeError(OnlineAIOrchestrator._format_online_stream_error(payload))
+
+        return False, existing_response_payload
+
+    @staticmethod
+    def _format_online_stream_error(payload: dict) -> str:
+        if not isinstance(payload, dict):
+            return "Streaming online response failed."
+
+        error_payload = payload.get("error")
+        if isinstance(error_payload, dict):
+            message = str(error_payload.get("message", "") or "").strip()
+            code = str(error_payload.get("code", "") or "").strip()
+            if message and code:
+                return f"{code}: {message}"
+            if message:
+                return message
+            if code:
+                return code
+
+        message = str(payload.get("message", "") or "").strip()
+        if message:
+            return message
+        return "Streaming online response failed."
 
     @staticmethod
     def _post_online_request(endpoint: str, api_key: str, timeout_seconds: float, request_payload: dict) -> str:
@@ -4771,6 +5523,7 @@ class OnlineAIOrchestrator:
         *,
         validation_status: str,
         validation_message: str,
+        reply_already_spoken: bool = False,
     ) -> dict:
         return {
             "type": "robot_command",
@@ -4789,6 +5542,7 @@ class OnlineAIOrchestrator:
             "source_mode": "online",
             "validation_status": str(validation_status or "").strip(),
             "validation_message": str(validation_message or "").strip(),
+            "reply_already_spoken": bool(reply_already_spoken),
             "transcript_is_final": True,
         }
 
@@ -4798,8 +5552,8 @@ class App:
         self.config = config
         self.state = State(config)
         self.parser = Parser(config)
-        self.online = OnlineAIOrchestrator(config, self.state)
         self.tts = TTS(config, self.state)
+        self.online = OnlineAIOrchestrator(config, self.state, self.tts)
         self.stt = build_stt_runtime(config, self.state, self.parser, self.online)
         self.help_responder = LocalHelpResponder(config, self.state)
 
@@ -4809,7 +5563,8 @@ class App:
         self.state.log(
             "info",
             f"Local sidecar ready on {self.config['bind_host']}:{self.config['bind_port']} "
-            f"(stt={self.state.stt_backend}, requested_stt={self.config['stt_backend']}, tts={self.config['tts_backend']}, "
+            f"(stt={self.state.stt_backend}, requested_stt={self.config['stt_backend']}, "
+            f"tts_mode={self.config.get('tts_mode', DEFAULT_TTS_MODE)}, tts_local_backend={self.config['tts_backend']}, "
             f"help={self.help_responder.backend}, ai_mode={self.config.get('ai_mode', 'local')}).",
         )
 
@@ -5001,7 +5756,8 @@ class Handler(BaseHTTPRequestHandler):
             ok, msg = self.app.tts.speak(
                 str(payload.get("text", "")),
                 bool(payload.get("interrupt", False)),
-                bool(payload.get("wait_for_completion", False)))
+                bool(payload.get("wait_for_completion", False)),
+                str(payload.get("tts_mode", "")).strip())
             self.app.state.log("info" if ok else "warn", f"/speak -> {msg}")
             self._send(HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST, {"ok": ok, "message": msg})
             return
@@ -5062,6 +5818,15 @@ class Handler(BaseHTTPRequestHandler):
             self.app.state.log(
                 "info",
                 f"/microphone-source -> requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
+            )
+            self._send(HTTPStatus.OK, result)
+            return
+
+        if path == "/tts-mode":
+            result = apply_tts_mode_payload(self.app.config, payload)
+            self.app.state.log(
+                "info",
+                f"/tts-mode -> requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
             )
             self._send(HTTPStatus.OK, result)
             return

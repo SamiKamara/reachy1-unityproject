@@ -44,6 +44,7 @@ namespace Reachy.ControlApp
         public string source_mode = string.Empty;
         public string validation_status = string.Empty;
         public string validation_message = string.Empty;
+        public bool reply_already_spoken;
         public bool transcript_is_final = true;
 
         [NonSerialized] public string raw_json = string.Empty;
@@ -123,6 +124,7 @@ namespace Reachy.ControlApp
         {
             public string Text;
             public bool Interrupt;
+            public string TtsMode;
         }
 
         private struct TtsResult
@@ -190,6 +192,7 @@ namespace Reachy.ControlApp
             public string text;
             public bool interrupt;
             public bool wait_for_completion;
+            public string tts_mode;
         }
 
         [Serializable]
@@ -449,7 +452,7 @@ namespace Reachy.ControlApp
             }
         }
 
-        public void EnqueueTtsFeedback(string text, bool interrupt)
+        public void EnqueueTtsFeedback(string text, bool interrupt, string ttsMode = "")
         {
             if (string.IsNullOrWhiteSpace(text))
             {
@@ -466,7 +469,8 @@ namespace Reachy.ControlApp
                 _ttsQueue.Enqueue(new TtsRequest
                 {
                     Text = text.Trim(),
-                    Interrupt = interrupt
+                    Interrupt = interrupt,
+                    TtsMode = string.IsNullOrWhiteSpace(ttsMode) ? string.Empty : ttsMode.Trim()
                 });
 
                 AddLogLocked(
@@ -584,6 +588,7 @@ namespace Reachy.ControlApp
                     source_mode = intent.source_mode ?? string.Empty,
                     validation_status = intent.validation_status ?? string.Empty,
                     validation_message = intent.validation_message ?? string.Empty,
+                    reply_already_spoken = intent.reply_already_spoken,
                     transcript_is_final = intent.transcript_is_final,
                     raw_json = string.IsNullOrWhiteSpace(intent.raw_json) ? "mock_intent" : intent.raw_json
                 };
@@ -1302,7 +1307,8 @@ namespace Reachy.ControlApp
                 {
                     text = requestPayload.Text ?? string.Empty,
                     interrupt = requestPayload.Interrupt,
-                    wait_for_completion = waitForCompletion
+                    wait_for_completion = waitForCompletion,
+                    tts_mode = requestPayload.TtsMode ?? string.Empty
                 });
 
                 byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
