@@ -1212,22 +1212,48 @@ namespace Reachy.ControlApp
             int timeoutMs,
             TtsRequest requestPayload)
         {
+            Task<TtsResult> mirrorTask = null;
+            if (!string.IsNullOrWhiteSpace(mirrorEndpoint))
+            {
+                mirrorTask = Task.Run(() => SendSingleTtsRequest(
+                    mirrorEndpoint,
+                    timeoutMs,
+                    requestPayload,
+                    waitForCompletion: false));
+            }
+
             TtsResult primaryResult = SendSingleTtsRequest(endpoint, timeoutMs, requestPayload, waitForCompletion: true);
             if (!primaryResult.Success)
             {
-                primaryResult.MirrorAttempted = false;
-                primaryResult.MirrorSuccess = false;
+                primaryResult.MirrorAttempted = mirrorTask != null;
+                primaryResult.MirrorSuccess = mirrorTask != null &&
+                    mirrorTask.Status == TaskStatus.RanToCompletion &&
+                    mirrorTask.Result.Success;
                 return primaryResult;
             }
 
-            if (string.IsNullOrWhiteSpace(mirrorEndpoint))
+            if (mirrorTask == null)
             {
                 primaryResult.MirrorAttempted = false;
                 primaryResult.MirrorSuccess = true;
                 return primaryResult;
             }
 
-            TtsResult mirrorResult = SendSingleTtsRequest(mirrorEndpoint, timeoutMs, requestPayload, waitForCompletion: false);
+            TtsResult mirrorResult;
+            try
+            {
+                mirrorResult = mirrorTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                mirrorResult = new TtsResult
+                {
+                    Success = false,
+                    Message = "Robot speaker mirror request failed.",
+                    Error = ex.GetBaseException().Message,
+                };
+            }
+
             primaryResult.MirrorAttempted = true;
             primaryResult.MirrorSuccess = mirrorResult.Success;
             if (mirrorResult.Success)
@@ -1252,22 +1278,44 @@ namespace Reachy.ControlApp
             int timeoutMs,
             string reason)
         {
+            Task<TtsResult> mirrorTask = null;
+            if (!string.IsNullOrWhiteSpace(mirrorEndpoint))
+            {
+                mirrorTask = Task.Run(() => SendSingleTtsInterruptRequest(mirrorEndpoint, timeoutMs, reason));
+            }
+
             TtsResult primaryResult = SendSingleTtsInterruptRequest(endpoint, timeoutMs, reason);
             if (!primaryResult.Success)
             {
-                primaryResult.MirrorAttempted = false;
-                primaryResult.MirrorSuccess = false;
+                primaryResult.MirrorAttempted = mirrorTask != null;
+                primaryResult.MirrorSuccess = mirrorTask != null &&
+                    mirrorTask.Status == TaskStatus.RanToCompletion &&
+                    mirrorTask.Result.Success;
                 return primaryResult;
             }
 
-            if (string.IsNullOrWhiteSpace(mirrorEndpoint))
+            if (mirrorTask == null)
             {
                 primaryResult.MirrorAttempted = false;
                 primaryResult.MirrorSuccess = true;
                 return primaryResult;
             }
 
-            TtsResult mirrorResult = SendSingleTtsInterruptRequest(mirrorEndpoint, timeoutMs, reason);
+            TtsResult mirrorResult;
+            try
+            {
+                mirrorResult = mirrorTask.GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                mirrorResult = new TtsResult
+                {
+                    Success = false,
+                    Message = "Robot speaker mirror interrupt failed.",
+                    Error = ex.GetBaseException().Message,
+                };
+            }
+
             primaryResult.MirrorAttempted = true;
             primaryResult.MirrorSuccess = mirrorResult.Success;
             if (mirrorResult.Success)

@@ -635,23 +635,25 @@ namespace Reachy.ControlApp
             EnsureMobilityClients();
             if (_mobilityClient == null)
             {
-                message = "Mobility client is unavailable.";
+                message = $"Mobility client is unavailable (endpoint={DescribeMobilityEndpoint()}).";
                 return false;
             }
 
             if (!TryGetMobileBasePresence(out bool present, out string presenceMessage))
             {
-                message = presenceMessage;
+                message = $"{presenceMessage} (endpoint={DescribeMobilityEndpoint()})";
                 return false;
             }
 
             if (!present)
             {
-                message = presenceMessage;
+                message = $"{presenceMessage} (endpoint={DescribeMobilityEndpoint()})";
                 return false;
             }
 
             float normalizedDuration = NormalizeBaseVelocityDuration(durationSeconds);
+            string endpointSummary = DescribeMobilityEndpoint();
+            bool configuredSpeedModeThisCall = false;
 
             try
             {
@@ -662,7 +664,7 @@ namespace Reachy.ControlApp
                         deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
                     if (controlAck == null || controlAck.Success != true)
                     {
-                        message = "Mobile base rejected PID control mode.";
+                        message = $"Mobile base rejected PID control mode (endpoint={endpointSummary}).";
                         return false;
                     }
 
@@ -671,11 +673,12 @@ namespace Reachy.ControlApp
                         deadline: DateTime.UtcNow.AddSeconds(MobilityRpcTimeoutSeconds));
                     if (modeAck == null || modeAck.Success != true)
                     {
-                        message = "Mobile base rejected SPEED mode.";
+                        message = $"Mobile base rejected SPEED mode (endpoint={endpointSummary}).";
                         return false;
                     }
 
                     _mobilityConfiguredForSpeedMode = true;
+                    configuredSpeedModeThisCall = true;
                 }
 
                 SetSpeedAck ack = _mobilityClient.SendSetSpeed(
@@ -691,11 +694,14 @@ namespace Reachy.ControlApp
                 if (ack != null && ack.Success == true)
                 {
                     message =
-                        $"Base velocity sent (x={xVel:F2} m/s, y={yVel:F2} m/s, rot={rotVel:F2} rad/s, duration={normalizedDuration:F2}s).";
+                        $"Base velocity sent (x={xVel:F2} m/s, y={yVel:F2} m/s, rot={rotVel:F2} rad/s, duration={normalizedDuration:F2}s, " +
+                        $"endpoint={endpointSummary}, speedModeConfigured={(configuredSpeedModeThisCall ? "this-call" : "cached")}).";
                     return true;
                 }
 
-                message = "Base velocity command sent but was not acknowledged as successful.";
+                message =
+                    $"Base velocity command sent but was not acknowledged as successful (endpoint={endpointSummary}, " +
+                    $"speedModeConfigured={(configuredSpeedModeThisCall ? "this-call" : "cached")}).";
                 return false;
             }
             catch (RpcException rpcEx)
@@ -726,15 +732,39 @@ namespace Reachy.ControlApp
                     _mobilityConfiguredForSpeedMode = false;
                 }
 
-                message = $"Base command RPC {rpcEx.StatusCode}: {rpcEx.Status.Detail}";
+                message =
+                    $"Base command RPC {rpcEx.StatusCode}: {rpcEx.Status.Detail} " +
+                    $"(endpoint={endpointSummary}, speedModeConfigured={(configuredSpeedModeThisCall ? "this-call" : "cached")}).";
                 return false;
             }
             catch (Exception ex)
             {
                 _mobilityConfiguredForSpeedMode = false;
-                message = $"Base command failed: {ex.Message}";
+                message =
+                    $"Base command failed: {ex.Message} " +
+                    $"(endpoint={endpointSummary}, speedModeConfigured={(configuredSpeedModeThisCall ? "this-call" : "cached")}).";
                 return false;
             }
+        }
+
+        private string DescribeMobilityEndpoint()
+        {
+            if (string.IsNullOrWhiteSpace(ConnectedHost))
+            {
+                return "unknown";
+            }
+
+            if (HasDedicatedMobilityChannel && _mobilityPort > 0)
+            {
+                return $"{ConnectedHost}:{_mobilityPort} dedicated";
+            }
+
+            if (ConnectedPort > 0)
+            {
+                return $"{ConnectedHost}:{ConnectedPort} shared";
+            }
+
+            return ConnectedHost;
         }
 
         public bool SendNeutralArmsPreset(out string message)

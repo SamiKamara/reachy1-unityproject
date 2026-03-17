@@ -15,6 +15,7 @@ Testing endpoints:
 - POST /inject_intent
 - POST /listening
 - POST /microphone-source
+- POST /online-reply-audio
 """
 
 from __future__ import annotations
@@ -113,8 +114,13 @@ DEFAULT_AUDIO_SOURCE_MODE = "blend"
 DEFAULT_REACHY_MIC_SSH_PORT = 22
 DEFAULT_REACHY_MIC_SSH_USER = "reachy"
 DEFAULT_REACHY_MIC_SSH_PASSWORD = "reachy"
-DEFAULT_REACHY_MIC_DEVICE_SPEC = "plughw:1,0"
+DEFAULT_REACHY_MIC_DEVICE_SPEC = "plughw:CARD=ArrayUAC10,DEV=0"
 DEFAULT_REACHY_MIC_DEVICE_LABEL = "Reachy ReSpeaker"
+ARECORD_CAPTURE_DEVICE_LINE_RE = re.compile(
+    r"card\s+(\d+):\s*([^\[]+)\[([^\]]+)\],\s*device\s+(\d+):\s*([^\[]+)\[([^\]]+)\]",
+    re.IGNORECASE,
+)
+SAFE_ALSA_CARD_ID_RE = re.compile(r"^[A-Za-z0-9_+-]+$")
 SEMANTIC_ASSIST_POSE_NAMES = [
     "Left Hand Up",
     "Left Hand Wave",
@@ -711,6 +717,35 @@ def normalize_audio_source_mode(value) -> str:
     return DEFAULT_AUDIO_SOURCE_MODE
 
 
+def is_safe_alsa_card_id(value: str) -> bool:
+    return bool(SAFE_ALSA_CARD_ID_RE.fullmatch(str(value or "").strip()))
+
+
+def build_alsa_plughw_spec(card_number: str, card_id: str, device_number: str) -> str:
+    card_token = str(card_id or "").strip()
+    if is_safe_alsa_card_id(card_token):
+        return f"plughw:CARD={card_token},DEV={device_number}"
+    return f"plughw:{card_number},{device_number}"
+
+
+def summarize_arecord_capture_listing(listing: str) -> str:
+    parts: list[str] = []
+    for raw_line in str(listing or "").splitlines():
+        match = ARECORD_CAPTURE_DEVICE_LINE_RE.search(raw_line)
+        if not match:
+            continue
+        card_number = match.group(1)
+        card_id = match.group(2).strip()
+        card_name = match.group(3).strip()
+        device_number = match.group(4)
+        device_id = match.group(5).strip()
+        device_name = match.group(6).strip()
+        parts.append(
+            f"card {card_number} {card_id}/{card_name} device {device_number} {device_id}/{device_name}"
+        )
+    return " | ".join(parts[:6])
+
+
 def normalize_phrase_list(value, fallback: list[str]) -> list[str]:
     source = value if isinstance(value, list) else []
     normalized: list[str] = []
@@ -1163,6 +1198,26 @@ def apply_tts_mode_payload(config: dict, payload: dict) -> dict:
     }
 
 
+def apply_online_reply_audio_payload(config: dict, payload: dict) -> dict:
+    requested_stream_partial_replies = parse_bool(
+        payload.get(
+            "online_tts_stream_partial_replies",
+            payload.get("stream_partial_replies", config.get("online_tts_stream_partial_replies", True)),
+        ),
+        True,
+    )
+    config["online_tts_stream_partial_replies"] = requested_stream_partial_replies
+    return {
+        "ok": True,
+        "message": (
+            "Online partial-reply audio updated: "
+            f"requested={requested_stream_partial_replies}, effective={requested_stream_partial_replies}."
+        ),
+        "requested_stream_partial_replies": requested_stream_partial_replies,
+        "effective_stream_partial_replies": requested_stream_partial_replies,
+    }
+
+
 def resolve_config_relative_path(config: dict, raw_path: str) -> Path:
     text = str(raw_path or "").strip()
     candidate = Path(text)
@@ -1571,6 +1626,9 @@ class State:
         self.reachy_mic_connected = False
         self.reachy_mic_available = False
         self.reachy_mic_last_error = ""
+        self.reachy_mic_transport_backend = ""
+        self.reachy_mic_device_spec = ""
+        self.reachy_mic_device_listing = ""
         self.ai_mode = str(config.get("ai_mode", "local")).strip().lower() or "local"
         self.online_ai_enabled = parse_bool(config.get("online_ai_enabled"), False)
         self.online_model = str(config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
@@ -1703,6 +1761,9 @@ class State:
         reachy_connected: bool,
         reachy_available: bool,
         reachy_error: str,
+        reachy_transport_backend: str,
+        reachy_device_spec: str,
+        reachy_device_listing: str,
     ) -> None:
         with self.lock:
             self.audio_source_mode = normalize_audio_source_mode(requested_mode)
@@ -1715,6 +1776,9 @@ class State:
             self.reachy_mic_connected = bool(reachy_connected)
             self.reachy_mic_available = bool(reachy_available)
             self.reachy_mic_last_error = str(reachy_error or "").strip()
+            self.reachy_mic_transport_backend = str(reachy_transport_backend or "").strip()
+            self.reachy_mic_device_spec = str(reachy_device_spec or "").strip()
+            self.reachy_mic_device_listing = str(reachy_device_listing or "").strip()
 
     def set_tts_speaking(self, speaking: bool) -> None:
         with self.lock:
@@ -1850,6 +1914,8 @@ class State:
 
     def health(self) -> dict:
         api_key_found, env_var = self.refresh_online_key_status()
+        online_tts_mode = normalize_tts_mode(self.config.get("tts_mode", DEFAULT_TTS_MODE)) == "online"
+        stream_partial_replies = parse_bool(self.config.get("online_tts_stream_partial_replies"), True)
         with self.lock:
             return {
                 "ok": True,
@@ -1875,6 +1941,9 @@ class State:
                 "reachy_mic_connected": self.reachy_mic_connected,
                 "reachy_mic_available": self.reachy_mic_available,
                 "reachy_mic_last_error": self.reachy_mic_last_error,
+                "reachy_mic_transport_backend": self.reachy_mic_transport_backend,
+                "reachy_mic_device_spec": self.reachy_mic_device_spec,
+                "reachy_mic_device_listing": self.reachy_mic_device_listing,
                 "last_help_answer": self.last_help_answer,
                 "ai_mode": self.ai_mode,
                 "simulation_only_mode": parse_bool(self.config.get("simulation_only_mode"), False),
@@ -1883,6 +1952,10 @@ class State:
                     True),
                 "online_ai_enabled": self.online_ai_enabled,
                 "online_ai_model": self.online_model,
+                "online_tts_stream_partial_replies": stream_partial_replies,
+                "online_tts_stream_partial_replies_active": (
+                    online_tts_mode and stream_partial_replies and api_key_found
+                ),
                 "online_ai_api_key_env_var": env_var,
                 "online_ai_api_key_found": api_key_found,
                 "online_ai_last_key_check_utc": self.online_last_key_check_utc,
@@ -2662,6 +2735,9 @@ class ReachyRemoteMicrophoneStream:
         self._device_name = ""
         self._last_error = ""
         self._available = False
+        self._transport_backend = ""
+        self._resolved_device_spec = ""
+        self._listing_summary = ""
 
     @property
     def device_name(self) -> str:
@@ -2674,6 +2750,18 @@ class ReachyRemoteMicrophoneStream:
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def transport_backend(self) -> str:
+        return self._transport_backend
+
+    @property
+    def resolved_device_spec(self) -> str:
+        return self._resolved_device_spec
+
+    @property
+    def listing_summary(self) -> str:
+        return self._listing_summary
 
     def ensure_running(
         self,
@@ -2689,6 +2777,9 @@ class ReachyRemoteMicrophoneStream:
             self.stop()
             self._available = False
             self._device_name = ""
+            self._transport_backend = ""
+            self._resolved_device_spec = ""
+            self._listing_summary = ""
             return
 
         signature = "|".join(
@@ -2808,13 +2899,29 @@ class ReachyRemoteMicrophoneStream:
 
     def _capture_until_disconnect(self) -> None:
         backend_name = self._select_transport_backend()
+        self._transport_backend = backend_name
+        self.state.log("info", f"Reachy microphone transport selected: {backend_name}.")
         listing = self._query_device_listing(backend_name)
+        listing_summary = summarize_arecord_capture_listing(listing)
+        self._listing_summary = listing_summary
+        if listing_summary:
+            self.state.log("info", f"Reachy microphone capture devices: {listing_summary}")
+        else:
+            self.state.log(
+                "warn",
+                "Reachy microphone device query returned no ALSA capture devices; falling back to configured/default spec.",
+            )
         device_spec, device_name = self._resolve_device_spec(listing)
+        self._resolved_device_spec = device_spec
         self._device_name = device_name
         self._last_error = ""
         self.state.log(
             "info",
-            f"Reachy microphone capture starting on {self._ssh_user}@{self._ssh_host}:{self._ssh_port} ({device_spec}).")
+            f"Reachy microphone resolved device: spec={device_spec}; label={device_name or 'n/a'}; backend={backend_name}.",
+        )
+        self.state.log(
+            "info",
+            f"Reachy microphone capture starting on {self._ssh_user}@{self._ssh_host}:{self._ssh_port} ({device_spec}; backend={backend_name}).")
 
         if backend_name == "paramiko":
             self._start_paramiko_capture(device_spec)
@@ -2837,7 +2944,7 @@ class ReachyRemoteMicrophoneStream:
         if shutil.which("ssh"):
             if self._ssh_password:
                 raise RuntimeError(
-                    "password-based Reachy mic capture needs paramiko or plink in PATH; native ssh fallback is key-based only."
+                    "password-based Reachy mic capture needs paramiko or plink in PATH; install paramiko in the sidecar environment (see requirements-optional.txt) or switch native ssh to key-based auth."
                 )
             return "ssh"
 
@@ -2851,25 +2958,25 @@ class ReachyRemoteMicrophoneStream:
 
     def _resolve_device_spec(self, listing: str) -> tuple[str, str]:
         configured = self._device_spec_override or str(self.config.get("reachy_mic_device_spec", "")).strip()
-        fallback_spec = configured or DEFAULT_REACHY_MIC_DEVICE_SPEC
-        fallback_name = DEFAULT_REACHY_MIC_DEVICE_LABEL if not configured else configured
-        pattern = re.compile(
-            r"card\s+(\d+):\s*([^\[]+)\[([^\]]+)\],\s*device\s+(\d+):\s*([^\[]+)\[([^\]]+)\]",
-            re.IGNORECASE,
-        )
+        if configured:
+            return configured, configured
+
+        fallback_spec = DEFAULT_REACHY_MIC_DEVICE_SPEC
+        fallback_name = DEFAULT_REACHY_MIC_DEVICE_LABEL
         best_score = -10**9
         best_spec = fallback_spec
         best_name = fallback_name
 
         for raw_line in str(listing or "").splitlines():
-            match = pattern.search(raw_line)
+            match = ARECORD_CAPTURE_DEVICE_LINE_RE.search(raw_line)
             if not match:
                 continue
             card_number = match.group(1)
+            card_id = match.group(2).strip()
             device_number = match.group(4)
             labels = " ".join(
                 (
-                    match.group(2).strip(),
+                    card_id,
                     match.group(3).strip(),
                     match.group(5).strip(),
                     match.group(6).strip(),
@@ -2877,18 +2984,22 @@ class ReachyRemoteMicrophoneStream:
             ).strip()
             lowered = labels.lower()
             score = 0
+            if "arrayuac" in lowered:
+                score += 900
             if "respeaker" in lowered:
                 score += 1000
             if "mic array" in lowered:
                 score += 240
+            if "seeed" in lowered:
+                score += 180
             if "usb audio" in lowered:
-                score += 60
+                score += 20
             if device_number == "0":
                 score += 12
             if score <= best_score:
                 continue
             best_score = score
-            best_spec = f"plughw:{card_number},{device_number}"
+            best_spec = build_alsa_plughw_spec(card_number, card_id, device_number)
             best_name = labels or f"card {card_number}, device {device_number}"
 
         return best_spec, best_name
@@ -3352,6 +3463,9 @@ class HybridAudioInput:
             reachy_connected=self.reachy_connected,
             reachy_available=self.remote_stream.available,
             reachy_error=self.remote_stream.last_error,
+            reachy_transport_backend=self.remote_stream.transport_backend,
+            reachy_device_spec=self.remote_stream.resolved_device_spec,
+            reachy_device_listing=self.remote_stream.listing_summary,
         )
 
     @staticmethod
@@ -5827,6 +5941,17 @@ class Handler(BaseHTTPRequestHandler):
             self.app.state.log(
                 "info",
                 f"/tts-mode -> requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
+            )
+            self._send(HTTPStatus.OK, result)
+            return
+
+        if path == "/online-reply-audio":
+            result = apply_online_reply_audio_payload(self.app.config, payload)
+            self.app.state.log(
+                "info",
+                "/online-reply-audio -> "
+                f"requested={result.get('requested_stream_partial_replies')} "
+                f"effective={result.get('effective_stream_partial_replies')}",
             )
             self._send(HTTPStatus.OK, result)
             return

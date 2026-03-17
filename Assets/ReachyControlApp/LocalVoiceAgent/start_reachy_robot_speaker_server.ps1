@@ -83,6 +83,43 @@ if (-not (Test-Path $localScriptPath)) {
 $target = "$ReachyUser@$ReachyHost"
 $remoteDirectory = "$RemoteProjectRoot/Assets/ReachyControlApp/LocalVoiceAgent"
 $remoteScriptPath = "$remoteDirectory/reachy_robot_speaker_server.py"
+$pythonHelperPath = Join-Path $scriptDirectory "start_reachy_robot_speaker_server.py"
+$pythonCandidates = @(
+    (Join-Path $scriptDirectory ".venv\Scripts\python.exe"),
+    "python"
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+if (Test-Path $pythonHelperPath) {
+    foreach ($pythonCandidate in $pythonCandidates) {
+        $resolvedPython = Get-Command $pythonCandidate -ErrorAction SilentlyContinue
+        $pythonPath = if ($resolvedPython) { $resolvedPython.Path } elseif (Test-Path $pythonCandidate) { $pythonCandidate } else { "" }
+        if ([string]::IsNullOrWhiteSpace($pythonPath)) {
+            continue
+        }
+
+        Write-Log "Trying paramiko Python helper with '$pythonPath'."
+        & $pythonPath $pythonHelperPath `
+            --reachy-host $ReachyHost `
+            --reachy-user $ReachyUser `
+            --reachy-password $ReachyPassword `
+            --remote-project-root $RemoteProjectRoot `
+            --python-command $PythonCommand `
+            --port $Port `
+            --tts-backend $TtsBackend `
+            --bind-host "0.0.0.0" `
+            --remote-log-path $RemoteLogPath `
+            --local-log-path $LocalLogPath `
+            --ensure-espeak
+
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "Paramiko Python helper completed successfully."
+            exit 0
+        }
+
+        Write-Log "Paramiko Python helper failed with exit code $LASTEXITCODE. Falling back to legacy SSH helper logic." "WARN"
+        break
+    }
+}
 
 $plinkCommand = Get-Command "plink" -ErrorAction SilentlyContinue
 $pscpCommand = Get-Command "pscp" -ErrorAction SilentlyContinue

@@ -147,6 +147,7 @@ namespace Reachy.ControlApp
         private const float RobotSpeakerHealthProbeRetrySeconds = 20f;
         private const float RobotSpeakerHealthProbeRefreshSeconds = 45f;
         private const string SidecarTtsModePath = "/tts-mode";
+        private const string SidecarOnlineReplyAudioPath = "/online-reply-audio";
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private const string DefaultOnlineAiModel = "gpt-5.4";
@@ -1007,13 +1008,24 @@ namespace Reachy.ControlApp
         private Task<SidecarProbeResult> _onlineAiStatusTask;
         private Task<OnlineAiTestResult> _onlineAiTestTask;
         private Task<MicrophoneRoutingUpdateResult> _microphoneRoutingTask;
+        private Task<SidecarProbeResult> _microphoneRoutingHealthProbeTask;
         private string _microphoneRoutingStatus =
             "PC mic works exactly like before. Blend mode adds Reachy's mic only while a real robot session is active.";
+        private string _microphoneRoutingLastEndpoint = string.Empty;
         private string _microphoneRoutingLastPayloadKey = string.Empty;
         private string _microphoneRoutingLastAppliedKey = string.Empty;
+        private MicrophoneRoutingPayload _microphoneRoutingLastDispatchedPayload;
+        private string _microphoneRoutingLastLogKey = string.Empty;
+        private string _microphoneRoutingLastHealthLogKey = string.Empty;
+        private string _voiceConnectionSnapshotLogKey = string.Empty;
         private Task<TtsModeUpdateResult> _ttsModeUpdateTask;
         private string _ttsModeLastPayloadKey = string.Empty;
         private string _ttsModeLastAppliedKey = string.Empty;
+        private Task<OnlineReplyAudioUpdateResult> _onlineReplyAudioUpdateTask;
+        private string _onlineReplyAudioLastPayloadKey = string.Empty;
+        private string _onlineReplyAudioLastAppliedKey = string.Empty;
+        private string _onlineReplyAudioLastLogKey = string.Empty;
+        private string _onlineReplyAudioStatus = "Sidecar partial online reply audio follows the current config.";
         private bool _sidecarShutdownCleanupDone;
 
         private struct SidecarProbeResult
@@ -1022,8 +1034,24 @@ namespace Reachy.ControlApp
             public bool Reachable;
             public bool HealthAvailable;
             public bool TtsSpeaking;
+            public int SelectedInputDeviceIndex;
+            public string SelectedInputDeviceName;
+            public string AudioSourceMode;
+            public string AudioSourceEffective;
+            public int LocalInputDeviceIndex;
+            public string LocalInputDeviceName;
+            public string ReachyInputDeviceName;
+            public bool ReachyMicConnected;
+            public bool ReachyMicAvailable;
+            public string ReachyMicLastError;
+            public string ReachyMicTransportBackend;
+            public string ReachyMicDeviceSpec;
+            public string ReachyMicDeviceListing;
+            public string LastError;
             public string AiMode;
             public bool OnlineAiEnabled;
+            public bool OnlineTtsStreamPartialReplies;
+            public bool OnlineTtsStreamPartialRepliesActive;
             public bool OnlineApiKeyFound;
             public string OnlineApiKeyEnvVar;
             public string OnlineModel;
@@ -1069,6 +1097,15 @@ namespace Reachy.ControlApp
             public string Error;
         }
 
+        private struct OnlineReplyAudioUpdateResult
+        {
+            public bool Success;
+            public bool RequestedStreamPartialReplies;
+            public bool EffectiveStreamPartialReplies;
+            public string Message;
+            public string Error;
+        }
+
         private struct RobotSpeakerProbeResult
         {
             public bool Reachable;
@@ -1103,9 +1140,14 @@ namespace Reachy.ControlApp
             public bool reachy_mic_connected;
             public bool reachy_mic_available;
             public string reachy_mic_last_error = string.Empty;
+            public string reachy_mic_transport_backend = string.Empty;
+            public string reachy_mic_device_spec = string.Empty;
+            public string reachy_mic_device_listing = string.Empty;
             public string ai_mode = string.Empty;
             public bool online_ai_enabled;
             public string online_ai_model = string.Empty;
+            public bool online_tts_stream_partial_replies;
+            public bool online_tts_stream_partial_replies_active;
             public string online_ai_api_key_env_var = string.Empty;
             public bool online_ai_api_key_found;
             public string online_ai_last_key_check_utc = string.Empty;
@@ -1175,11 +1217,26 @@ namespace Reachy.ControlApp
         }
 
         [Serializable]
+        private sealed class OnlineReplyAudioUpdatePayload
+        {
+            public bool online_tts_stream_partial_replies = true;
+        }
+
+        [Serializable]
         private sealed class TtsModeUpdateResponseEnvelope
         {
             public bool ok;
             public string requested_mode = string.Empty;
             public string effective_mode = string.Empty;
+            public string message = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class OnlineReplyAudioUpdateResponseEnvelope
+        {
+            public bool ok;
+            public bool requested_stream_partial_replies = true;
+            public bool effective_stream_partial_replies = true;
             public string message = string.Empty;
         }
 
@@ -3427,6 +3484,7 @@ namespace Reachy.ControlApp
             _voiceAgentBridge.SetEnabled(bridgeShouldBeEnabled, Time.unscaledTime);
             UpdateRemoteMicrophoneRouting();
             UpdateRemoteTtsMode();
+            UpdateRemoteOnlineReplyAudio();
             ConsumeOnlineAiStatusTaskIfReady();
             ConsumeOnlineAiTestTaskIfReady();
 
@@ -3591,11 +3649,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            bool mirrorRelated =
-                message.IndexOf("robot speaker mirror", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                error.IndexOf("robot speaker mirror", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                error.IndexOf(":8101", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                error.IndexOf(":8099", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool mirrorRelated = IsRobotSpeakerMirrorRelatedTtsEvent(message, error);
             string category = mirrorRelated ? "robot-speaker" : "voice";
             string title;
             string severity;
@@ -3626,6 +3680,77 @@ namespace Reachy.ControlApp
             }
 
             LogRuntimeEvent(category, title, detail, severity);
+        }
+
+        private bool IsRobotSpeakerMirrorRelatedTtsEvent(string message, string error)
+        {
+            string combined = $"{message} {error}".Trim();
+            if (string.IsNullOrWhiteSpace(combined))
+            {
+                return false;
+            }
+
+            if (combined.IndexOf("robot speaker mirror", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            var candidateEndpoints = new List<string>(5);
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedTtsEndpoint))
+            {
+                candidateEndpoints.Add(_robotSpeakerResolvedTtsEndpoint);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedAudioEndpoint))
+            {
+                candidateEndpoints.Add(_robotSpeakerResolvedAudioEndpoint);
+            }
+
+            if (!string.IsNullOrWhiteSpace(_robotSpeakerResolvedStopEndpoint))
+            {
+                candidateEndpoints.Add(_robotSpeakerResolvedStopEndpoint);
+            }
+
+            string previewTts = BuildRobotSpeakerTtsMirrorEndpointPreview();
+            if (!string.IsNullOrWhiteSpace(previewTts))
+            {
+                candidateEndpoints.Add(previewTts);
+            }
+
+            string host = string.IsNullOrWhiteSpace(_robotSpeakerProbeHost)
+                ? GetRobotSpeakerMirrorHost()
+                : _robotSpeakerProbeHost;
+            if (!string.IsNullOrWhiteSpace(host))
+            {
+                string fallbackEndpoint = BuildAbsoluteHttpEndpoint(
+                    host,
+                    RobotSpeakerFallbackTtsPort,
+                    RobotSpeakerTtsMirrorPath);
+                if (!string.IsNullOrWhiteSpace(fallbackEndpoint))
+                {
+                    candidateEndpoints.Add(fallbackEndpoint);
+                }
+            }
+
+            for (int i = 0; i < candidateEndpoints.Count; i++)
+            {
+                string candidateEndpoint = candidateEndpoints[i];
+                if (!string.IsNullOrWhiteSpace(candidateEndpoint) &&
+                    combined.IndexOf(candidateEndpoint, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(host) ||
+                combined.IndexOf(host, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return false;
+            }
+
+            int requestedPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            return combined.IndexOf($":{requestedPort}", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   combined.IndexOf($":{RobotSpeakerFallbackTtsPort}", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void UpdateSpeechDrivenVoiceLoopingAnimation(bool speechOutputActive)
@@ -4118,6 +4243,20 @@ namespace Reachy.ControlApp
                     _onlineAiLastValidationResult = incomingIntent.validation_status.Trim();
                 }
                 _onlineAiLastValidationFailure = incomingIntent.validation_message ?? string.Empty;
+                if (replyAlreadySpoken)
+                {
+                    bool mirrorActive = localAiAgentMirrorTtsToRobotSpeaker && IsRealRobotSessionActive();
+                    string replySummary = string.IsNullOrWhiteSpace(incomingIntent.reply_text)
+                        ? "(empty)"
+                        : NormalizeLogText(incomingIntent.reply_text);
+                    LogRuntimeEvent(
+                        "voice",
+                        mirrorActive ? "reply-already-spoken-with-robot-mirror" : "reply-already-spoken",
+                        $"sourceBackend={NormalizeLogText(incomingIntent.source_backend)}; mirrorActive={mirrorActive}; " +
+                        $"onlinePartialRepliesTarget={ShouldEnableSidecarOnlinePartialReplyStreaming()}; " +
+                        $"reply={replySummary}",
+                        mirrorActive ? "WARN" : "INFO");
+                }
             }
 
             VoiceAgentIntent intentToRoute = incomingIntent;
@@ -4507,9 +4646,55 @@ namespace Reachy.ControlApp
                 payload?.tts_mode ?? string.Empty);
         }
 
+        private bool ShouldSuppressOnlinePartialReplyStreamingForRobotMirror()
+        {
+            return localAiAgentMirrorTtsToRobotSpeaker && IsRealRobotSessionActive();
+        }
+
+        private bool ShouldEnableSidecarOnlinePartialReplyStreaming()
+        {
+            return !ShouldSuppressOnlinePartialReplyStreamingForRobotMirror();
+        }
+
+        private string GetOnlinePartialReplyStreamingReason()
+        {
+            return ShouldSuppressOnlinePartialReplyStreamingForRobotMirror()
+                ? "robot-speaker-mirror-active"
+                : "default";
+        }
+
+        private OnlineReplyAudioUpdatePayload BuildOnlineReplyAudioUpdatePayload()
+        {
+            return new OnlineReplyAudioUpdatePayload
+            {
+                online_tts_stream_partial_replies = ShouldEnableSidecarOnlinePartialReplyStreaming()
+            };
+        }
+
+        private static string BuildOnlineReplyAudioUpdatePayloadKey(string endpoint, OnlineReplyAudioUpdatePayload payload)
+        {
+            return string.Join(
+                "|",
+                endpoint ?? string.Empty,
+                payload != null && payload.online_tts_stream_partial_replies ? "enabled" : "disabled");
+        }
+
+        private void LogOnlineReplyAudioRuntimeEvent(string title, string detail, string severity)
+        {
+            string key = $"{title}|{severity}|{detail}";
+            if (string.Equals(key, _onlineReplyAudioLastLogKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _onlineReplyAudioLastLogKey = key;
+            LogRuntimeEvent("voice", title, detail, severity);
+        }
+
         private void UpdateRemoteMicrophoneRouting()
         {
             ConsumeMicrophoneRoutingTaskIfReady();
+            ConsumeMicrophoneRoutingHealthProbeIfReady();
 
             if (!_localAiAgentSidecarReady)
             {
@@ -4517,6 +4702,12 @@ namespace Reachy.ControlApp
                 if (IsRealRobotSessionActive())
                 {
                     _microphoneRoutingStatus = "Waiting for the local sidecar before Reachy mic routing can be applied.";
+                    LogMicrophoneRoutingRuntimeEvent(
+                        "update-deferred",
+                        $"reason=sidecar-not-ready; sidecarStatus={NormalizeLogText(_localAiAgentSidecarStatus)}; " +
+                        $"requested={GetConnectionMicrophoneSourceModeConfigValue()}; targetHost={GetReachyMicrophoneTargetHost()}; " +
+                        $"sessionActive={IsRealRobotSessionActive()}",
+                        "WARN");
                 }
                 return;
             }
@@ -4527,6 +4718,10 @@ namespace Reachy.ControlApp
             if (!TryBuildSiblingEndpoint(intentEndpoint, SidecarMicrophoneSourcePath, out string endpoint))
             {
                 _microphoneRoutingStatus = "Could not build the sidecar microphone-source endpoint URL.";
+                LogMicrophoneRoutingRuntimeEvent(
+                    "endpoint-build-failed",
+                    $"intentEndpoint={intentEndpoint}; siblingPath={SidecarMicrophoneSourcePath}",
+                    "ERROR");
                 return;
             }
 
@@ -4543,6 +4738,12 @@ namespace Reachy.ControlApp
             }
 
             _microphoneRoutingLastPayloadKey = payloadKey;
+            _microphoneRoutingLastEndpoint = endpoint;
+            _microphoneRoutingLastDispatchedPayload = payload;
+            LogMicrophoneRoutingRuntimeEvent(
+                "update-requested",
+                BuildMicrophoneRoutingRuntimeDetail(endpoint, payload, string.Empty, string.Empty, "dispatch", string.Empty),
+                "INFO");
             int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 500, 10000);
             _microphoneRoutingTask = Task.Run(() => SendMicrophoneRoutingUpdate(endpoint, timeoutMs, payload));
         }
@@ -4563,6 +4764,10 @@ namespace Reachy.ControlApp
             {
                 _microphoneRoutingTask = null;
                 _microphoneRoutingStatus = $"Mic routing update crashed: {ex.Message}";
+                LogMicrophoneRoutingRuntimeEvent(
+                    "update-crashed",
+                    $"endpoint={_microphoneRoutingLastEndpoint}; detail={NormalizeLogText(ex.Message)}",
+                    "ERROR");
                 return;
             }
 
@@ -4573,12 +4778,75 @@ namespace Reachy.ControlApp
                 _microphoneRoutingStatus = string.IsNullOrWhiteSpace(result.Message)
                     ? $"Mic routing synced (requested={result.RequestedMode}, effective={result.EffectiveMode})."
                     : result.Message;
+                LogMicrophoneRoutingRuntimeEvent(
+                    "update-applied",
+                    BuildMicrophoneRoutingRuntimeDetail(
+                        _microphoneRoutingLastEndpoint,
+                        _microphoneRoutingLastDispatchedPayload,
+                        result.RequestedMode,
+                        result.EffectiveMode,
+                        result.Message,
+                        string.Empty),
+                    "INFO");
+                QueueMicrophoneRoutingHealthProbe();
                 return;
             }
 
             _microphoneRoutingStatus = string.IsNullOrWhiteSpace(result.Error)
                 ? "Mic routing update failed."
                 : $"Mic routing update failed: {result.Error}";
+            LogMicrophoneRoutingRuntimeEvent(
+                "update-failed",
+                BuildMicrophoneRoutingRuntimeDetail(
+                    _microphoneRoutingLastEndpoint,
+                    _microphoneRoutingLastDispatchedPayload,
+                    result.RequestedMode,
+                    result.EffectiveMode,
+                    result.Message,
+                    result.Error),
+                "WARN");
+        }
+
+        private void QueueMicrophoneRoutingHealthProbe()
+        {
+            if (!_localAiAgentSidecarReady || _microphoneRoutingHealthProbeTask != null)
+            {
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 500, 10000);
+            _microphoneRoutingHealthProbeTask = Task.Run(() => ProbeSidecar(intentEndpoint, timeoutMs));
+        }
+
+        private void ConsumeMicrophoneRoutingHealthProbeIfReady()
+        {
+            if (_microphoneRoutingHealthProbeTask == null || !_microphoneRoutingHealthProbeTask.IsCompleted)
+            {
+                return;
+            }
+
+            try
+            {
+                SidecarProbeResult result = _microphoneRoutingHealthProbeTask.Result;
+                LogMicrophoneRoutingHealthRuntimeEvent(result);
+            }
+            catch (Exception ex)
+            {
+                string detail = NormalizeLogText(ex.Message);
+                string key = $"probe-crashed|{detail}";
+                if (!string.Equals(key, _microphoneRoutingLastHealthLogKey, StringComparison.Ordinal))
+                {
+                    _microphoneRoutingLastHealthLogKey = key;
+                    LogRuntimeEvent("microphone-routing", "sidecar-health-crashed", $"detail={detail}", "WARN");
+                }
+            }
+            finally
+            {
+                _microphoneRoutingHealthProbeTask = null;
+            }
         }
 
         private void UpdateRemoteTtsMode()
@@ -4638,6 +4906,95 @@ namespace Reachy.ControlApp
             finally
             {
                 _ttsModeUpdateTask = null;
+            }
+        }
+
+        private void UpdateRemoteOnlineReplyAudio()
+        {
+            ConsumeOnlineReplyAudioUpdateTaskIfReady();
+
+            if (!_localAiAgentSidecarReady)
+            {
+                _onlineReplyAudioLastAppliedKey = string.Empty;
+                return;
+            }
+
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            if (!TryBuildSiblingEndpoint(intentEndpoint, SidecarOnlineReplyAudioPath, out string endpoint))
+            {
+                return;
+            }
+
+            if (_onlineReplyAudioUpdateTask != null)
+            {
+                return;
+            }
+
+            OnlineReplyAudioUpdatePayload payload = BuildOnlineReplyAudioUpdatePayload();
+            string payloadKey = BuildOnlineReplyAudioUpdatePayloadKey(endpoint, payload);
+            if (string.Equals(payloadKey, _onlineReplyAudioLastAppliedKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _onlineReplyAudioLastPayloadKey = payloadKey;
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 500, 10000);
+            _onlineReplyAudioUpdateTask = Task.Run(() => SendOnlineReplyAudioUpdate(endpoint, timeoutMs, payload));
+        }
+
+        private void ConsumeOnlineReplyAudioUpdateTaskIfReady()
+        {
+            if (_onlineReplyAudioUpdateTask == null || !_onlineReplyAudioUpdateTask.IsCompleted)
+            {
+                return;
+            }
+
+            bool desiredEnabled = ShouldEnableSidecarOnlinePartialReplyStreaming();
+            string reason = GetOnlinePartialReplyStreamingReason();
+
+            try
+            {
+                OnlineReplyAudioUpdateResult result = _onlineReplyAudioUpdateTask.Result;
+                string detail =
+                    $"partialRepliesEnabled={desiredEnabled}; effectiveEnabled={result.EffectiveStreamPartialReplies}; " +
+                    $"reason={reason}; mirrorEnabled={localAiAgentMirrorTtsToRobotSpeaker}; realRobotSession={IsRealRobotSessionActive()}; " +
+                    $"message={NormalizeLogText(result.Message)}; error={NormalizeLogText(result.Error)}";
+                if (result.Success)
+                {
+                    _onlineReplyAudioLastAppliedKey = _onlineReplyAudioLastPayloadKey;
+                    _onlineReplyAudioStatus = string.IsNullOrWhiteSpace(result.Message)
+                        ? (result.EffectiveStreamPartialReplies
+                            ? "Online partial reply audio is enabled in the sidecar."
+                            : "Online partial reply audio is disabled while robot speaker mirroring is active.")
+                        : result.Message;
+                    LogOnlineReplyAudioRuntimeEvent(
+                        "online-partial-replies-applied",
+                        detail,
+                        result.EffectiveStreamPartialReplies ? "INFO" : "WARN");
+                    return;
+                }
+
+                _onlineReplyAudioStatus = string.IsNullOrWhiteSpace(result.Error)
+                    ? "Online partial reply audio update failed."
+                    : $"Online partial reply audio update failed: {result.Error}";
+                LogOnlineReplyAudioRuntimeEvent(
+                    "online-partial-replies-failed",
+                    detail,
+                    "WARN");
+            }
+            catch (Exception ex)
+            {
+                _onlineReplyAudioStatus = $"Online partial reply audio update crashed: {ex.Message}";
+                LogOnlineReplyAudioRuntimeEvent(
+                    "online-partial-replies-crashed",
+                    $"reason={reason}; detail={NormalizeLogText(ex.Message)}",
+                    "ERROR");
+            }
+            finally
+            {
+                _onlineReplyAudioUpdateTask = null;
             }
         }
 
@@ -4798,6 +5155,95 @@ namespace Reachy.ControlApp
                     RequestedMode = string.Empty,
                     EffectiveMode = string.Empty,
                     Message = "TTS mode update failed.",
+                    Error = ex.Message
+                };
+            }
+        }
+
+        private static OnlineReplyAudioUpdateResult SendOnlineReplyAudioUpdate(
+            string endpoint,
+            int timeoutMs,
+            OnlineReplyAudioUpdatePayload payload)
+        {
+            try
+            {
+                string jsonBody = JsonUtility.ToJson(payload);
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.ContentType = "application/json; charset=utf-8";
+                request.Accept = "application/json";
+                request.ContentLength = bodyBytes.Length;
+                request.Proxy = null;
+
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string responseText = reader.ReadToEnd();
+                    OnlineReplyAudioUpdateResponseEnvelope parsed =
+                        string.IsNullOrWhiteSpace(responseText)
+                            ? null
+                            : JsonUtility.FromJson<OnlineReplyAudioUpdateResponseEnvelope>(responseText);
+                    bool ok = parsed == null || parsed.ok;
+                    return new OnlineReplyAudioUpdateResult
+                    {
+                        Success = ok,
+                        RequestedStreamPartialReplies = parsed != null
+                            ? parsed.requested_stream_partial_replies
+                            : (payload != null && payload.online_tts_stream_partial_replies),
+                        EffectiveStreamPartialReplies = parsed != null
+                            ? parsed.effective_stream_partial_replies
+                            : (payload != null && payload.online_tts_stream_partial_replies),
+                        Message = parsed?.message ?? "Online partial reply audio update accepted.",
+                        Error = ok ? string.Empty : (parsed?.message ?? "Online partial reply audio update was rejected.")
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = webEx.Message;
+                if (webEx.Response != null)
+                {
+                    using (Stream responseStream = webEx.Response.GetResponseStream())
+                    using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                    {
+                        string responseText = reader.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(responseText))
+                        {
+                            detail = $"{detail} ({responseText})";
+                        }
+                    }
+                }
+
+                return new OnlineReplyAudioUpdateResult
+                {
+                    Success = false,
+                    RequestedStreamPartialReplies = payload != null &&
+                        payload.online_tts_stream_partial_replies,
+                    EffectiveStreamPartialReplies = payload != null &&
+                        payload.online_tts_stream_partial_replies,
+                    Message = "Online partial reply audio update failed.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                return new OnlineReplyAudioUpdateResult
+                {
+                    Success = false,
+                    RequestedStreamPartialReplies = payload != null &&
+                        payload.online_tts_stream_partial_replies,
+                    EffectiveStreamPartialReplies = payload != null &&
+                        payload.online_tts_stream_partial_replies,
+                    Message = "Online partial reply audio update failed.",
                     Error = ex.Message
                 };
             }
@@ -5891,8 +6337,24 @@ namespace Reachy.ControlApp
                         Reachable = ok,
                         HealthAvailable = true,
                         TtsSpeaking = parsed != null && parsed.tts_speaking,
+                        SelectedInputDeviceIndex = parsed != null ? parsed.selected_input_device_index : -1,
+                        SelectedInputDeviceName = parsed?.selected_input_device_name ?? string.Empty,
+                        AudioSourceMode = parsed?.audio_source_mode ?? string.Empty,
+                        AudioSourceEffective = parsed?.audio_source_effective ?? string.Empty,
+                        LocalInputDeviceIndex = parsed != null ? parsed.local_input_device_index : -1,
+                        LocalInputDeviceName = parsed?.local_input_device_name ?? string.Empty,
+                        ReachyInputDeviceName = parsed?.reachy_input_device_name ?? string.Empty,
+                        ReachyMicConnected = parsed != null && parsed.reachy_mic_connected,
+                        ReachyMicAvailable = parsed != null && parsed.reachy_mic_available,
+                        ReachyMicLastError = parsed?.reachy_mic_last_error ?? string.Empty,
+                        ReachyMicTransportBackend = parsed?.reachy_mic_transport_backend ?? string.Empty,
+                        ReachyMicDeviceSpec = parsed?.reachy_mic_device_spec ?? string.Empty,
+                        ReachyMicDeviceListing = parsed?.reachy_mic_device_listing ?? string.Empty,
+                        LastError = parsedLastError,
                         AiMode = parsed?.ai_mode ?? string.Empty,
                         OnlineAiEnabled = parsed != null && parsed.online_ai_enabled,
+                        OnlineTtsStreamPartialReplies = parsed != null && parsed.online_tts_stream_partial_replies,
+                        OnlineTtsStreamPartialRepliesActive = parsed != null && parsed.online_tts_stream_partial_replies_active,
                         OnlineApiKeyFound = parsed != null && parsed.online_ai_api_key_found,
                         OnlineApiKeyEnvVar = parsed?.online_ai_api_key_env_var ?? string.Empty,
                         OnlineModel = parsed?.online_ai_model ?? string.Empty,
@@ -9600,6 +10062,7 @@ namespace Reachy.ControlApp
                 config.online_tts_voice = string.IsNullOrWhiteSpace(config.online_tts_voice)
                     ? DefaultOnlineTtsVoice
                     : config.online_tts_voice.Trim();
+                config.online_tts_stream_partial_replies = ShouldEnableSidecarOnlinePartialReplyStreaming();
                 config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
                 config.online_ai_api_key_file_path = string.Empty;
                 config.online_ai_base_url = string.IsNullOrWhiteSpace(onlineAiBaseUrl)
@@ -15330,6 +15793,7 @@ namespace Reachy.ControlApp
                 "Runtime file logging enabled automatically after successful real robot connection.",
                 "INFO",
                 forceWrite: true);
+            LogVoiceConnectionConfigurationSnapshot("real-robot-connect", forceWrite: true);
         }
 
         private void DrawStatusSection(float statusTextHeight = 120f, bool showRunLogPath = true)
@@ -15350,6 +15814,7 @@ namespace Reachy.ControlApp
                         "Runtime file logging enabled by operator.",
                         "INFO",
                         forceWrite: true);
+                    LogVoiceConnectionConfigurationSnapshot("operator-toggle", forceWrite: true);
                 }
                 else
                 {
@@ -15386,6 +15851,118 @@ namespace Reachy.ControlApp
             _status = sb.ToString();
             Debug.Log($"[ReachyControlUI] {header} - {detail}");
             LogRuntimeEvent("status", header, detail, InferStatusSeverity(header, detail));
+        }
+
+        private void LogMicrophoneRoutingRuntimeEvent(string title, string detail, string severity)
+        {
+            string key = $"{title}|{severity}|{detail}";
+            if (string.Equals(key, _microphoneRoutingLastLogKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _microphoneRoutingLastLogKey = key;
+            LogRuntimeEvent("microphone-routing", title, detail, severity);
+        }
+
+        private static string BuildMicrophoneRoutingRuntimeDetail(
+            string endpoint,
+            MicrophoneRoutingPayload payload,
+            string requestedMode,
+            string effectiveMode,
+            string message,
+            string error)
+        {
+            string requested = string.IsNullOrWhiteSpace(requestedMode)
+                ? (payload?.audio_source_mode ?? string.Empty)
+                : requestedMode;
+            string preferredPcMic = payload?.audio_input_device_name ?? string.Empty;
+            string sshHost = payload?.reachy_mic_ssh_host ?? string.Empty;
+            int sshPort = payload != null ? payload.reachy_mic_ssh_port : DefaultReachyMicrophoneSshPort;
+            string sshUser = payload?.reachy_mic_ssh_user ?? string.Empty;
+            bool passwordSupplied = payload != null && !string.IsNullOrWhiteSpace(payload.reachy_mic_ssh_password);
+            return
+                $"endpoint={endpoint}; requested={requested}; effective={effectiveMode}; preferredPcMic={NormalizeLogText(preferredPcMic)}; " +
+                $"preferPhysicalPcMic={(payload != null && payload.prefer_non_virtual_input_device)}; " +
+                $"reachyConnected={(payload != null && payload.reachy_mic_robot_connected)}; " +
+                $"reachySsh={sshHost}:{sshPort}; reachyUser={sshUser}; sshPasswordSupplied={passwordSupplied}; " +
+                $"message={NormalizeLogText(message)}; error={NormalizeLogText(error)}";
+        }
+
+        private void LogMicrophoneRoutingHealthRuntimeEvent(SidecarProbeResult result)
+        {
+            string key =
+                $"{result.Success}|{result.Reachable}|{result.AudioSourceMode}|{result.AudioSourceEffective}|" +
+                $"{result.SelectedInputDeviceIndex}|{result.SelectedInputDeviceName}|{result.LocalInputDeviceName}|" +
+                $"{result.ReachyInputDeviceName}|{result.ReachyMicConnected}|{result.ReachyMicAvailable}|" +
+                $"{result.ReachyMicLastError}|{result.ReachyMicTransportBackend}|{result.ReachyMicDeviceSpec}|" +
+                $"{result.ReachyMicDeviceListing}|{result.LastError}";
+            if (string.Equals(key, _microphoneRoutingLastHealthLogKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _microphoneRoutingLastHealthLogKey = key;
+            string detail =
+                $"reachable={result.Reachable}; requested={result.AudioSourceMode}; effective={result.AudioSourceEffective}; " +
+                $"selectedMic=[{result.SelectedInputDeviceIndex}] {NormalizeLogText(result.SelectedInputDeviceName)}; " +
+                $"localMic=[{result.LocalInputDeviceIndex}] {NormalizeLogText(result.LocalInputDeviceName)}; " +
+                $"reachyMic={NormalizeLogText(result.ReachyInputDeviceName)}; reachyConnected={result.ReachyMicConnected}; " +
+                $"reachyAvailable={result.ReachyMicAvailable}; reachyBackend={NormalizeLogText(result.ReachyMicTransportBackend)}; " +
+                $"reachySpec={NormalizeLogText(result.ReachyMicDeviceSpec)}; reachyDevices={NormalizeLogText(result.ReachyMicDeviceListing)}; " +
+                $"reachyError={NormalizeLogText(result.ReachyMicLastError)}; " +
+                $"sidecarError={NormalizeLogText(result.LastError)}";
+            string severity =
+                result.Success &&
+                result.Reachable &&
+                string.IsNullOrWhiteSpace(result.ReachyMicLastError) &&
+                string.IsNullOrWhiteSpace(result.LastError)
+                    ? "INFO"
+                    : "WARN";
+            LogRuntimeEvent(
+                "microphone-routing",
+                result.Success && result.Reachable ? "sidecar-health" : "sidecar-health-failed",
+                detail,
+                severity);
+        }
+
+        private void LogVoiceConnectionConfigurationSnapshot(string reason, bool forceWrite = false)
+        {
+            string connectedEndpoint =
+                _client != null && _client.IsConnected
+                    ? $"{_client.ConnectedHost}:{_client.ConnectedPort}"
+                    : "disconnected";
+            string sidecarEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            string sidecarPython = string.IsNullOrWhiteSpace(localAiAgentSidecarPythonCommand)
+                ? "python"
+                : localAiAgentSidecarPythonCommand.Trim();
+            string micTargetHost = GetReachyMicrophoneTargetHost();
+            string speakerHost = GetRobotSpeakerMirrorHost();
+            int speakerPort = Mathf.Clamp(localAiAgentRobotSpeakerPort, 1, 65535);
+            bool onlinePartialRepliesEnabled = ShouldEnableSidecarOnlinePartialReplyStreaming();
+            string onlinePartialRepliesReason = GetOnlinePartialReplyStreamingReason();
+            string detail =
+                $"reason={reason}; connectedEndpoint={connectedEndpoint}; sidecarReady={_localAiAgentSidecarReady}; " +
+                $"sidecarStatus={NormalizeLogText(_localAiAgentSidecarStatus)}; sidecarEndpoint={sidecarEndpoint}; sidecarPython={sidecarPython}; " +
+                $"ttsMode={GetTtsModeConfigValue()}; ttsEndpoint={localAiAgentTtsEndpoint}; micMode={GetConnectionMicrophoneSourceModeConfigValue()}; " +
+                $"preferredPcMic={NormalizeLogText(localAiAgentPreferredMicrophoneDeviceName)}; preferPhysicalPcMic={localAiAgentIgnoreVirtualMicrophones}; " +
+                $"micTargetHost={micTargetHost}; sshUser={(string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim())}; " +
+                $"sshPasswordSupplied={!string.IsNullOrWhiteSpace(robotSshPassword)}; micStatus={NormalizeLogText(_microphoneRoutingStatus)}; " +
+                $"onlinePartialRepliesEnabled={onlinePartialRepliesEnabled}; onlinePartialRepliesReason={onlinePartialRepliesReason}; " +
+                $"onlinePartialRepliesStatus={NormalizeLogText(_onlineReplyAudioStatus)}; " +
+                $"speakerMirrorEnabled={localAiAgentMirrorTtsToRobotSpeaker}; speakerTarget={speakerHost}:{speakerPort}; " +
+                $"speakerPreview={BuildRobotSpeakerTtsMirrorEndpointPreview()}; speakerStatus={NormalizeLogText(_robotSpeakerMirrorStatus)}; " +
+                $"speakerResolution={NormalizeLogText(_robotSpeakerMirrorResolution)}";
+            string key = $"{reason}|{detail}";
+            if (string.Equals(key, _voiceConnectionSnapshotLogKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _voiceConnectionSnapshotLogKey = key;
+            LogRuntimeEvent("voice-config", "snapshot", detail, "INFO", forceWrite);
         }
 
         private void ApplyWindowedResolutionFromFields()
