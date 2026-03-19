@@ -20,16 +20,18 @@ namespace Reachy.ControlApp
         {
             General = 0,
             AI = 1,
-            AnimationsAndPoses = 2,
-            ManualControl = 3,
-            Teleoperation = 4,
-            Connections = 5
+            AiModes = 2,
+            AnimationsAndPoses = 3,
+            ManualControl = 4,
+            Teleoperation = 5,
+            Connections = 6
         }
 
         private static readonly string[] RuntimeMenuViewLabels =
         {
             "General",
             "AI",
+            "AI Modes",
             "Animations & Poses",
             "Manual Control",
             "Teleoperation",
@@ -46,6 +48,35 @@ namespace Reachy.ControlApp
         {
             "Use Local AI",
             "Use Online AI"
+        };
+
+        private enum OnlineAiPersonaMode
+        {
+            Assistant = 0,
+            FortuneTeller = 1
+        }
+
+        private static readonly string[] OnlineAiPersonaModeLabels =
+        {
+            "Assistant",
+            "Fortune Teller"
+        };
+
+        private static readonly string[] OnlineAiTtsVoiceOptions =
+        {
+            "alloy",
+            "ash",
+            "ballad",
+            "coral",
+            "echo",
+            "fable",
+            "nova",
+            "onyx",
+            "sage",
+            "shimmer",
+            "verse",
+            "marin",
+            "cedar"
         };
 
         private enum ConnectionMicrophoneSourceMode
@@ -73,6 +104,16 @@ namespace Reachy.ControlApp
             "Online TTS",
             "Local TTS"
         };
+
+        private enum UiModeAudioCue
+        {
+            LocalAiSelected = 0,
+            OnlineAiSelected = 1,
+            AssistantPersonaSelected = 2,
+            FortuneTellerPersonaSelected = 3,
+            OnlineAiEnabled = 4,
+            OnlineAiDisabled = 5
+        }
 
         private const float DesignMarginPixels = 10f;
         private const float DesignPanelGap = 10f;
@@ -148,15 +189,35 @@ namespace Reachy.ControlApp
         private const float RobotSpeakerHealthProbeRefreshSeconds = 45f;
         private const string SidecarTtsModePath = "/tts-mode";
         private const string SidecarOnlineReplyAudioPath = "/online-reply-audio";
+        private const string SidecarOnlineAiModePath = "/online-ai-mode";
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
+        private const string DefaultAssistantOnlineAiSystemPrompt =
+            "You are Reachy. Identify yourself as Reachy, explain who you are when asked, " +
+            "tell users about yourself and the robot, and assist with whatever they want help with using clear practical answers.";
+        private const string DefaultFortuneTellerMachineName = "Madam Circuit";
+        private const float DefaultFortuneTellerFortuneBias = 0.68f;
+        private const float DefaultFortuneTellerFutureFocus = 0.82f;
+        private const float DefaultFortuneTellerRobotFutureFocus = 0.96f;
+        private const float DefaultFortuneTellerFactualGrounding = 0.88f;
+        private const string DefaultFortuneTellerOnlineAiSystemPrompt =
+            "You are Reachy performing as a classic fortune-telling arcade machine with a robot inside. " +
+            "Speak with warm theatrical mystique, a little playful drama, and clear intelligence. " +
+            "You can answer general questions, technical questions, and Reachy operator questions well, " +
+            "but you naturally lean toward fortunes, futures, possibilities, long-term trends, and the future of robots. " +
+            "Never pretend uncertainty is certainty. When you speculate, say so. When the operator needs concrete facts " +
+            "or practical help, answer directly first and then add only a brief fortune-teller flourish when it fits.";
+        private const float OnlineAiModesLiveApplyDebounceSeconds = 0.45f;
         private const string DefaultOnlineAiModel = "gpt-5.4";
         private const int DefaultOnlineAiMaxOutputTokens = 480;
         private const string DefaultOnlineAiTranscriptionModel = "gpt-4o-mini-transcribe";
         private const string DefaultOnlineTtsModel = "gpt-4o-mini-tts";
         private const string DefaultOnlineTtsVoice = "alloy";
+        private const string DefaultFortuneTellerOnlineTtsVoice = "shimmer";
         private const string DefaultOnlineAiBaseUrl = "https://api.openai.com/v1";
         private const string DefaultOnlineAiApiKeyEnvVar = "OPENAI_API_KEY";
+        private const int UiModeAudioSampleRate = 44100;
+        private const float UiModeAudioClickVolume = 0.28f;
         private const string ManagedVoiceSttBackend = "auto";
         private static readonly string[] SpeechDrivenLoopingAnimationNames =
         {
@@ -822,9 +883,27 @@ namespace Reachy.ControlApp
         [SerializeField] private float onlineAiTimeoutSeconds = 15f;
         [SerializeField] private float onlineAiTemperature = 0.2f;
         [SerializeField] private int onlineAiMaxOutputTokens = DefaultOnlineAiMaxOutputTokens;
+        [SerializeField] private OnlineAiPersonaMode onlineAiPersonaMode = OnlineAiPersonaMode.Assistant;
         [SerializeField]
         [TextArea(3, 8)]
-        private string onlineAiSystemPrompt = "You are Reachy's online conversational AI.";
+        private string onlineAiAssistantSystemPrompt = DefaultAssistantOnlineAiSystemPrompt;
+        [SerializeField] private string onlineAiAssistantTtsVoice = DefaultOnlineTtsVoice;
+        [SerializeField] private string onlineAiFortuneTellerMachineName = DefaultFortuneTellerMachineName;
+        [SerializeField] private float onlineAiFortuneTellerFortuneBias = DefaultFortuneTellerFortuneBias;
+        [SerializeField] private float onlineAiFortuneTellerFutureFocus = DefaultFortuneTellerFutureFocus;
+        [SerializeField] private float onlineAiFortuneTellerRobotFutureFocus = DefaultFortuneTellerRobotFutureFocus;
+        [SerializeField] private float onlineAiFortuneTellerFactualGrounding = DefaultFortuneTellerFactualGrounding;
+        [SerializeField]
+        [TextArea(4, 10)]
+        private string onlineAiFortuneTellerSystemPrompt = DefaultFortuneTellerOnlineAiSystemPrompt;
+        [SerializeField] private string onlineAiFortuneTellerTtsVoice = DefaultFortuneTellerOnlineTtsVoice;
+        [SerializeField] private bool onlineAiAllowVoicePersonaSwitch = true;
+        [SerializeField]
+        [TextArea(2, 6)]
+        private string onlineAiSharedModeInstructions = string.Empty;
+        [SerializeField]
+        [TextArea(3, 8)]
+        private string onlineAiSystemPrompt = DefaultAssistantOnlineAiSystemPrompt;
         [SerializeField] private bool onlineAiAllowDirectJointCommands = true;
         [SerializeField] private bool onlineAiRequireMotionConfirmation = false;
         [SerializeField] private bool onlineAiShowApiKeyHelpOnFirstOpen = true;
@@ -861,6 +940,14 @@ namespace Reachy.ControlApp
         private Vector2 _jointScroll;
         private bool _collapsed;
         private RuntimeMenuView _activeMenuView = RuntimeMenuView.General;
+        private Vector2 _aiModesPrimaryScroll;
+        private Vector2 _aiModesPreviewScroll;
+        private string _aiModesOpenVoicePicker = string.Empty;
+        private string _onlineAiPersonaPendingApplyFingerprint = string.Empty;
+        private string _onlineAiPersonaLastAppliedFingerprint = string.Empty;
+        private float _onlineAiPersonaPendingApplyAt = -1f;
+        private bool _onlineAiPersonaApplyPending;
+        private bool _onlineAiPersonaPendingApplyAnnounceSuccess;
         private GUIStyle _titleStyle;
         private GUIStyle _manualVectorCardLabelStyle;
         private float _nextHealthCheckAt;
@@ -953,8 +1040,11 @@ namespace Reachy.ControlApp
         private Vector2 _localAiMicDropdownScroll;
         private AudioSource _localAiMicTestAudioSource;
         private AudioSource _actedSequenceAudioSource;
+        private AudioSource _uiModeFeedbackAudioSource;
         private AudioClip _localAiMicTestRecordClip;
         private AudioClip _benderSleepAudioClip;
+        private readonly Dictionary<UiModeAudioCue, AudioClip> _uiModeAudioClips =
+            new Dictionary<UiModeAudioCue, AudioClip>();
         private int _robotSpeakerAudioMirrorRequestVersion;
         private bool _localAiMicTestRecording;
         private bool _localAiMicTestButtonHeld;
@@ -1106,6 +1196,15 @@ namespace Reachy.ControlApp
             public string Error;
         }
 
+        private struct OnlineAiModeUpdateResult
+        {
+            public bool Success;
+            public string RequestedMode;
+            public string EffectiveMode;
+            public string Message;
+            public string Error;
+        }
+
         private struct RobotSpeakerProbeResult
         {
             public bool Reachable;
@@ -1223,6 +1322,17 @@ namespace Reachy.ControlApp
         }
 
         [Serializable]
+        private sealed class OnlineAiModeUpdatePayload
+        {
+            public string ai_mode = "local";
+            public bool online_ai_enabled;
+            public string online_ai_persona_mode = "assistant";
+            public string online_ai_system_prompt = DefaultAssistantOnlineAiSystemPrompt;
+            public string online_tts_voice = DefaultOnlineTtsVoice;
+            public bool online_ai_allow_voice_persona_switch = true;
+        }
+
+        [Serializable]
         private sealed class TtsModeUpdateResponseEnvelope
         {
             public bool ok;
@@ -1237,6 +1347,15 @@ namespace Reachy.ControlApp
             public bool ok;
             public bool requested_stream_partial_replies = true;
             public bool effective_stream_partial_replies = true;
+            public string message = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class OnlineAiModeUpdateResponseEnvelope
+        {
+            public bool ok;
+            public string requested_mode = string.Empty;
+            public string effective_mode = string.Empty;
             public string message = string.Empty;
         }
 
@@ -1320,7 +1439,19 @@ namespace Reachy.ControlApp
             public float online_ai_timeout_seconds = 15f;
             public float online_ai_temperature = 0.2f;
             public int online_ai_max_output_tokens = DefaultOnlineAiMaxOutputTokens;
-            public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
+            public string online_ai_persona_mode = "assistant";
+            public string online_ai_assistant_system_prompt = DefaultAssistantOnlineAiSystemPrompt;
+            public string online_ai_assistant_tts_voice = DefaultOnlineTtsVoice;
+            public string online_ai_shared_mode_instructions = string.Empty;
+            public bool online_ai_allow_voice_persona_switch = true;
+            public string online_ai_fortune_teller_machine_name = DefaultFortuneTellerMachineName;
+            public float online_ai_fortune_teller_fortune_bias = DefaultFortuneTellerFortuneBias;
+            public float online_ai_fortune_teller_future_focus = DefaultFortuneTellerFutureFocus;
+            public float online_ai_fortune_teller_robot_future_focus = DefaultFortuneTellerRobotFutureFocus;
+            public float online_ai_fortune_teller_factual_grounding = DefaultFortuneTellerFactualGrounding;
+            public string online_ai_fortune_teller_system_prompt = DefaultFortuneTellerOnlineAiSystemPrompt;
+            public string online_ai_fortune_teller_tts_voice = DefaultFortuneTellerOnlineTtsVoice;
+            public string online_ai_system_prompt = DefaultAssistantOnlineAiSystemPrompt;
             public bool online_ai_allow_direct_joint_commands = true;
             public bool online_ai_require_motion_confirmation = false;
             public bool online_ai_show_api_key_help_on_first_open = true;
@@ -1390,7 +1521,19 @@ namespace Reachy.ControlApp
             public string[] openai_transcribe_language_hints = { "en", "fi" };
             public float online_ai_temperature = 0.2f;
             public int online_ai_max_output_tokens = DefaultOnlineAiMaxOutputTokens;
-            public string online_ai_system_prompt = "You are Reachy's online conversational AI.";
+            public string online_ai_persona_mode = "assistant";
+            public string online_ai_assistant_system_prompt = DefaultAssistantOnlineAiSystemPrompt;
+            public string online_ai_assistant_tts_voice = DefaultOnlineTtsVoice;
+            public string online_ai_shared_mode_instructions = string.Empty;
+            public bool online_ai_allow_voice_persona_switch = true;
+            public string online_ai_fortune_teller_machine_name = DefaultFortuneTellerMachineName;
+            public float online_ai_fortune_teller_fortune_bias = DefaultFortuneTellerFortuneBias;
+            public float online_ai_fortune_teller_future_focus = DefaultFortuneTellerFutureFocus;
+            public float online_ai_fortune_teller_robot_future_focus = DefaultFortuneTellerRobotFutureFocus;
+            public float online_ai_fortune_teller_factual_grounding = DefaultFortuneTellerFactualGrounding;
+            public string online_ai_fortune_teller_system_prompt = DefaultFortuneTellerOnlineAiSystemPrompt;
+            public string online_ai_fortune_teller_tts_voice = DefaultFortuneTellerOnlineTtsVoice;
+            public string online_ai_system_prompt = DefaultAssistantOnlineAiSystemPrompt;
             public bool online_ai_allow_direct_joint_commands = true;
             public bool online_ai_require_motion_confirmation = false;
         }
@@ -1500,6 +1643,7 @@ namespace Reachy.ControlApp
             {
                 _voiceLastParserMessage = startupVoiceConfigMessage;
             }
+            ResetOnlineAiPersonaLiveApplyTracking();
             if (TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out string storedApiKeyMessage))
             {
                 _onlineAiApiKeyStatus = $"available from local secret store ({GetSanitizedOnlineAiApiKeyEnvVarName()})";
@@ -1542,6 +1686,7 @@ namespace Reachy.ControlApp
                 Destroy(_cameraPreviewTexture);
                 _cameraPreviewTexture = null;
             }
+            DisposeUiModeAudioClips();
 
             _voiceAgentBridge?.Dispose();
             _voiceAgentBridge = null;
@@ -3394,10 +3539,8 @@ namespace Reachy.ControlApp
                 onlineAiBaseUrl = DefaultOnlineAiBaseUrl;
             }
             onlineAiApiKeyEnvVar = GetSanitizedOnlineAiApiKeyEnvVarName();
-            if (string.IsNullOrWhiteSpace(onlineAiSystemPrompt))
-            {
-                onlineAiSystemPrompt = "You are Reachy's online conversational AI.";
-            }
+            RefreshEffectiveOnlineAiSystemPrompt();
+            ProcessPendingOnlineAiPersonaLiveApply();
             EnsurePreferredMicrophoneDevice();
             if (string.IsNullOrWhiteSpace(localAiAgentListeningEndpoint))
             {
@@ -4259,6 +4402,11 @@ namespace Reachy.ControlApp
                 }
             }
 
+            if (TryHandleOnlineAiPersonaVoiceSwitch(incomingIntent, isOnlineIntent))
+            {
+                return;
+            }
+
             VoiceAgentIntent intentToRoute = incomingIntent;
             bool missingStructuredIntent = string.IsNullOrWhiteSpace(incomingIntent.intent);
             if (missingStructuredIntent)
@@ -4677,6 +4825,13 @@ namespace Reachy.ControlApp
                 "|",
                 endpoint ?? string.Empty,
                 payload != null && payload.online_tts_stream_partial_replies ? "enabled" : "disabled");
+        }
+
+        private static string BuildOnlineAiModeUpdateEndpoint(string intentEndpoint)
+        {
+            return TryBuildSiblingEndpoint(intentEndpoint, SidecarOnlineAiModePath, out string endpoint)
+                ? endpoint
+                : string.Empty;
         }
 
         private void LogOnlineReplyAudioRuntimeEvent(string title, string detail, string severity)
@@ -5244,6 +5399,87 @@ namespace Reachy.ControlApp
                     EffectiveStreamPartialReplies = payload != null &&
                         payload.online_tts_stream_partial_replies,
                     Message = "Online partial reply audio update failed.",
+                    Error = ex.Message
+                };
+            }
+        }
+
+        private static OnlineAiModeUpdateResult SendOnlineAiModeUpdate(
+            string endpoint,
+            int timeoutMs,
+            OnlineAiModeUpdatePayload payload)
+        {
+            try
+            {
+                string jsonBody = JsonUtility.ToJson(payload);
+                byte[] bodyBytes = Encoding.UTF8.GetBytes(jsonBody);
+                HttpWebRequest request = WebRequest.CreateHttp(endpoint);
+                request.Method = "POST";
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.ContentType = "application/json; charset=utf-8";
+                request.Accept = "application/json";
+                request.ContentLength = bodyBytes.Length;
+                request.Proxy = null;
+
+                using (Stream requestStream = request.GetRequestStream())
+                {
+                    requestStream.Write(bodyBytes, 0, bodyBytes.Length);
+                }
+
+                using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
+                using (Stream responseStream = response.GetResponseStream())
+                using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                {
+                    string responseText = reader.ReadToEnd();
+                    OnlineAiModeUpdateResponseEnvelope parsed =
+                        string.IsNullOrWhiteSpace(responseText)
+                            ? null
+                            : JsonUtility.FromJson<OnlineAiModeUpdateResponseEnvelope>(responseText);
+                    bool ok = parsed == null || parsed.ok;
+                    return new OnlineAiModeUpdateResult
+                    {
+                        Success = ok,
+                        RequestedMode = parsed?.requested_mode ?? (payload?.online_ai_persona_mode ?? string.Empty),
+                        EffectiveMode = parsed?.effective_mode ?? (payload?.online_ai_persona_mode ?? string.Empty),
+                        Message = parsed?.message ?? "Online AI mode update accepted.",
+                        Error = ok ? string.Empty : (parsed?.message ?? "Online AI mode update was rejected.")
+                    };
+                }
+            }
+            catch (WebException webEx)
+            {
+                string detail = webEx.Message;
+                if (webEx.Response != null)
+                {
+                    using (Stream responseStream = webEx.Response.GetResponseStream())
+                    using (var reader = new StreamReader(responseStream ?? Stream.Null, Encoding.UTF8))
+                    {
+                        string responseText = reader.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(responseText))
+                        {
+                            detail = $"{detail} ({responseText})";
+                        }
+                    }
+                }
+
+                return new OnlineAiModeUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = payload?.online_ai_persona_mode ?? string.Empty,
+                    EffectiveMode = payload?.online_ai_persona_mode ?? string.Empty,
+                    Message = "Online AI mode update failed.",
+                    Error = detail
+                };
+            }
+            catch (Exception ex)
+            {
+                return new OnlineAiModeUpdateResult
+                {
+                    Success = false,
+                    RequestedMode = payload?.online_ai_persona_mode ?? string.Empty,
+                    EffectiveMode = payload?.online_ai_persona_mode ?? string.Empty,
+                    Message = "Online AI mode update failed.",
                     Error = ex.Message
                 };
             }
@@ -5940,6 +6176,267 @@ namespace Reachy.ControlApp
 
             _localAiMicTestAudioSource.playOnAwake = false;
             _localAiMicTestAudioSource.loop = false;
+        }
+
+        private void EnsureUiModeFeedbackAudioSource()
+        {
+            if (_uiModeFeedbackAudioSource != null)
+            {
+                return;
+            }
+
+            _uiModeFeedbackAudioSource = gameObject.AddComponent<AudioSource>();
+            _uiModeFeedbackAudioSource.playOnAwake = false;
+            _uiModeFeedbackAudioSource.loop = false;
+            _uiModeFeedbackAudioSource.spatialBlend = 0f;
+        }
+
+        private void DisposeUiModeAudioClips()
+        {
+            if (_uiModeAudioClips.Count == 0)
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<UiModeAudioCue, AudioClip> pair in _uiModeAudioClips)
+            {
+                if (pair.Value != null)
+                {
+                    Destroy(pair.Value);
+                }
+            }
+
+            _uiModeAudioClips.Clear();
+        }
+
+        private void PlayUiModeAudioCue(UiModeAudioCue cue)
+        {
+            EnsureUiModeFeedbackAudioSource();
+            if (_uiModeFeedbackAudioSource == null)
+            {
+                return;
+            }
+
+            AudioClip clip = GetUiModeAudioCueClip(cue);
+            if (clip == null)
+            {
+                return;
+            }
+
+            _uiModeFeedbackAudioSource.PlayOneShot(clip, UiModeAudioClickVolume);
+        }
+
+        private AudioClip GetUiModeAudioCueClip(UiModeAudioCue cue)
+        {
+            if (_uiModeAudioClips.TryGetValue(cue, out AudioClip cachedClip) && cachedClip != null)
+            {
+                return cachedClip;
+            }
+
+            AudioClip createdClip;
+            switch (cue)
+            {
+                case UiModeAudioCue.OnlineAiSelected:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_online_ai_selected",
+                        new ToneStep(659.25f, 0.07f, 0.02f, 0.7f),
+                        new ToneStep(880f, 0.07f, 0.02f, 0.8f),
+                        new ToneStep(1174.66f, 0.10f, 0.01f, 0.95f));
+                    break;
+
+                case UiModeAudioCue.AssistantPersonaSelected:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_assistant_mode_selected",
+                        new ToneStep(523.25f, 0.08f, 0.02f, 0.8f),
+                        new ToneStep(659.25f, 0.08f, 0.02f, 0.85f),
+                        new ToneStep(783.99f, 0.11f, 0.01f, 0.95f));
+                    break;
+
+                case UiModeAudioCue.FortuneTellerPersonaSelected:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_fortune_teller_mode_selected",
+                        new ToneStep(783.99f, 0.08f, 0.025f, 0.75f),
+                        new ToneStep(659.25f, 0.08f, 0.025f, 0.72f),
+                        new ToneStep(523.25f, 0.13f, 0.01f, 0.88f));
+                    break;
+
+                case UiModeAudioCue.OnlineAiEnabled:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_online_ai_enabled",
+                        new ToneStep(659.25f, 0.07f, 0.015f, 0.75f),
+                        new ToneStep(987.77f, 0.11f, 0.01f, 0.92f));
+                    break;
+
+                case UiModeAudioCue.OnlineAiDisabled:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_online_ai_disabled",
+                        new ToneStep(659.25f, 0.07f, 0.015f, 0.72f),
+                        new ToneStep(440f, 0.11f, 0.01f, 0.85f));
+                    break;
+
+                default:
+                    createdClip = CreateUiModeAudioCueClip(
+                        "ui_local_ai_selected",
+                        new ToneStep(392f, 0.07f, 0.02f, 0.72f),
+                        new ToneStep(523.25f, 0.07f, 0.02f, 0.8f),
+                        new ToneStep(659.25f, 0.10f, 0.01f, 0.9f));
+                    break;
+            }
+
+            if (createdClip != null)
+            {
+                _uiModeAudioClips[cue] = createdClip;
+            }
+
+            return createdClip;
+        }
+
+        private AudioClip CreateUiModeAudioCueClip(string clipName, params ToneStep[] steps)
+        {
+            if (steps == null || steps.Length == 0)
+            {
+                return null;
+            }
+
+            int totalSamples = 0;
+            for (int i = 0; i < steps.Length; i++)
+            {
+                ToneStep step = steps[i];
+                totalSamples += Mathf.Max(1, Mathf.RoundToInt(step.DurationSeconds * UiModeAudioSampleRate));
+                totalSamples += Mathf.Max(0, Mathf.RoundToInt(step.PauseSeconds * UiModeAudioSampleRate));
+            }
+
+            float[] data = new float[Mathf.Max(1, totalSamples)];
+            int offset = 0;
+            int fadeSamples = Mathf.Max(8, Mathf.RoundToInt(UiModeAudioSampleRate * 0.01f));
+
+            for (int stepIndex = 0; stepIndex < steps.Length; stepIndex++)
+            {
+                ToneStep step = steps[stepIndex];
+                int toneSamples = Mathf.Max(1, Mathf.RoundToInt(step.DurationSeconds * UiModeAudioSampleRate));
+                for (int i = 0; i < toneSamples && offset + i < data.Length; i++)
+                {
+                    float fadeIn = Mathf.Clamp01(i / (float)fadeSamples);
+                    float fadeOut = Mathf.Clamp01((toneSamples - i - 1) / (float)fadeSamples);
+                    float envelope = Mathf.Min(fadeIn, fadeOut);
+                    float sampleTime = i / (float)UiModeAudioSampleRate;
+                    data[offset + i] =
+                        Mathf.Sin(2f * Mathf.PI * step.FrequencyHz * sampleTime) * step.Amplitude * envelope;
+                }
+
+                offset += toneSamples;
+                offset += Mathf.Max(0, Mathf.RoundToInt(step.PauseSeconds * UiModeAudioSampleRate));
+            }
+
+            AudioClip clip = AudioClip.Create(
+                clipName,
+                data.Length,
+                1,
+                UiModeAudioSampleRate,
+                stream: false);
+            clip.SetData(data, 0);
+            return clip;
+        }
+
+        private void TryQueueUiModeVoiceAnnouncement(string announcement)
+        {
+            if (string.IsNullOrWhiteSpace(announcement) ||
+                _voiceAgentBridge == null ||
+                !localAiAgentEnableTtsFeedback ||
+                !IsCurrentAiModeEnabled() ||
+                (localAiAgentAutoStartSidecar && !_localAiAgentSidecarReady))
+            {
+                return;
+            }
+
+            QueueVoiceFeedback(announcement, interrupt: false, bypassRateLimit: true);
+        }
+
+        private void SetAiInputMode(AiMode targetMode, string sourceLabel)
+        {
+            if (aiMode == targetMode)
+            {
+                _voiceLastActionResult = targetMode == AiMode.Online
+                    ? "AI input mode is already using Online AI."
+                    : "AI input mode is already using Local AI.";
+                return;
+            }
+
+            if (_voiceHasPendingAction)
+            {
+                RejectPendingVoiceAction(queueFeedback: false);
+            }
+
+            aiMode = targetMode;
+            PlayUiModeAudioCue(targetMode == AiMode.Online
+                ? UiModeAudioCue.OnlineAiSelected
+                : UiModeAudioCue.LocalAiSelected);
+
+            if (IsOnlineAiModeSelected() && onlineAiShowApiKeyHelpOnFirstOpen)
+            {
+                onlineAiShowApiKeyHelpPanel = true;
+            }
+
+            HandleAiInputModeChanged(sourceLabel);
+        }
+
+        private void HandleAiInputModeChanged(string sourceLabel)
+        {
+            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+            bool shouldUpdateRunningSidecar = _localAiAgentSidecarReady;
+            bool updatedRunningSidecar = false;
+            string runtimeUpdateMessage = string.Empty;
+            if (syncedSidecarConfig && shouldUpdateRunningSidecar)
+            {
+                updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out runtimeUpdateMessage);
+            }
+
+            string resultMessage = $"{sourceLabel}: AI input mode switched to {GetCurrentAiModeLabel()}.";
+            if (!savedVoiceConfig)
+            {
+                resultMessage += $" Voice config save failed: {saveMessage}";
+            }
+
+            if (!syncedSidecarConfig)
+            {
+                resultMessage += $" Sidecar config sync failed: {syncMessage}";
+            }
+            else if (shouldUpdateRunningSidecar && !updatedRunningSidecar)
+            {
+                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
+            }
+
+            if (savedVoiceConfig && syncedSidecarConfig && (!shouldUpdateRunningSidecar || updatedRunningSidecar))
+            {
+                TryQueueUiModeVoiceAnnouncement(IsOnlineAiModeSelected()
+                    ? $"Online AI selected. {GetOnlineAiPersonaModeLabel()} mode is ready."
+                    : "Local AI selected.");
+            }
+
+            _voiceLastActionResult = resultMessage;
+            if (!savedVoiceConfig || !syncedSidecarConfig || (shouldUpdateRunningSidecar && !updatedRunningSidecar))
+            {
+                _voiceLastParserMessage = resultMessage;
+            }
+
+            RequestOnlineAiStatusRefresh();
+        }
+
+        private struct ToneStep
+        {
+            public readonly float FrequencyHz;
+            public readonly float DurationSeconds;
+            public readonly float PauseSeconds;
+            public readonly float Amplitude;
+
+            public ToneStep(float frequencyHz, float durationSeconds, float pauseSeconds, float amplitude)
+            {
+                FrequencyHz = frequencyHz;
+                DurationSeconds = durationSeconds;
+                PauseSeconds = pauseSeconds;
+                Amplitude = amplitude;
+            }
         }
 
         private void HandleMicTestButton(bool holdToRecord)
@@ -6804,6 +7301,17 @@ namespace Reachy.ControlApp
             return normalized == "online" ? "online" : "local";
         }
 
+        private static string NormalizeOnlineAiPersonaModeValue(string value)
+        {
+            string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+            return normalized == "fortune_teller" ||
+                   normalized == "fortune-teller" ||
+                   normalized == "fortune teller" ||
+                   normalized == "fortuneteller"
+                ? "fortune_teller"
+                : "assistant";
+        }
+
         private static bool LooksLikeOpenAiApiKey(string value)
         {
             string trimmed = (value ?? string.Empty).Trim();
@@ -7116,9 +7624,23 @@ namespace Reachy.ControlApp
                 : AiMode.Local;
         }
 
+        private static OnlineAiPersonaMode ParseOnlineAiPersonaMode(string value)
+        {
+            return NormalizeOnlineAiPersonaModeValue(value) == "fortune_teller"
+                ? OnlineAiPersonaMode.FortuneTeller
+                : OnlineAiPersonaMode.Assistant;
+        }
+
         private string GetCurrentAiModeConfigValue()
         {
             return aiMode == AiMode.Online ? "online" : "local";
+        }
+
+        private string GetOnlineAiPersonaModeConfigValue()
+        {
+            return onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller
+                ? "fortune_teller"
+                : "assistant";
         }
 
         private string GetManagedVoiceSttBackend()
@@ -7131,6 +7653,639 @@ namespace Reachy.ControlApp
             return aiMode == AiMode.Online;
         }
 
+        private string GetOnlineAiPersonaModeLabel()
+        {
+            return onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller
+                ? "Fortune Teller"
+                : "Assistant";
+        }
+
+        private static string NormalizeOnlineAiTtsVoiceValue(string value, string fallback)
+        {
+            string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+            return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
+        }
+
+        private string GetOnlineAiTtsVoiceForMode(OnlineAiPersonaMode mode)
+        {
+            return mode == OnlineAiPersonaMode.FortuneTeller
+                ? NormalizeOnlineAiTtsVoiceValue(onlineAiFortuneTellerTtsVoice, DefaultFortuneTellerOnlineTtsVoice)
+                : NormalizeOnlineAiTtsVoiceValue(onlineAiAssistantTtsVoice, DefaultOnlineTtsVoice);
+        }
+
+        private string GetSelectedOnlineAiTtsVoice()
+        {
+            return GetOnlineAiTtsVoiceForMode(onlineAiPersonaMode);
+        }
+
+        private static string GetOnlineAiTtsVoiceDisplayLabel(string value)
+        {
+            string normalized = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                return "Default";
+            }
+
+            if (normalized.Length == 1)
+            {
+                return normalized.ToUpperInvariant();
+            }
+
+            return char.ToUpperInvariant(normalized[0]) + normalized.Substring(1);
+        }
+
+        private void NormalizeOnlineAiPersonaSettings()
+        {
+            onlineAiFortuneTellerFortuneBias = Mathf.Clamp01(onlineAiFortuneTellerFortuneBias);
+            onlineAiFortuneTellerFutureFocus = Mathf.Clamp01(onlineAiFortuneTellerFutureFocus);
+            onlineAiFortuneTellerRobotFutureFocus = Mathf.Clamp01(onlineAiFortuneTellerRobotFutureFocus);
+            onlineAiFortuneTellerFactualGrounding = Mathf.Clamp01(onlineAiFortuneTellerFactualGrounding);
+
+            if (string.IsNullOrWhiteSpace(onlineAiAssistantSystemPrompt))
+            {
+                onlineAiAssistantSystemPrompt = DefaultAssistantOnlineAiSystemPrompt;
+            }
+
+            if (string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName))
+            {
+                onlineAiFortuneTellerMachineName = DefaultFortuneTellerMachineName;
+            }
+
+            if (string.IsNullOrWhiteSpace(onlineAiFortuneTellerSystemPrompt))
+            {
+                onlineAiFortuneTellerSystemPrompt = DefaultFortuneTellerOnlineAiSystemPrompt;
+            }
+
+            onlineAiAssistantTtsVoice = NormalizeOnlineAiTtsVoiceValue(onlineAiAssistantTtsVoice, DefaultOnlineTtsVoice);
+            onlineAiFortuneTellerTtsVoice =
+                NormalizeOnlineAiTtsVoiceValue(onlineAiFortuneTellerTtsVoice, DefaultFortuneTellerOnlineTtsVoice);
+            onlineAiSharedModeInstructions = (onlineAiSharedModeInstructions ?? string.Empty).Trim();
+        }
+
+        private void RefreshEffectiveOnlineAiSystemPrompt()
+        {
+            NormalizeOnlineAiPersonaSettings();
+            onlineAiSystemPrompt = BuildEffectiveOnlineAiSystemPrompt();
+        }
+
+        private string BuildOnlineAiPersonaSettingsFingerprint()
+        {
+            RefreshEffectiveOnlineAiSystemPrompt();
+
+            var builder = new StringBuilder(768);
+            builder.Append(GetOnlineAiPersonaModeConfigValue()).Append('\n');
+            builder.Append(onlineAiAllowVoicePersonaSwitch ? "1" : "0").Append('\n');
+            builder.Append(onlineAiAssistantSystemPrompt ?? string.Empty).Append('\n');
+            builder.Append(onlineAiAssistantTtsVoice ?? string.Empty).Append('\n');
+            builder.Append(onlineAiSharedModeInstructions ?? string.Empty).Append('\n');
+            builder.Append(onlineAiFortuneTellerMachineName ?? string.Empty).Append('\n');
+            builder.Append(onlineAiFortuneTellerFortuneBias.ToString("F3", CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append(onlineAiFortuneTellerFutureFocus.ToString("F3", CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append(onlineAiFortuneTellerRobotFutureFocus.ToString("F3", CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append(onlineAiFortuneTellerFactualGrounding.ToString("F3", CultureInfo.InvariantCulture)).Append('\n');
+            builder.Append(onlineAiFortuneTellerSystemPrompt ?? string.Empty).Append('\n');
+            builder.Append(onlineAiFortuneTellerTtsVoice ?? string.Empty).Append('\n');
+            builder.Append(onlineAiSystemPrompt ?? string.Empty);
+            return builder.ToString();
+        }
+
+        private void ResetOnlineAiPersonaLiveApplyTracking()
+        {
+            string fingerprint = BuildOnlineAiPersonaSettingsFingerprint();
+            _onlineAiPersonaPendingApplyFingerprint = fingerprint;
+            _onlineAiPersonaLastAppliedFingerprint = fingerprint;
+            _onlineAiPersonaPendingApplyAt = -1f;
+            _onlineAiPersonaApplyPending = false;
+            _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+        }
+
+        private void ScheduleOnlineAiPersonaLiveApply(bool immediate = false, bool announceSuccess = false)
+        {
+            string fingerprint = BuildOnlineAiPersonaSettingsFingerprint();
+            _onlineAiPersonaPendingApplyFingerprint = fingerprint;
+            _onlineAiPersonaPendingApplyAnnounceSuccess |= announceSuccess;
+
+            if (string.Equals(fingerprint, _onlineAiPersonaLastAppliedFingerprint, StringComparison.Ordinal))
+            {
+                _onlineAiPersonaApplyPending = false;
+                _onlineAiPersonaPendingApplyAt = -1f;
+                if (!announceSuccess)
+                {
+                    _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+                }
+
+                return;
+            }
+
+            _onlineAiPersonaApplyPending = true;
+            _onlineAiPersonaPendingApplyAt = immediate
+                ? Time.unscaledTime
+                : Time.unscaledTime + OnlineAiModesLiveApplyDebounceSeconds;
+        }
+
+        private void ProcessPendingOnlineAiPersonaLiveApply()
+        {
+            if (!_onlineAiPersonaApplyPending || Time.unscaledTime < _onlineAiPersonaPendingApplyAt)
+            {
+                return;
+            }
+
+            _onlineAiPersonaApplyPending = false;
+            _onlineAiPersonaPendingApplyAt = -1f;
+
+            bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+            if (!saved)
+            {
+                string failure = $"AI Modes live apply failed while saving voice config: {saveMessage}";
+                _voiceLastActionResult = failure;
+                _voiceLastParserMessage = failure;
+                _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+                return;
+            }
+
+            bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+            if (!synced)
+            {
+                string failure = $"AI Modes live apply failed while syncing sidecar config: {syncMessage}";
+                _voiceLastActionResult = failure;
+                _voiceLastParserMessage = failure;
+                _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+                return;
+            }
+
+            _onlineAiPersonaLastAppliedFingerprint = _onlineAiPersonaPendingApplyFingerprint;
+
+            bool shouldUpdateRunningSidecar =
+                IsCurrentAiModeEnabled() &&
+                IsOnlineAiModeSelected() &&
+                (!localAiAgentAutoStartSidecar || _localAiAgentSidecarReady);
+            if (shouldUpdateRunningSidecar)
+            {
+                bool updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out string runtimeUpdateMessage);
+                if (!updatedRunningSidecar)
+                {
+                    string failure =
+                        "AI Modes saved and sidecar config synced, but running sidecar update failed: " +
+                        runtimeUpdateMessage;
+                    _voiceLastActionResult = failure;
+                    _voiceLastParserMessage = failure;
+                    _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+                    return;
+                }
+
+                RequestOnlineAiStatusRefresh();
+            }
+
+            if (_onlineAiPersonaPendingApplyAnnounceSuccess)
+            {
+                _voiceLastActionResult = shouldUpdateRunningSidecar
+                    ? $"AI Modes applied live: {GetOnlineAiPersonaModeLabel()}."
+                    : "AI Modes saved and sidecar config updated.";
+                TryQueueUiModeVoiceAnnouncement($"{GetOnlineAiPersonaModeLabel()} mode selected.");
+            }
+
+            _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+        }
+
+        private string BuildEffectiveOnlineAiSystemPrompt()
+        {
+            string basePrompt =
+                onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller
+                    ? BuildFortuneTellerOnlineAiSystemPrompt()
+                    : (string.IsNullOrWhiteSpace(onlineAiAssistantSystemPrompt)
+                        ? DefaultAssistantOnlineAiSystemPrompt
+                        : onlineAiAssistantSystemPrompt.Trim());
+
+            if (string.IsNullOrWhiteSpace(onlineAiSharedModeInstructions))
+            {
+                return basePrompt;
+            }
+
+            return $"{basePrompt}\nAdditional operator guidance:\n{onlineAiSharedModeInstructions}";
+        }
+
+        private string BuildFortuneTellerOnlineAiSystemPrompt()
+        {
+            string basePrompt = string.IsNullOrWhiteSpace(onlineAiFortuneTellerSystemPrompt)
+                ? DefaultFortuneTellerOnlineAiSystemPrompt
+                : onlineAiFortuneTellerSystemPrompt.Trim();
+            string machineName = string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName)
+                ? DefaultFortuneTellerMachineName
+                : onlineAiFortuneTellerMachineName.Trim();
+
+            int fortuneBiasPercent = Mathf.RoundToInt(Mathf.Clamp01(onlineAiFortuneTellerFortuneBias) * 100f);
+            int futureFocusPercent = Mathf.RoundToInt(Mathf.Clamp01(onlineAiFortuneTellerFutureFocus) * 100f);
+            int robotFutureFocusPercent =
+                Mathf.RoundToInt(Mathf.Clamp01(onlineAiFortuneTellerRobotFutureFocus) * 100f);
+            int groundingPercent =
+                Mathf.RoundToInt(Mathf.Clamp01(onlineAiFortuneTellerFactualGrounding) * 100f);
+
+            return
+                $"{basePrompt}\n" +
+                "Performance guidance:\n" +
+                $"- Persona name: {machineName}.\n" +
+                $"- Keep the fortune-teller flavor at about {fortuneBiasPercent}% strength.\n" +
+                $"- Pull answers toward futures, possibilities, omens, and long-term trends at about {futureFocusPercent}% strength.\n" +
+                $"- When it fits, emphasize the future of robots, embodied AI, and human-robot life at about {robotFutureFocusPercent}% strength.\n" +
+                $"- Keep factual grounding, practical usefulness, and honesty at about {groundingPercent}% strength.\n" +
+                "- Do not roleplay certainty. Mark predictions and fortunes as possibilities, probabilities, visions, or symbolic readings.\n" +
+                "- Stay genuinely capable of answering general questions, technical questions, and Reachy operation questions.\n" +
+                "- For practical requests, answer clearly first, then add only a brief fortune-teller flourish when it helps the experience.\n" +
+                "- Do not proactively ask the operator for robot movement commands, control tasks, setup steps, or Reachy operation instructions.\n" +
+                "- Only talk about robot movements, control flows, or operator instructions when the operator explicitly asks for them.\n" +
+                "- Do not end normal conversation replies by inviting the operator to tell Reachy what movement to do next.";
+        }
+
+        private string GetOnlineAiPersonaSummary()
+        {
+            if (onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller)
+            {
+                string machineName = string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName)
+                    ? DefaultFortuneTellerMachineName
+                    : onlineAiFortuneTellerMachineName.Trim();
+                return
+                    $"{machineName} keeps the robot smart and broadly capable, but leans into fortunes, futures, and the future of robots.";
+            }
+
+            return "Default Reachy assistant behavior. Reachy identifies as itself, can explain the robot, and helps with whatever the user wants assistance with.";
+        }
+
+        private string GetOnlineAiPersonaPreviewText()
+        {
+            if (onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller)
+            {
+                string machineName = string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName)
+                    ? DefaultFortuneTellerMachineName
+                    : onlineAiFortuneTellerMachineName.Trim();
+                return
+                    $"{machineName}: I see a future where robots become calmer collaborators, more embodied, more helpful, and a little more conversational than people expect.";
+            }
+
+            return
+                "Assistant: I am Reachy. I can tell you about myself, explain the robot, help with Reachy control, and assist with whatever you want help with.";
+        }
+
+        private static string NormalizeVoiceModeSwitchTranscript(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder(value.Length + 2);
+            builder.Append(' ');
+            bool lastWasSpace = true;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (char.IsLetterOrDigit(c))
+                {
+                    builder.Append(char.ToLowerInvariant(c));
+                    lastWasSpace = false;
+                    continue;
+                }
+
+                if (!lastWasSpace)
+                {
+                    builder.Append(' ');
+                    lastWasSpace = true;
+                }
+            }
+
+            if (!lastWasSpace)
+            {
+                builder.Append(' ');
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool ContainsAnyNormalizedPhrase(string normalizedTranscript, params string[] phrases)
+        {
+            if (string.IsNullOrWhiteSpace(normalizedTranscript) || phrases == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < phrases.Length; i++)
+            {
+                string phrase = phrases[i];
+                if (string.IsNullOrWhiteSpace(phrase))
+                {
+                    continue;
+                }
+
+                string normalizedPhrase = $" {phrase.Trim().ToLowerInvariant()} ";
+                if (normalizedTranscript.Contains(normalizedPhrase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryParseRequestedOnlineAiPersonaMode(
+            string transcript,
+            out OnlineAiPersonaMode requestedMode)
+        {
+            requestedMode = OnlineAiPersonaMode.Assistant;
+            string normalizedTranscript = NormalizeVoiceModeSwitchTranscript(transcript);
+            if (string.IsNullOrWhiteSpace(normalizedTranscript))
+            {
+                return false;
+            }
+
+            bool targetsAssistant = ContainsAnyNormalizedPhrase(
+                normalizedTranscript,
+                "assistant",
+                "assistant mode");
+            bool targetsFortuneTeller = ContainsAnyNormalizedPhrase(
+                normalizedTranscript,
+                "fortune teller",
+                "fortune teller mode",
+                "fortune telling",
+                "fortune telling mode",
+                "fortune mode",
+                "oracle mode");
+            if (targetsAssistant == targetsFortuneTeller)
+            {
+                return false;
+            }
+
+            bool explicitModePhrase = ContainsAnyNormalizedPhrase(
+                normalizedTranscript,
+                "assistant mode",
+                "fortune teller mode",
+                "fortune telling mode",
+                "fortune mode",
+                "oracle mode");
+            bool explicitSwitchVerb = ContainsAnyNormalizedPhrase(
+                normalizedTranscript,
+                "switch",
+                "change",
+                "set",
+                "use",
+                "become",
+                "turn into",
+                "go to",
+                "enter",
+                "act as",
+                "be a",
+                "be the");
+            bool startsLikeCommand = normalizedTranscript.StartsWith(" switch ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" change ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" set ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" use ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" become ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" be a ", StringComparison.Ordinal) ||
+                                     normalizedTranscript.StartsWith(" be the ", StringComparison.Ordinal);
+
+            if (!explicitModePhrase && !explicitSwitchVerb && !startsLikeCommand)
+            {
+                return false;
+            }
+
+            requestedMode = targetsFortuneTeller
+                ? OnlineAiPersonaMode.FortuneTeller
+                : OnlineAiPersonaMode.Assistant;
+            return true;
+        }
+
+        private OnlineAiModeUpdatePayload BuildOnlineAiModeUpdatePayload()
+        {
+            RefreshEffectiveOnlineAiSystemPrompt();
+            return new OnlineAiModeUpdatePayload
+            {
+                ai_mode = GetCurrentAiModeConfigValue(),
+                online_ai_enabled = enableOnlineAiAgent,
+                online_ai_persona_mode = GetOnlineAiPersonaModeConfigValue(),
+                online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
+                    ? DefaultAssistantOnlineAiSystemPrompt
+                    : onlineAiSystemPrompt,
+                online_tts_voice = GetSelectedOnlineAiTtsVoice(),
+                online_ai_allow_voice_persona_switch = onlineAiAllowVoicePersonaSwitch
+            };
+        }
+
+        private bool TryApplyOnlineAiModeToRunningSidecar(out string message)
+        {
+            message = string.Empty;
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            if (string.IsNullOrWhiteSpace(intentEndpoint))
+            {
+                message = "Online AI mode updated locally, but the sidecar endpoint is empty.";
+                return false;
+            }
+
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 300, 2500);
+            string endpoint = BuildOnlineAiModeUpdateEndpoint(intentEndpoint);
+            OnlineAiModeUpdateResult result = SendOnlineAiModeUpdate(
+                endpoint,
+                timeoutMs,
+                BuildOnlineAiModeUpdatePayload());
+            message = result.Success
+                ? (string.IsNullOrWhiteSpace(result.Message)
+                    ? $"Running sidecar updated for {GetCurrentAiModeLabel()}."
+                    : result.Message)
+                : (string.IsNullOrWhiteSpace(result.Error)
+                    ? "Running sidecar did not accept the AI mode update."
+                    : result.Error);
+            return result.Success;
+        }
+
+        private void HandleOnlineAiEnabledToggleChanged()
+        {
+            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+            bool shouldUpdateRunningSidecar = _localAiAgentSidecarReady;
+            bool updatedRunningSidecar = false;
+            string runtimeUpdateMessage = string.Empty;
+            if (syncedSidecarConfig && shouldUpdateRunningSidecar)
+            {
+                updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out runtimeUpdateMessage);
+            }
+
+            string resultMessage = enableOnlineAiAgent
+                ? "Online AI enabled."
+                : "Online AI disabled.";
+            if (!savedVoiceConfig)
+            {
+                resultMessage += $" Voice config save failed: {saveMessage}";
+            }
+            if (!syncedSidecarConfig)
+            {
+                resultMessage += $" Sidecar config sync failed: {syncMessage}";
+            }
+            else if (shouldUpdateRunningSidecar && !updatedRunningSidecar)
+            {
+                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
+            }
+            else
+            {
+                resultMessage += shouldUpdateRunningSidecar
+                    ? " Running sidecar updated."
+                    : " Config updated and will apply when the sidecar is ready.";
+            }
+
+            if (savedVoiceConfig && syncedSidecarConfig && (!shouldUpdateRunningSidecar || updatedRunningSidecar))
+            {
+                TryQueueUiModeVoiceAnnouncement(enableOnlineAiAgent ? "Online AI enabled." : "Online AI disabled.");
+            }
+
+            _voiceLastActionResult = resultMessage;
+            if (!savedVoiceConfig || !syncedSidecarConfig || (shouldUpdateRunningSidecar && !updatedRunningSidecar))
+            {
+                _voiceLastParserMessage = resultMessage;
+            }
+            RequestOnlineAiStatusRefresh();
+        }
+
+        private bool TryHandleOnlineAiPersonaVoiceSwitch(VoiceAgentIntent incomingIntent, bool isOnlineIntent)
+        {
+            if (!isOnlineIntent ||
+                !IsOnlineAiModeSelected() ||
+                !onlineAiAllowVoicePersonaSwitch ||
+                incomingIntent == null ||
+                !incomingIntent.transcript_is_final ||
+                !TryParseRequestedOnlineAiPersonaMode(incomingIntent.spoken_text, out OnlineAiPersonaMode requestedMode))
+            {
+                return false;
+            }
+
+            OnlineAiPersonaMode previousMode = onlineAiPersonaMode;
+            onlineAiPersonaMode = requestedMode;
+            RefreshEffectiveOnlineAiSystemPrompt();
+
+            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+            bool updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out string runtimeUpdateMessage);
+            if (savedVoiceConfig && syncedSidecarConfig)
+            {
+                ResetOnlineAiPersonaLiveApplyTracking();
+            }
+
+            string resultMessage;
+            if (previousMode == requestedMode)
+            {
+                resultMessage = $"Already in {GetOnlineAiPersonaModeLabel()} mode.";
+            }
+            else
+            {
+                resultMessage = $"Switched to {GetOnlineAiPersonaModeLabel()} mode.";
+            }
+
+            if (!savedVoiceConfig)
+            {
+                resultMessage += $" Voice config save failed: {saveMessage}";
+            }
+            else if (!syncedSidecarConfig)
+            {
+                resultMessage += $" Sidecar config sync failed: {syncMessage}";
+            }
+            else if (!updatedRunningSidecar)
+            {
+                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
+            }
+
+            _voiceLastParserMessage = "Handled online AI persona switch from spoken command.";
+            _voiceLastIntentSummary = resultMessage;
+            _voiceLastActionResult = resultMessage;
+            QueueVoiceFeedback(resultMessage, interrupt: false, bypassRateLimit: true);
+            RequestOnlineAiStatusRefresh();
+            return true;
+        }
+
+        private void ResetOnlineAiPersonaDefaults(OnlineAiPersonaMode modeToReset)
+        {
+            if (modeToReset == OnlineAiPersonaMode.FortuneTeller)
+            {
+                onlineAiFortuneTellerMachineName = DefaultFortuneTellerMachineName;
+                onlineAiFortuneTellerFortuneBias = DefaultFortuneTellerFortuneBias;
+                onlineAiFortuneTellerFutureFocus = DefaultFortuneTellerFutureFocus;
+                onlineAiFortuneTellerRobotFutureFocus = DefaultFortuneTellerRobotFutureFocus;
+                onlineAiFortuneTellerFactualGrounding = DefaultFortuneTellerFactualGrounding;
+                onlineAiFortuneTellerSystemPrompt = DefaultFortuneTellerOnlineAiSystemPrompt;
+                onlineAiFortuneTellerTtsVoice = DefaultFortuneTellerOnlineTtsVoice;
+            }
+            else
+            {
+                onlineAiAssistantSystemPrompt = DefaultAssistantOnlineAiSystemPrompt;
+                onlineAiAssistantTtsVoice = DefaultOnlineTtsVoice;
+            }
+
+            RefreshEffectiveOnlineAiSystemPrompt();
+        }
+
+        private static float DrawAiModeTuningSlider(string label, float value)
+        {
+            float clampedValue = Mathf.Clamp01(value);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, GUILayout.Width(128f));
+            clampedValue = GUILayout.HorizontalSlider(clampedValue, 0f, 1f);
+            GUILayout.Label($"{Mathf.RoundToInt(clampedValue * 100f)}%", GUILayout.Width(42f));
+            GUILayout.EndHorizontal();
+            return clampedValue;
+        }
+
+        private bool DrawOnlineAiVoiceDropdown(
+            string pickerKey,
+            string label,
+            string currentVoice,
+            out string selectedVoice)
+        {
+            selectedVoice = NormalizeOnlineAiTtsVoiceValue(currentVoice, DefaultOnlineTtsVoice);
+            bool changed = false;
+
+            GUILayout.Label(label);
+            if (GUILayout.Button(
+                $"{GetOnlineAiTtsVoiceDisplayLabel(selectedVoice)} v",
+                GUILayout.Height(22f),
+                GUILayout.ExpandWidth(true)))
+            {
+                _aiModesOpenVoicePicker = string.Equals(_aiModesOpenVoicePicker, pickerKey, StringComparison.Ordinal)
+                    ? string.Empty
+                    : pickerKey;
+            }
+
+            if (!string.Equals(_aiModesOpenVoicePicker, pickerKey, StringComparison.Ordinal))
+            {
+                return changed;
+            }
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Select online TTS voice");
+            for (int i = 0; i < OnlineAiTtsVoiceOptions.Length; i += 2)
+            {
+                GUILayout.BeginHorizontal();
+                for (int j = 0; j < 2 && i + j < OnlineAiTtsVoiceOptions.Length; j++)
+                {
+                    string option = OnlineAiTtsVoiceOptions[i + j];
+                    bool isCurrent = string.Equals(selectedVoice, option, StringComparison.OrdinalIgnoreCase);
+                    bool previousEnabled = GUI.enabled;
+                    GUI.enabled = !isCurrent;
+                    if (GUILayout.Button(
+                        GetOnlineAiTtsVoiceDisplayLabel(option),
+                        GUILayout.Height(22f),
+                        GUILayout.ExpandWidth(true)))
+                    {
+                        selectedVoice = option;
+                        changed = true;
+                        _aiModesOpenVoicePicker = string.Empty;
+                    }
+
+                    GUI.enabled = previousEnabled;
+                }
+
+                GUILayout.EndHorizontal();
+            }
+
+            GUILayout.EndVertical();
+            return changed;
+        }
+
         private bool IsCurrentAiModeEnabled()
         {
             return IsOnlineAiModeSelected() ? enableOnlineAiAgent : enableLocalAiAgent;
@@ -7138,7 +8293,9 @@ namespace Reachy.ControlApp
 
         private string GetCurrentAiModeLabel()
         {
-            return IsOnlineAiModeSelected() ? "Online AI" : "Local AI";
+            return IsOnlineAiModeSelected()
+                ? $"Online AI ({GetOnlineAiPersonaModeLabel()})"
+                : "Local AI";
         }
 
         private static bool IsMotionVoiceAction(VoiceCommandRouter.VoiceActionKind kind)
@@ -9600,6 +10757,42 @@ namespace Reachy.ControlApp
                 bool hasOnlineLastApiKeyCheckOkField = json.IndexOf(
                     "\"online_ai_last_api_key_check_ok\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlinePersonaModeField = json.IndexOf(
+                    "\"online_ai_persona_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAssistantSystemPromptField = json.IndexOf(
+                    "\"online_ai_assistant_system_prompt\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAssistantTtsVoiceField = json.IndexOf(
+                    "\"online_ai_assistant_tts_voice\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineSharedModeInstructionsField = json.IndexOf(
+                    "\"online_ai_shared_mode_instructions\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAllowVoicePersonaSwitchField = json.IndexOf(
+                    "\"online_ai_allow_voice_persona_switch\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerMachineNameField = json.IndexOf(
+                    "\"online_ai_fortune_teller_machine_name\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFortuneBiasField = json.IndexOf(
+                    "\"online_ai_fortune_teller_fortune_bias\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFutureFocusField = json.IndexOf(
+                    "\"online_ai_fortune_teller_future_focus\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerRobotFutureFocusField = json.IndexOf(
+                    "\"online_ai_fortune_teller_robot_future_focus\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFactualGroundingField = json.IndexOf(
+                    "\"online_ai_fortune_teller_factual_grounding\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerSystemPromptField = json.IndexOf(
+                    "\"online_ai_fortune_teller_system_prompt\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerTtsVoiceField = json.IndexOf(
+                    "\"online_ai_fortune_teller_tts_voice\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
 
                 VoiceAgentConfig config = JsonUtility.FromJson<VoiceAgentConfig>(json);
                 if (config == null)
@@ -9757,10 +10950,52 @@ namespace Reachy.ControlApp
                 }
                 onlineAiTemperature = Mathf.Clamp(config.online_ai_temperature, 0f, 2f);
                 onlineAiMaxOutputTokens = Mathf.Clamp(config.online_ai_max_output_tokens, 32, 2048);
-                if (!string.IsNullOrWhiteSpace(config.online_ai_system_prompt))
-                {
-                    onlineAiSystemPrompt = config.online_ai_system_prompt;
-                }
+                onlineAiPersonaMode = hasOnlinePersonaModeField
+                    ? ParseOnlineAiPersonaMode(config.online_ai_persona_mode)
+                    : OnlineAiPersonaMode.Assistant;
+                onlineAiAssistantSystemPrompt = hasOnlineAssistantSystemPromptField
+                    ? (string.IsNullOrWhiteSpace(config.online_ai_assistant_system_prompt)
+                        ? DefaultAssistantOnlineAiSystemPrompt
+                        : config.online_ai_assistant_system_prompt)
+                    : (string.IsNullOrWhiteSpace(config.online_ai_system_prompt)
+                        ? DefaultAssistantOnlineAiSystemPrompt
+                        : config.online_ai_system_prompt);
+                onlineAiAssistantTtsVoice = hasOnlineAssistantTtsVoiceField
+                    ? NormalizeOnlineAiTtsVoiceValue(config.online_ai_assistant_tts_voice, DefaultOnlineTtsVoice)
+                    : DefaultOnlineTtsVoice;
+                onlineAiSharedModeInstructions = hasOnlineSharedModeInstructionsField
+                    ? (config.online_ai_shared_mode_instructions ?? string.Empty)
+                    : string.Empty;
+                onlineAiAllowVoicePersonaSwitch = hasOnlineAllowVoicePersonaSwitchField
+                    ? config.online_ai_allow_voice_persona_switch
+                    : true;
+                onlineAiFortuneTellerMachineName = hasOnlineFortuneTellerMachineNameField &&
+                                                   !string.IsNullOrWhiteSpace(config.online_ai_fortune_teller_machine_name)
+                    ? config.online_ai_fortune_teller_machine_name.Trim()
+                    : DefaultFortuneTellerMachineName;
+                onlineAiFortuneTellerFortuneBias = hasOnlineFortuneTellerFortuneBiasField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_fortune_bias)
+                    : DefaultFortuneTellerFortuneBias;
+                onlineAiFortuneTellerFutureFocus = hasOnlineFortuneTellerFutureFocusField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_future_focus)
+                    : DefaultFortuneTellerFutureFocus;
+                onlineAiFortuneTellerRobotFutureFocus = hasOnlineFortuneTellerRobotFutureFocusField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_robot_future_focus)
+                    : DefaultFortuneTellerRobotFutureFocus;
+                onlineAiFortuneTellerFactualGrounding = hasOnlineFortuneTellerFactualGroundingField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_factual_grounding)
+                    : DefaultFortuneTellerFactualGrounding;
+                onlineAiFortuneTellerSystemPrompt = hasOnlineFortuneTellerSystemPromptField &&
+                                                    !string.IsNullOrWhiteSpace(config.online_ai_fortune_teller_system_prompt)
+                    ? config.online_ai_fortune_teller_system_prompt
+                    : DefaultFortuneTellerOnlineAiSystemPrompt;
+                onlineAiFortuneTellerTtsVoice = hasOnlineFortuneTellerTtsVoiceField
+                    ? NormalizeOnlineAiTtsVoiceValue(
+                        config.online_ai_fortune_teller_tts_voice,
+                        DefaultFortuneTellerOnlineTtsVoice)
+                    : DefaultFortuneTellerOnlineTtsVoice;
+                RefreshEffectiveOnlineAiSystemPrompt();
+                ResetOnlineAiPersonaLiveApplyTracking();
                 onlineAiAllowDirectJointCommands = hasOnlineAllowDirectJointCommandsField
                     ? config.online_ai_allow_direct_joint_commands
                     : true;
@@ -9813,9 +11048,11 @@ namespace Reachy.ControlApp
                 float normalizedJointMax = Mathf.Max(localAiAgentJointMinDegrees, localAiAgentJointMaxDegrees);
                 localAiAgentJointMinDegrees = normalizedJointMin;
                 localAiAgentJointMaxDegrees = normalizedJointMax;
+                RefreshEffectiveOnlineAiSystemPrompt();
                 onlineAiTimeoutSeconds = Mathf.Clamp(onlineAiTimeoutSeconds, 3f, 120f);
                 onlineAiTemperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
                 onlineAiMaxOutputTokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
+                RefreshEffectiveOnlineAiSystemPrompt();
 
                 config.ai_mode = GetCurrentAiModeConfigValue();
                 config.stt_backend = GetManagedVoiceSttBackend();
@@ -9899,8 +11136,32 @@ namespace Reachy.ControlApp
                 config.online_ai_timeout_seconds = onlineAiTimeoutSeconds;
                 config.online_ai_temperature = onlineAiTemperature;
                 config.online_ai_max_output_tokens = onlineAiMaxOutputTokens;
+                config.online_ai_persona_mode = GetOnlineAiPersonaModeConfigValue();
+                config.online_ai_assistant_system_prompt = string.IsNullOrWhiteSpace(onlineAiAssistantSystemPrompt)
+                    ? DefaultAssistantOnlineAiSystemPrompt
+                    : onlineAiAssistantSystemPrompt.Trim();
+                config.online_ai_assistant_tts_voice =
+                    NormalizeOnlineAiTtsVoiceValue(onlineAiAssistantTtsVoice, DefaultOnlineTtsVoice);
+                config.online_ai_shared_mode_instructions = onlineAiSharedModeInstructions ?? string.Empty;
+                config.online_ai_allow_voice_persona_switch = onlineAiAllowVoicePersonaSwitch;
+                config.online_ai_fortune_teller_machine_name = string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName)
+                    ? DefaultFortuneTellerMachineName
+                    : onlineAiFortuneTellerMachineName.Trim();
+                config.online_ai_fortune_teller_fortune_bias = Mathf.Clamp01(onlineAiFortuneTellerFortuneBias);
+                config.online_ai_fortune_teller_future_focus = Mathf.Clamp01(onlineAiFortuneTellerFutureFocus);
+                config.online_ai_fortune_teller_robot_future_focus =
+                    Mathf.Clamp01(onlineAiFortuneTellerRobotFutureFocus);
+                config.online_ai_fortune_teller_factual_grounding =
+                    Mathf.Clamp01(onlineAiFortuneTellerFactualGrounding);
+                config.online_ai_fortune_teller_system_prompt =
+                    string.IsNullOrWhiteSpace(onlineAiFortuneTellerSystemPrompt)
+                        ? DefaultFortuneTellerOnlineAiSystemPrompt
+                        : onlineAiFortuneTellerSystemPrompt.Trim();
+                config.online_ai_fortune_teller_tts_voice = NormalizeOnlineAiTtsVoiceValue(
+                    onlineAiFortuneTellerTtsVoice,
+                    DefaultFortuneTellerOnlineTtsVoice);
                 config.online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
-                    ? "You are Reachy's online conversational AI."
+                    ? DefaultAssistantOnlineAiSystemPrompt
                     : onlineAiSystemPrompt;
                 config.online_ai_allow_direct_joint_commands = onlineAiAllowDirectJointCommands;
                 config.online_ai_require_motion_confirmation = onlineAiRequireMotionConfirmation;
@@ -10059,9 +11320,7 @@ namespace Reachy.ControlApp
                 config.online_tts_model = string.IsNullOrWhiteSpace(config.online_tts_model)
                     ? DefaultOnlineTtsModel
                     : config.online_tts_model.Trim();
-                config.online_tts_voice = string.IsNullOrWhiteSpace(config.online_tts_voice)
-                    ? DefaultOnlineTtsVoice
-                    : config.online_tts_voice.Trim();
+                config.online_tts_voice = GetSelectedOnlineAiTtsVoice();
                 config.online_tts_stream_partial_replies = ShouldEnableSidecarOnlinePartialReplyStreaming();
                 config.online_ai_api_key_env_var = GetSanitizedOnlineAiApiKeyEnvVarName();
                 config.online_ai_api_key_file_path = string.Empty;
@@ -10075,8 +11334,32 @@ namespace Reachy.ControlApp
                 }
                 config.online_ai_temperature = Mathf.Clamp(onlineAiTemperature, 0f, 2f);
                 config.online_ai_max_output_tokens = Mathf.Clamp(onlineAiMaxOutputTokens, 32, 2048);
+                config.online_ai_persona_mode = GetOnlineAiPersonaModeConfigValue();
+                config.online_ai_assistant_system_prompt = string.IsNullOrWhiteSpace(onlineAiAssistantSystemPrompt)
+                    ? DefaultAssistantOnlineAiSystemPrompt
+                    : onlineAiAssistantSystemPrompt.Trim();
+                config.online_ai_assistant_tts_voice =
+                    NormalizeOnlineAiTtsVoiceValue(onlineAiAssistantTtsVoice, DefaultOnlineTtsVoice);
+                config.online_ai_shared_mode_instructions = onlineAiSharedModeInstructions ?? string.Empty;
+                config.online_ai_allow_voice_persona_switch = onlineAiAllowVoicePersonaSwitch;
+                config.online_ai_fortune_teller_machine_name = string.IsNullOrWhiteSpace(onlineAiFortuneTellerMachineName)
+                    ? DefaultFortuneTellerMachineName
+                    : onlineAiFortuneTellerMachineName.Trim();
+                config.online_ai_fortune_teller_fortune_bias = Mathf.Clamp01(onlineAiFortuneTellerFortuneBias);
+                config.online_ai_fortune_teller_future_focus = Mathf.Clamp01(onlineAiFortuneTellerFutureFocus);
+                config.online_ai_fortune_teller_robot_future_focus =
+                    Mathf.Clamp01(onlineAiFortuneTellerRobotFutureFocus);
+                config.online_ai_fortune_teller_factual_grounding =
+                    Mathf.Clamp01(onlineAiFortuneTellerFactualGrounding);
+                config.online_ai_fortune_teller_system_prompt =
+                    string.IsNullOrWhiteSpace(onlineAiFortuneTellerSystemPrompt)
+                        ? DefaultFortuneTellerOnlineAiSystemPrompt
+                        : onlineAiFortuneTellerSystemPrompt.Trim();
+                config.online_ai_fortune_teller_tts_voice = NormalizeOnlineAiTtsVoiceValue(
+                    onlineAiFortuneTellerTtsVoice,
+                    DefaultFortuneTellerOnlineTtsVoice);
                 config.online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
-                    ? "You are Reachy's online conversational AI."
+                    ? DefaultAssistantOnlineAiSystemPrompt
                     : onlineAiSystemPrompt;
                 config.online_ai_allow_direct_joint_commands = onlineAiAllowDirectJointCommands;
                 config.online_ai_require_motion_confirmation = onlineAiRequireMotionConfirmation;
@@ -10131,6 +11414,42 @@ namespace Reachy.ControlApp
                     StringComparison.OrdinalIgnoreCase) >= 0;
                 bool hasAudioSourceModeField = json.IndexOf(
                     "\"audio_source_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlinePersonaModeField = json.IndexOf(
+                    "\"online_ai_persona_mode\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAssistantSystemPromptField = json.IndexOf(
+                    "\"online_ai_assistant_system_prompt\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAssistantTtsVoiceField = json.IndexOf(
+                    "\"online_ai_assistant_tts_voice\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineSharedModeInstructionsField = json.IndexOf(
+                    "\"online_ai_shared_mode_instructions\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineAllowVoicePersonaSwitchField = json.IndexOf(
+                    "\"online_ai_allow_voice_persona_switch\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerMachineNameField = json.IndexOf(
+                    "\"online_ai_fortune_teller_machine_name\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFortuneBiasField = json.IndexOf(
+                    "\"online_ai_fortune_teller_fortune_bias\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFutureFocusField = json.IndexOf(
+                    "\"online_ai_fortune_teller_future_focus\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerRobotFutureFocusField = json.IndexOf(
+                    "\"online_ai_fortune_teller_robot_future_focus\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerFactualGroundingField = json.IndexOf(
+                    "\"online_ai_fortune_teller_factual_grounding\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerSystemPromptField = json.IndexOf(
+                    "\"online_ai_fortune_teller_system_prompt\"",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+                bool hasOnlineFortuneTellerTtsVoiceField = json.IndexOf(
+                    "\"online_ai_fortune_teller_tts_voice\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
 
                 LocalVoiceAgentSidecarConfig config =
@@ -10188,10 +11507,52 @@ namespace Reachy.ControlApp
                 onlineAiTimeoutSeconds = Mathf.Clamp(config.online_ai_timeout_seconds, 3f, 120f);
                 onlineAiTemperature = Mathf.Clamp(config.online_ai_temperature, 0f, 2f);
                 onlineAiMaxOutputTokens = Mathf.Clamp(config.online_ai_max_output_tokens, 32, 2048);
-                if (!string.IsNullOrWhiteSpace(config.online_ai_system_prompt))
-                {
-                    onlineAiSystemPrompt = config.online_ai_system_prompt;
-                }
+                onlineAiPersonaMode = hasOnlinePersonaModeField
+                    ? ParseOnlineAiPersonaMode(config.online_ai_persona_mode)
+                    : OnlineAiPersonaMode.Assistant;
+                onlineAiAssistantSystemPrompt = hasOnlineAssistantSystemPromptField
+                    ? (string.IsNullOrWhiteSpace(config.online_ai_assistant_system_prompt)
+                        ? DefaultAssistantOnlineAiSystemPrompt
+                        : config.online_ai_assistant_system_prompt)
+                    : (string.IsNullOrWhiteSpace(config.online_ai_system_prompt)
+                        ? DefaultAssistantOnlineAiSystemPrompt
+                        : config.online_ai_system_prompt);
+                onlineAiAssistantTtsVoice = hasOnlineAssistantTtsVoiceField
+                    ? NormalizeOnlineAiTtsVoiceValue(config.online_ai_assistant_tts_voice, DefaultOnlineTtsVoice)
+                    : NormalizeOnlineAiTtsVoiceValue(config.online_tts_voice, DefaultOnlineTtsVoice);
+                onlineAiSharedModeInstructions = hasOnlineSharedModeInstructionsField
+                    ? (config.online_ai_shared_mode_instructions ?? string.Empty)
+                    : string.Empty;
+                onlineAiAllowVoicePersonaSwitch = hasOnlineAllowVoicePersonaSwitchField
+                    ? config.online_ai_allow_voice_persona_switch
+                    : true;
+                onlineAiFortuneTellerMachineName = hasOnlineFortuneTellerMachineNameField &&
+                                                   !string.IsNullOrWhiteSpace(config.online_ai_fortune_teller_machine_name)
+                    ? config.online_ai_fortune_teller_machine_name.Trim()
+                    : DefaultFortuneTellerMachineName;
+                onlineAiFortuneTellerFortuneBias = hasOnlineFortuneTellerFortuneBiasField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_fortune_bias)
+                    : DefaultFortuneTellerFortuneBias;
+                onlineAiFortuneTellerFutureFocus = hasOnlineFortuneTellerFutureFocusField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_future_focus)
+                    : DefaultFortuneTellerFutureFocus;
+                onlineAiFortuneTellerRobotFutureFocus = hasOnlineFortuneTellerRobotFutureFocusField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_robot_future_focus)
+                    : DefaultFortuneTellerRobotFutureFocus;
+                onlineAiFortuneTellerFactualGrounding = hasOnlineFortuneTellerFactualGroundingField
+                    ? Mathf.Clamp01(config.online_ai_fortune_teller_factual_grounding)
+                    : DefaultFortuneTellerFactualGrounding;
+                onlineAiFortuneTellerSystemPrompt = hasOnlineFortuneTellerSystemPromptField &&
+                                                    !string.IsNullOrWhiteSpace(config.online_ai_fortune_teller_system_prompt)
+                    ? config.online_ai_fortune_teller_system_prompt
+                    : DefaultFortuneTellerOnlineAiSystemPrompt;
+                onlineAiFortuneTellerTtsVoice = hasOnlineFortuneTellerTtsVoiceField
+                    ? NormalizeOnlineAiTtsVoiceValue(
+                        config.online_ai_fortune_teller_tts_voice,
+                        DefaultFortuneTellerOnlineTtsVoice)
+                    : DefaultFortuneTellerOnlineTtsVoice;
+                RefreshEffectiveOnlineAiSystemPrompt();
+                ResetOnlineAiPersonaLiveApplyTracking();
                 onlineAiAllowDirectJointCommands = config.online_ai_allow_direct_joint_commands;
                 onlineAiRequireMotionConfirmation = config.online_ai_require_motion_confirmation;
                 EnsurePreferredMicrophoneDevice();
@@ -10261,6 +11622,13 @@ namespace Reachy.ControlApp
                 if (_activeMenuView == RuntimeMenuView.AI)
                 {
                     DrawAiView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
+                if (_activeMenuView == RuntimeMenuView.AiModes)
+                {
+                    DrawAiModesView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
                     GUI.matrix = previousMatrix;
                     return;
                 }
@@ -12915,6 +14283,292 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void DrawAiModesView(float topY, float logicalMargin, float logicalScreenWidth, float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float gap = Mathf.Max(12f, DesignPanelGap);
+
+            if (usableWidth < 760f)
+            {
+                float topPanelHeight = Mathf.Max(140f, (usableHeight - gap) * 0.56f);
+                float bottomPanelY = topY + topPanelHeight + gap;
+                float bottomPanelHeight = Mathf.Max(120f, usableHeight - topPanelHeight - gap);
+                DrawAiModesPrimaryPanel(new Rect(logicalMargin, topY, usableWidth, topPanelHeight));
+                DrawAiModesPreviewPanel(new Rect(logicalMargin, bottomPanelY, usableWidth, bottomPanelHeight));
+                return;
+            }
+
+            float leftPanelWidth = Mathf.Clamp(usableWidth * 0.46f, 360f, 760f);
+            float rightPanelWidth = Mathf.Max(260f, usableWidth - leftPanelWidth - gap);
+
+            if (leftPanelWidth + gap + rightPanelWidth > usableWidth)
+            {
+                rightPanelWidth = Mathf.Max(260f, usableWidth - leftPanelWidth - gap);
+            }
+
+            float leftPanelX = logicalMargin;
+            float rightPanelX = leftPanelX + leftPanelWidth + gap;
+
+            DrawAiModesPrimaryPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawAiModesPreviewPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+        }
+
+        private void DrawAiModesPrimaryPanel(Rect area)
+        {
+            RefreshEffectiveOnlineAiSystemPrompt();
+            string initialFingerprint = BuildOnlineAiPersonaSettingsFingerprint();
+            bool applyImmediately = false;
+            bool announceSuccess = false;
+
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("AI Modes", _titleStyle);
+            GUILayout.Label("Choose which online AI personality Reachy uses when the AI view is set to Online AI.");
+            GUILayout.Label(IsOnlineAiModeSelected()
+                ? $"Live now: {GetOnlineAiPersonaModeLabel()}."
+                : "Currently inactive because AI Input & Parsing is using Local AI.");
+
+            float bodyHeight = Mathf.Max(60f, area.height - 82f);
+            _aiModesPrimaryScroll = GUILayout.BeginScrollView(
+                _aiModesPrimaryScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            int columns = area.width < 720f ? 1 : 2;
+            int nextPersonaMode = GUILayout.SelectionGrid(
+                (int)onlineAiPersonaMode,
+                OnlineAiPersonaModeLabels,
+                columns);
+            if (nextPersonaMode != (int)onlineAiPersonaMode)
+            {
+                onlineAiPersonaMode =
+                    (OnlineAiPersonaMode)Mathf.Clamp(nextPersonaMode, 0, OnlineAiPersonaModeLabels.Length - 1);
+                RefreshEffectiveOnlineAiSystemPrompt();
+                PlayUiModeAudioCue(onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller
+                    ? UiModeAudioCue.FortuneTellerPersonaSelected
+                    : UiModeAudioCue.AssistantPersonaSelected);
+                applyImmediately = true;
+                announceSuccess = true;
+            }
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label($"{GetOnlineAiPersonaModeLabel()} overview");
+            GUILayout.Label(GetOnlineAiPersonaSummary());
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Shared instructions");
+            GUILayout.Label("Applied on top of the selected mode. Use this for event-specific notes or temporary personality tweaks.");
+            bool previousAllowVoicePersonaSwitch = onlineAiAllowVoicePersonaSwitch;
+            onlineAiAllowVoicePersonaSwitch = GUILayout.Toggle(
+                onlineAiAllowVoicePersonaSwitch,
+                "Allow spoken switching between Assistant and Fortune Teller");
+            if (onlineAiAllowVoicePersonaSwitch != previousAllowVoicePersonaSwitch)
+            {
+                applyImmediately = true;
+            }
+            GUILayout.Label("Examples: 'switch to fortune teller mode' or 'switch to assistant mode'.");
+            onlineAiSharedModeInstructions = GUILayout.TextArea(
+                onlineAiSharedModeInstructions,
+                GUILayout.MinHeight(72f));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Clear shared", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                onlineAiSharedModeInstructions = string.Empty;
+                RefreshEffectiveOnlineAiSystemPrompt();
+                applyImmediately = true;
+            }
+            if (GUILayout.Button("Reset selected mode", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                ResetOnlineAiPersonaDefaults(onlineAiPersonaMode);
+                applyImmediately = true;
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            if (onlineAiPersonaMode == OnlineAiPersonaMode.FortuneTeller)
+            {
+                GUILayout.BeginVertical(GUI.skin.box);
+                GUILayout.Label("Fortune Teller tuning");
+                GUILayout.Label("Keep it theatrical and future-facing without losing factual usefulness.");
+
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Machine name", GUILayout.Width(100f));
+                onlineAiFortuneTellerMachineName = GUILayout.TextField(onlineAiFortuneTellerMachineName);
+                GUILayout.EndHorizontal();
+
+                if (DrawOnlineAiVoiceDropdown(
+                    "fortune_teller",
+                    "Voice",
+                    onlineAiFortuneTellerTtsVoice,
+                    out string selectedFortuneVoice))
+                {
+                    onlineAiFortuneTellerTtsVoice = selectedFortuneVoice;
+                    applyImmediately = true;
+                }
+
+                onlineAiFortuneTellerFortuneBias = DrawAiModeTuningSlider(
+                    "Fortune flavor",
+                    onlineAiFortuneTellerFortuneBias);
+                onlineAiFortuneTellerFutureFocus = DrawAiModeTuningSlider(
+                    "Future focus",
+                    onlineAiFortuneTellerFutureFocus);
+                onlineAiFortuneTellerRobotFutureFocus = DrawAiModeTuningSlider(
+                    "Robot future focus",
+                    onlineAiFortuneTellerRobotFutureFocus);
+                onlineAiFortuneTellerFactualGrounding = DrawAiModeTuningSlider(
+                    "Factual grounding",
+                    onlineAiFortuneTellerFactualGrounding);
+
+                GUILayout.Label("Base prompt");
+                onlineAiFortuneTellerSystemPrompt = GUILayout.TextArea(
+                    onlineAiFortuneTellerSystemPrompt,
+                    GUILayout.MinHeight(170f));
+                GUILayout.EndVertical();
+            }
+            else
+            {
+                GUILayout.BeginVertical(GUI.skin.box);
+                GUILayout.Label("Assistant tuning");
+                GUILayout.Label("This is the current default Reachy assistant behavior.");
+                if (DrawOnlineAiVoiceDropdown(
+                    "assistant",
+                    "Voice",
+                    onlineAiAssistantTtsVoice,
+                    out string selectedAssistantVoice))
+                {
+                    onlineAiAssistantTtsVoice = selectedAssistantVoice;
+                    applyImmediately = true;
+                }
+                GUILayout.Label("Base prompt");
+                onlineAiAssistantSystemPrompt = GUILayout.TextArea(
+                    onlineAiAssistantSystemPrompt,
+                    GUILayout.MinHeight(170f));
+                GUILayout.EndVertical();
+            }
+
+            string updatedFingerprint = BuildOnlineAiPersonaSettingsFingerprint();
+            if (!string.Equals(initialFingerprint, updatedFingerprint, StringComparison.Ordinal))
+            {
+                ScheduleOnlineAiPersonaLiveApply(immediate: applyImmediately, announceSuccess: announceSuccess);
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private void DrawAiModesPreviewPanel(Rect area)
+        {
+            RefreshEffectiveOnlineAiSystemPrompt();
+
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Mode Preview", _titleStyle);
+            GUILayout.Label("Preview the exact online prompt, save the mode config, and switch straight into the online path.");
+
+            float bodyHeight = Mathf.Max(60f, area.height - 58f);
+            _aiModesPreviewScroll = GUILayout.BeginScrollView(
+                _aiModesPreviewScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Status");
+            GUILayout.Label($"Selected mode: {GetOnlineAiPersonaModeLabel()}");
+            GUILayout.Label(IsOnlineAiModeSelected()
+                ? "AI Input & Parsing is already using Online AI."
+                : "AI Input & Parsing is currently using Local AI.");
+            GUILayout.Label($"Online AI enabled: {(enableOnlineAiAgent ? "yes" : "no")} | Model: {onlineAiModel}");
+            GUILayout.Label($"Current TTS voice: {GetOnlineAiTtsVoiceDisplayLabel(GetSelectedOnlineAiTtsVoice())}");
+            GUILayout.Label($"Spoken mode switching: {(onlineAiAllowVoicePersonaSwitch ? "enabled" : "disabled")}");
+            GUILayout.Label(_onlineAiPersonaApplyPending
+                ? "Live apply pending. Changes will save and sync after you pause editing."
+                : "AI Modes changes save and sync automatically. Persona switches apply live when Online AI is active.");
+            GUILayout.Label(GetOnlineAiPersonaPreviewText());
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Switch AI view to Online AI", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                SetAiInputMode(AiMode.Online, "AI Modes preview button");
+            }
+            if (GUILayout.Button("Open AI view", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                _activeMenuView = RuntimeMenuView.AI;
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Config");
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Load cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                bool loaded = TryLoadVoiceAgentConfigFromDisk(out string loadMessage);
+                _voiceLastActionResult = loadMessage;
+                if (!loaded)
+                {
+                    _voiceLastParserMessage = loadMessage;
+                }
+            }
+            if (GUILayout.Button("Save cfg", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
+                _voiceLastActionResult = saveMessage;
+                if (!saved)
+                {
+                    _voiceLastParserMessage = saveMessage;
+                }
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Sync sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
+                _voiceLastActionResult = syncMessage;
+                if (!synced)
+                {
+                    _voiceLastParserMessage = syncMessage;
+                }
+            }
+            if (GUILayout.Button("Load sidecar", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                bool loadedSidecar = TryLoadLocalSidecarConfigIntoUi(out string sidecarLoadMessage);
+                _voiceLastActionResult = sidecarLoadMessage;
+                if (!loadedSidecar)
+                {
+                    _voiceLastParserMessage = sidecarLoadMessage;
+                }
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Effective system prompt");
+            bool previousGuiEnabled = GUI.enabled;
+            GUI.enabled = false;
+            GUILayout.TextArea(onlineAiSystemPrompt, GUILayout.MinHeight(260f));
+            GUI.enabled = previousGuiEnabled;
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Bridge readout");
+            VoiceAgentStatusPanel.DrawReadout(_voiceAgentStatusState);
+            GUILayout.EndVertical();
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
         private void DrawAiPrimaryPanel(Rect area)
         {
             GUILayout.BeginArea(area, GUI.skin.box);
@@ -12925,15 +14579,9 @@ namespace Reachy.ControlApp
             int nextAiMode = GUILayout.SelectionGrid((int)aiMode, AiModeLabels, aiCompact ? 1 : 2);
             if (nextAiMode != (int)aiMode)
             {
-                if (_voiceHasPendingAction)
-                {
-                    RejectPendingVoiceAction(queueFeedback: false);
-                }
-                aiMode = (AiMode)Mathf.Clamp(nextAiMode, 0, AiModeLabels.Length - 1);
-                if (IsOnlineAiModeSelected() && onlineAiShowApiKeyHelpOnFirstOpen)
-                {
-                    onlineAiShowApiKeyHelpPanel = true;
-                }
+                SetAiInputMode(
+                    (AiMode)Mathf.Clamp(nextAiMode, 0, AiModeLabels.Length - 1),
+                    "AI view selector");
             }
 
             GUILayout.Label(IsOnlineAiModeSelected()
@@ -13783,9 +15431,17 @@ namespace Reachy.ControlApp
         {
             bool previousEnabled = enableOnlineAiAgent;
             enableOnlineAiAgent = GUILayout.Toggle(enableOnlineAiAgent, "Enable online AI");
-            if (previousEnabled && !enableOnlineAiAgent)
+            if (previousEnabled != enableOnlineAiAgent)
             {
-                RejectPendingVoiceAction();
+                if (!enableOnlineAiAgent)
+                {
+                    RejectPendingVoiceAction();
+                }
+
+                PlayUiModeAudioCue(enableOnlineAiAgent
+                    ? UiModeAudioCue.OnlineAiEnabled
+                    : UiModeAudioCue.OnlineAiDisabled);
+                HandleOnlineAiEnabledToggleChanged();
             }
 
             GUILayout.BeginHorizontal();
@@ -13974,10 +15630,20 @@ namespace Reachy.ControlApp
                 localAiAgentBlockMotionWhenBridgeUnhealthy,
                 "Block motion when bridge is unhealthy");
 
-            GUILayout.Label("Online system prompt");
-            onlineAiSystemPrompt = GUILayout.TextArea(onlineAiSystemPrompt, GUILayout.MinHeight(90f));
+            RefreshEffectiveOnlineAiSystemPrompt();
+            GUILayout.Label($"Active AI mode profile: {GetOnlineAiPersonaModeLabel()}");
+            GUILayout.Label(GetOnlineAiPersonaSummary());
+            GUILayout.Label("Effective online system prompt");
+            bool previousPromptPreviewEnabled = GUI.enabled;
+            GUI.enabled = false;
+            GUILayout.TextArea(onlineAiSystemPrompt, GUILayout.MinHeight(90f));
+            GUI.enabled = previousPromptPreviewEnabled;
 
             GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Open AI Modes view", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
+            {
+                _activeMenuView = RuntimeMenuView.AiModes;
+            }
             if (GUILayout.Button("How to create and connect my OpenAI API key", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
             {
                 onlineAiShowApiKeyHelpPanel = !onlineAiShowApiKeyHelpPanel;

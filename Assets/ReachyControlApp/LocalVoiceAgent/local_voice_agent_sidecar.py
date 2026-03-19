@@ -15,6 +15,7 @@ Testing endpoints:
 - POST /inject_intent
 - POST /listening
 - POST /microphone-source
+- POST /online-ai-mode
 - POST /online-reply-audio
 """
 
@@ -103,7 +104,28 @@ DEFAULT_ONLINE_AI_API_KEY_ENV_VAR = "OPENAI_API_KEY"
 DEFAULT_TTS_MODE = "online"
 DEFAULT_ONLINE_TTS_MODEL = "gpt-4o-mini-tts"
 DEFAULT_ONLINE_TTS_VOICE = "alloy"
+DEFAULT_ONLINE_AI_ASSISTANT_TTS_VOICE = DEFAULT_ONLINE_TTS_VOICE
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_TTS_VOICE = "shimmer"
 DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS = 480
+DEFAULT_ONLINE_AI_PERSONA_MODE = "assistant"
+DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT = (
+    "You are Reachy. Identify yourself as Reachy, explain who you are when asked, "
+    "tell users about yourself and the robot, and assist with whatever they want help with "
+    "using clear practical answers."
+)
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_MACHINE_NAME = "Madam Circuit"
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_FORTUNE_BIAS = 0.68
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_FUTURE_FOCUS = 0.82
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_ROBOT_FUTURE_FOCUS = 0.96
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_FACTUAL_GROUNDING = 0.88
+DEFAULT_ONLINE_AI_FORTUNE_TELLER_SYSTEM_PROMPT = (
+    "You are Reachy performing as a classic fortune-telling arcade machine with a robot inside. "
+    "Speak with warm theatrical mystique, a little playful drama, and clear intelligence. "
+    "You can answer general questions, technical questions, and Reachy operator questions well, "
+    "but you naturally lean toward fortunes, futures, possibilities, long-term trends, and the future of robots. "
+    "Never pretend uncertainty is certainty. When you speculate, say so. When the operator needs concrete facts "
+    "or practical help, answer directly first and then add only a brief fortune-teller flourish when it fits."
+)
 DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS = ["en", "fi"]
 DEFAULT_ONLINE_CUSTOM_POSE_MAX_JOINTS = len(DEFAULT_JOINTS)
 DEFAULT_ONLINE_MOTION_SEQUENCE_MAX_STEPS = 8
@@ -827,7 +849,19 @@ def load_config(path: Path) -> dict:
         "openai_transcribe_language_hints": list(DEFAULT_OPENAI_TRANSCRIBE_LANGUAGE_HINTS),
         "online_ai_temperature": 0.2,
         "online_ai_max_output_tokens": DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS,
-        "online_ai_system_prompt": "You are Reachy's online conversational AI.",
+        "online_ai_persona_mode": DEFAULT_ONLINE_AI_PERSONA_MODE,
+        "online_ai_assistant_system_prompt": DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT,
+        "online_ai_assistant_tts_voice": DEFAULT_ONLINE_AI_ASSISTANT_TTS_VOICE,
+        "online_ai_shared_mode_instructions": "",
+        "online_ai_allow_voice_persona_switch": True,
+        "online_ai_fortune_teller_machine_name": DEFAULT_ONLINE_AI_FORTUNE_TELLER_MACHINE_NAME,
+        "online_ai_fortune_teller_fortune_bias": DEFAULT_ONLINE_AI_FORTUNE_TELLER_FORTUNE_BIAS,
+        "online_ai_fortune_teller_future_focus": DEFAULT_ONLINE_AI_FORTUNE_TELLER_FUTURE_FOCUS,
+        "online_ai_fortune_teller_robot_future_focus": DEFAULT_ONLINE_AI_FORTUNE_TELLER_ROBOT_FUTURE_FOCUS,
+        "online_ai_fortune_teller_factual_grounding": DEFAULT_ONLINE_AI_FORTUNE_TELLER_FACTUAL_GROUNDING,
+        "online_ai_fortune_teller_system_prompt": DEFAULT_ONLINE_AI_FORTUNE_TELLER_SYSTEM_PROMPT,
+        "online_ai_fortune_teller_tts_voice": DEFAULT_ONLINE_AI_FORTUNE_TELLER_TTS_VOICE,
+        "online_ai_system_prompt": DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT,
         "online_ai_allow_direct_joint_commands": True,
         "online_ai_require_motion_confirmation": False,
         "online_ai_allow_custom_pose_commands": True,
@@ -986,9 +1020,92 @@ def load_config(path: Path) -> dict:
     config["online_ai_max_output_tokens"] = max(
         32,
         min(2048, int(config.get("online_ai_max_output_tokens", DEFAULT_ONLINE_AI_MAX_OUTPUT_TOKENS))))
+    config["online_ai_persona_mode"] = (
+        str(config.get("online_ai_persona_mode", DEFAULT_ONLINE_AI_PERSONA_MODE)).strip().lower()
+        or DEFAULT_ONLINE_AI_PERSONA_MODE)
+    if config["online_ai_persona_mode"] not in ("assistant", "fortune_teller"):
+        config["online_ai_persona_mode"] = DEFAULT_ONLINE_AI_PERSONA_MODE
+    config["online_ai_assistant_tts_voice"] = (
+        str(config.get("online_ai_assistant_tts_voice", DEFAULT_ONLINE_AI_ASSISTANT_TTS_VOICE)).strip().lower()
+        or DEFAULT_ONLINE_AI_ASSISTANT_TTS_VOICE)
+    config["online_ai_assistant_system_prompt"] = (
+        str(config.get("online_ai_assistant_system_prompt", DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)).strip()
+        or DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)
+    config["online_ai_shared_mode_instructions"] = (
+        str(config.get("online_ai_shared_mode_instructions", "") or "").strip())
+    config["online_ai_allow_voice_persona_switch"] = parse_bool(
+        config.get("online_ai_allow_voice_persona_switch"),
+        True)
+    config["online_ai_fortune_teller_machine_name"] = (
+        str(
+            config.get(
+                "online_ai_fortune_teller_machine_name",
+                DEFAULT_ONLINE_AI_FORTUNE_TELLER_MACHINE_NAME,
+            )
+        ).strip()
+        or DEFAULT_ONLINE_AI_FORTUNE_TELLER_MACHINE_NAME)
+    config["online_ai_fortune_teller_fortune_bias"] = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                config.get(
+                    "online_ai_fortune_teller_fortune_bias",
+                    DEFAULT_ONLINE_AI_FORTUNE_TELLER_FORTUNE_BIAS,
+                )
+            ),
+        ),
+    )
+    config["online_ai_fortune_teller_future_focus"] = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                config.get(
+                    "online_ai_fortune_teller_future_focus",
+                    DEFAULT_ONLINE_AI_FORTUNE_TELLER_FUTURE_FOCUS,
+                )
+            ),
+        ),
+    )
+    config["online_ai_fortune_teller_robot_future_focus"] = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                config.get(
+                    "online_ai_fortune_teller_robot_future_focus",
+                    DEFAULT_ONLINE_AI_FORTUNE_TELLER_ROBOT_FUTURE_FOCUS,
+                )
+            ),
+        ),
+    )
+    config["online_ai_fortune_teller_factual_grounding"] = max(
+        0.0,
+        min(
+            1.0,
+            float(
+                config.get(
+                    "online_ai_fortune_teller_factual_grounding",
+                    DEFAULT_ONLINE_AI_FORTUNE_TELLER_FACTUAL_GROUNDING,
+                )
+            ),
+        ),
+    )
+    config["online_ai_fortune_teller_system_prompt"] = (
+        str(
+            config.get(
+                "online_ai_fortune_teller_system_prompt",
+                DEFAULT_ONLINE_AI_FORTUNE_TELLER_SYSTEM_PROMPT,
+            )
+        ).strip()
+        or DEFAULT_ONLINE_AI_FORTUNE_TELLER_SYSTEM_PROMPT)
+    config["online_ai_fortune_teller_tts_voice"] = (
+        str(config.get("online_ai_fortune_teller_tts_voice", DEFAULT_ONLINE_AI_FORTUNE_TELLER_TTS_VOICE)).strip().lower()
+        or DEFAULT_ONLINE_AI_FORTUNE_TELLER_TTS_VOICE)
     config["online_ai_system_prompt"] = (
-        str(config.get("online_ai_system_prompt", "You are Reachy's online conversational AI.")).strip()
-        or "You are Reachy's online conversational AI.")
+        str(config.get("online_ai_system_prompt", DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)).strip()
+        or DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)
     config["online_ai_allow_direct_joint_commands"] = parse_bool(
         config.get("online_ai_allow_direct_joint_commands"),
         True)
@@ -1215,6 +1332,55 @@ def apply_online_reply_audio_payload(config: dict, payload: dict) -> dict:
         ),
         "requested_stream_partial_replies": requested_stream_partial_replies,
         "effective_stream_partial_replies": requested_stream_partial_replies,
+    }
+
+
+def apply_online_ai_mode_payload(config: dict, payload: dict) -> dict:
+    requested_ai_mode = str(payload.get("ai_mode", config.get("ai_mode", "local"))).strip().lower()
+    if requested_ai_mode not in ("local", "online"):
+        requested_ai_mode = "local"
+
+    online_enabled = parse_bool(
+        payload.get("online_ai_enabled", config.get("online_ai_enabled", False)),
+        False,
+    )
+    requested_mode = str(
+        payload.get("online_ai_persona_mode", config.get("online_ai_persona_mode", DEFAULT_ONLINE_AI_PERSONA_MODE))
+    ).strip().lower()
+    if requested_mode not in ("assistant", "fortune_teller"):
+        requested_mode = DEFAULT_ONLINE_AI_PERSONA_MODE
+
+    system_prompt = str(
+        payload.get("online_ai_system_prompt", config.get("online_ai_system_prompt", DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT))
+    ).strip() or DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT
+    tts_voice = str(
+        payload.get("online_tts_voice", config.get("online_tts_voice", DEFAULT_ONLINE_TTS_VOICE))
+    ).strip().lower() or DEFAULT_ONLINE_TTS_VOICE
+    allow_voice_switch = parse_bool(
+        payload.get(
+            "online_ai_allow_voice_persona_switch",
+            config.get("online_ai_allow_voice_persona_switch", True),
+        ),
+        True,
+    )
+
+    config["ai_mode"] = requested_ai_mode
+    config["online_ai_enabled"] = online_enabled
+    config["online_ai_persona_mode"] = requested_mode
+    config["online_ai_system_prompt"] = system_prompt
+    config["online_tts_voice"] = tts_voice
+    config["online_ai_allow_voice_persona_switch"] = allow_voice_switch
+
+    return {
+        "ok": True,
+        "message": (
+            f"Online AI mode updated: ai_mode={requested_ai_mode}, enabled={online_enabled}, "
+            f"requested={requested_mode}, effective={requested_mode}, voice={tts_voice}."
+        ),
+        "requested_ai_mode": requested_ai_mode,
+        "effective_ai_mode": requested_ai_mode,
+        "requested_mode": requested_mode,
+        "effective_mode": requested_mode,
     }
 
 
@@ -4989,8 +5155,15 @@ class OnlineAIOrchestrator:
 
     def _build_system_prompt(self) -> str:
         operator_prompt = (
-            str(self.config.get("online_ai_system_prompt", "You are Reachy's online conversational AI.")).strip()
-            or "You are Reachy's online conversational AI.")
+            str(self.config.get("online_ai_system_prompt", DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)).strip()
+            or DEFAULT_ONLINE_AI_ASSISTANT_SYSTEM_PROMPT)
+        persona_mode = str(self.config.get("online_ai_persona_mode", DEFAULT_ONLINE_AI_PERSONA_MODE)).strip().lower()
+        persona_rules = (
+            "- In fortune_teller mode, do not proactively ask for robot movement commands, setup tasks, or Reachy operator instructions.\n"
+            "- In fortune_teller mode, only discuss robot control or movement when the operator explicitly asks for it.\n"
+            if persona_mode == "fortune_teller"
+            else ""
+        )
         return (
             f"{operator_prompt}\n"
             "You are producing one JSON object for a Reachy robot controller.\n"
@@ -5015,6 +5188,7 @@ class OnlineAIOrchestrator:
             "- Keep custom poses and sequences compact and purposeful instead of returning extremely long choreographies.\n"
             "- If unsure, use intent 'none' and ask a clarifying question in reply_text.\n"
             "- If direct joint commands are not allowed, do not emit move_joint.\n"
+            f"{persona_rules}"
             "- Keep reply_text concise and operator-facing.\n"
         )
 
@@ -5952,6 +6126,23 @@ class Handler(BaseHTTPRequestHandler):
                 "/online-reply-audio -> "
                 f"requested={result.get('requested_stream_partial_replies')} "
                 f"effective={result.get('effective_stream_partial_replies')}",
+            )
+            self._send(HTTPStatus.OK, result)
+            return
+
+        if path == "/online-ai-mode":
+            result = apply_online_ai_mode_payload(self.app.config, payload)
+            with self.app.state.lock:
+                self.app.state.ai_mode = str(self.app.config.get("ai_mode", "local")).strip().lower() or "local"
+                self.app.state.online_ai_enabled = parse_bool(self.app.config.get("online_ai_enabled"), False)
+                self.app.state.online_model = (
+                    str(self.app.config.get("online_ai_model", self.app.state.online_model)).strip()
+                    or self.app.state.online_model
+                )
+            self.app.state.log(
+                "info",
+                f"/online-ai-mode -> ai_mode={result.get('effective_ai_mode')} "
+                f"requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
             )
             self._send(HTTPStatus.OK, result)
             return
