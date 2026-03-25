@@ -2386,6 +2386,69 @@ class TTS:
         normalized = int(round((int(tts_rate) - 175) / 12.5))
         return max(-10, min(10, normalized))
 
+    @staticmethod
+    def _iter_windows_powershell_paths() -> list[str]:
+        candidates: list[str] = []
+
+        def add_candidate(value: str) -> None:
+            path = str(value or "").strip()
+            if not path:
+                return
+            normalized = os.path.normpath(path)
+            if normalized not in candidates:
+                candidates.append(normalized)
+
+        for command_name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+            resolved = shutil.which(command_name)
+            if resolved:
+                add_candidate(resolved)
+
+        windows_root = (
+            os.environ.get("SystemRoot")
+            or os.environ.get("WINDIR")
+            or r"C:\Windows"
+        )
+        add_candidate(os.path.join(
+            windows_root,
+            "System32",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        ))
+        add_candidate(os.path.join(
+            windows_root,
+            "Sysnative",
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        ))
+
+        for env_name in ("ProgramW6432", "ProgramFiles"):
+            program_files = str(os.environ.get(env_name, "")).strip()
+            if not program_files:
+                continue
+            add_candidate(os.path.join(program_files, "PowerShell", "7", "pwsh.exe"))
+
+        return [candidate for candidate in candidates if os.path.isfile(candidate)]
+
+    @classmethod
+    def _build_windows_powershell_command(cls, script: str) -> list[str]:
+        if not str(script or "").strip():
+            return []
+
+        encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        powershell_paths = cls._iter_windows_powershell_paths()
+        executable = powershell_paths[0] if powershell_paths else "powershell"
+        return [
+            executable,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            encoded_script,
+        ]
+
     def _build_windows_sapi_script(self, text: str) -> str:
         rate = self._rate_to_windows_sapi_scale(int(self.config.get("tts_rate", 175)))
         voice_name = str(self.config.get("tts_voice_name", "")).strip()
@@ -2430,16 +2493,9 @@ class TTS:
     def _speak_with_subprocess(self, text: str) -> tuple[bool, str]:
         timeout_seconds = self._estimate_timeout_seconds(text)
         script = self._build_windows_sapi_script(text)
-        encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        cmd = [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            encoded_script,
-        ]
+        cmd = self._build_windows_powershell_command(script)
+        if not cmd:
+            return False, "Windows PowerShell is not available for local TTS playback."
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
@@ -2599,16 +2655,7 @@ class TTS:
     def _build_audio_player_command(self, audio_path: str) -> list[str]:
         if sys.platform.startswith("win"):
             script = self._build_windows_wav_player_script(audio_path)
-            encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-            return [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-EncodedCommand",
-                encoded_script,
-            ]
+            return self._build_windows_powershell_command(script)
         if shutil.which("ffplay"):
             return ["ffplay", "-nodisp", "-autoexit", "-loglevel", "error", audio_path]
         if shutil.which("afplay"):
