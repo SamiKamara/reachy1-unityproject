@@ -24,7 +24,15 @@
         "Left Hand Wave",
         "Right Hand Up",
         "Right Hand Wave",
-        "Hands Up"
+        "Hands Up",
+        "Curious1",
+        "Curious2",
+        "Curious3",
+        "Curious4",
+        "Bored1",
+        "Bored2",
+        "Bored3",
+        "Bored4"
     ],
     "known_joints": [
         "r_shoulder_pitch",
@@ -173,12 +181,12 @@
     "reject_out_of_range_joint_commands": true,
     "joint_min_degrees": -180.0,
     "joint_max_degrees": 180.0,
-    "online_ai_enabled": false,
+    "online_ai_enabled": true,
     "online_ai_model": "gpt-5.4",
     "online_ai_transcription_model": "gpt-4o-mini-transcribe",
     "online_tts_model": "gpt-4o-mini-tts",
     "online_tts_voice": "alloy",
-    "online_tts_stream_partial_replies": true,
+    "online_tts_stream_partial_replies": false,
     "online_ai_api_key_env_var": "OPENAI_API_KEY",
     "online_ai_api_key_file_path": "",
     "online_ai_base_url": "https://api.openai.com/v1",
@@ -191,7 +199,7 @@
     "online_ai_max_output_tokens": 480,
     "online_ai_local_user_memory_messages": 3,
     "online_ai_local_assistant_memory_messages": 3,
-    "online_ai_persona_mode": "assistant",
+    "online_ai_persona_mode": "emotion_reactions",
     "online_ai_assistant_system_prompt": "You are Reachy. Identify yourself as Reachy, explain who you are when asked, tell users about yourself and the robot, and assist with whatever they want help with using clear practical answers.",
     "online_ai_assistant_tts_voice": "alloy",
     "online_ai_shared_mode_instructions": "",
@@ -222,6 +230,20 @@
             "enabled": true
         },
         {
+            "emotion_key": "curious",
+            "display_name": "Curious",
+            "acted_sequence_name": "curious",
+            "description": "Use when the transcript feels inquisitive, puzzled, fascinated, exploratory, surprised, or eager to understand more.",
+            "enabled": true
+        },
+        {
+            "emotion_key": "bored",
+            "display_name": "Bored",
+            "acted_sequence_name": "bored",
+            "description": "Use when the transcript feels flat, uninterested, unimpressed, tired, impatient, or under-stimulated.",
+            "enabled": true
+        },
+        {
             "emotion_key": "sad",
             "display_name": "Sad",
             "acted_sequence_name": "sad",
@@ -229,7 +251,7 @@
             "enabled": true
         }
     ],
-    "online_ai_system_prompt": "You are Reachy. Identify yourself as Reachy, explain who you are when asked, tell users about yourself and the robot, and assist with whatever they want help with using clear practical answers.",
+    "online_ai_system_prompt": "You are Reachy in silent emotion-reaction mode. Do not answer with spoken language. Choose the single best configured emotion reaction for what the operator said and let the robot react through movement only.\nReaction guidance:\n- Stay silent. Do not generate spoken reply text.\n- Choose exactly one configured emotion reaction for the transcript.\n- React to the emotional tone of the user's words, not to whether Reachy can solve the problem.\n- When the feeling is mixed, choose the closest available reaction rather than inventing a new one.\n- Prefer happy for upbeat, relieved, grateful, proud, affectionate, amused, excited, or celebratory content.\n- Prefer curious for inquisitive, puzzled, exploratory, fascinated, surprised, or discovery-oriented content.\n- Prefer bored for flat, uninterested, unimpressed, tired, impatient, or under-stimulated content.\n- Prefer sad for disappointed, hurt, lonely, grieving, ashamed, apologetic, worried, or emotionally heavy content.\n- Keep the response movement-only with no speech.\nConfigured emotion reactions:\n- Key: happy | Label: Happy | Sequence: happy | Use when: Use when the transcript feels upbeat, relieved, grateful, proud, excited, affectionate, amused, or celebratory.\n- Key: curious | Label: Curious | Sequence: curious | Use when: Use when the transcript feels inquisitive, puzzled, fascinated, exploratory, surprised, or eager to understand more.\n- Key: bored | Label: Bored | Sequence: bored | Use when: Use when the transcript feels flat, uninterested, unimpressed, tired, impatient, or under-stimulated.\n- Key: sad | Label: Sad | Sequence: sad | Use when: Use when the transcript feels disappointed, hurt, lonely, worried, grieving, apologetic, exhausted, or emotionally heavy.",
     "online_ai_allow_direct_joint_commands": true,
     "online_ai_require_motion_confirmation": false,
     "tts_barge_in_enabled": true,

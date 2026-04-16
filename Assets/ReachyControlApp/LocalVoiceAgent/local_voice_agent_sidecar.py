@@ -122,6 +122,14 @@ DEFAULT_POSES = [
     "Right Hand Up",
     "Right Hand Wave",
     "Hands Up",
+    "Curious1",
+    "Curious2",
+    "Curious3",
+    "Curious4",
+    "Bored1",
+    "Bored2",
+    "Bored3",
+    "Bored4",
 ]
 
 DEFAULT_JOINTS = [
@@ -231,6 +239,24 @@ DEFAULT_ONLINE_AI_EMOTION_REACTIONS = (
         "acted_sequence_name": "happy",
         "description": (
             "Use when the transcript feels upbeat, relieved, grateful, proud, excited, affectionate, amused, or celebratory."
+        ),
+        "enabled": True,
+    },
+    {
+        "emotion_key": "curious",
+        "display_name": "Curious",
+        "acted_sequence_name": "curious",
+        "description": (
+            "Use when the transcript feels inquisitive, puzzled, fascinated, exploratory, surprised, or eager to understand more."
+        ),
+        "enabled": True,
+    },
+    {
+        "emotion_key": "bored",
+        "display_name": "Bored",
+        "acted_sequence_name": "bored",
+        "description": (
+            "Use when the transcript feels flat, uninterested, unimpressed, tired, impatient, or under-stimulated."
         ),
         "enabled": True,
     },
@@ -5763,6 +5789,7 @@ class OnlineAIOrchestrator:
             "reaction mode",
             "silent emotion mode",
             "happy sad mode",
+            "happy sad bored curious mode",
         )
         if (
             int(bool(targets_assistant))
@@ -5786,6 +5813,7 @@ class OnlineAIOrchestrator:
             "reaction mode",
             "silent emotion mode",
             "happy sad mode",
+            "happy sad bored curious mode",
         )
         explicit_switch_verb = cls._contains_any_normalized_phrase(
             normalized_transcript,
@@ -7133,6 +7161,8 @@ class OnlineAIOrchestrator:
                 "- Do not invent new emotion keys.\n"
                 "- Base the choice on the emotional tone of user_transcript.\n"
                 "- Favor happy for upbeat, relieved, grateful, proud, excited, affectionate, amused, or celebratory content.\n"
+                "- Favor curious for inquisitive, puzzled, exploratory, fascinated, surprised, or discovery-oriented content.\n"
+                "- Favor bored for flat, uninterested, unimpressed, tired, impatient, or under-stimulated content.\n"
                 "- Favor sad for disappointed, hurt, lonely, worried, grieving, apologetic, exhausted, or emotionally heavy content.\n"
                 "- When the feeling is mixed or subtle, choose the closest configured emotion instead of leaving it blank.\n"
                 "- Keep emotion_reaction.reason short.\n"
