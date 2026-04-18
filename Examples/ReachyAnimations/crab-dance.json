@@ -1,0 +1,3468 @@
+﻿{
+    "schema_version": 1,
+    "animation_name": "Crab Dance",
+    "name": "Crab Dance",
+    "exported_utc": "2026-04-18T20:45:43.3691358Z",
+    "keyframes": [
+        {
+            "label": "Keyframe 1",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 2",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.344826698303223
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 10.942622184753418
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 10.942622184753418
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 3",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.344826698303223
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": -11.305822372436524
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 12.687478065490723
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -12.687478065490723
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -28.675804138183595
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 4",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -56.09101104736328
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 18.2589111328125
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 5",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -75.55115509033203
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -53.03843688964844
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 6",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -75.55115509033203
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 10.942622184753418
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -53.03843688964844
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 10.942622184753418
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 7",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -36.630863189697269
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.3499999940395355
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -36.630863189697269
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": -0.3499999940395355
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -31.066986083984376
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 8",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 49.2794075012207
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -21.774621963500978
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 23.60090446472168
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 23.60090446472168
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 9",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 49.2794075012207
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -21.774621963500978
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 10",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 11",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 16.670175552368165
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 16.670175552368165
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 12",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 13",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -22.130767822265626
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -50.36705780029297
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 14",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -22.130767822265626
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -37.01205825805664
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 15",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 16",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 17",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 18",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.20915412902832
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 19",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": -13.702658653259278
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        }
+    ],
+    "motion_steps": [
+        {
+            "label": "Keyframe 1",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 2",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.344826698303223
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 10.942622184753418
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 10.942622184753418
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 3",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.344826698303223
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": -11.305822372436524
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 12.687478065490723
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -12.687478065490723
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -28.675804138183595
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 4",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -56.09101104736328
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 18.2589111328125
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -73.26172637939453
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 5",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -75.55115509033203
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -19.747032165527345
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -53.03843688964844
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -19.747032165527345
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 6",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -75.55115509033203
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 10.942622184753418
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -53.03843688964844
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 10.942622184753418
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 7",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 11.772187232971192
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 54.69190979003906
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -24.16619300842285
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -36.630863189697269
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 16.6478271484375
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.3499999940395355
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -36.630863189697269
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -16.6478271484375
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": -0.3499999940395355
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -79.14075469970703
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -31.066986083984376
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 8",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 49.2794075012207
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -21.774621963500978
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 23.60090446472168
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 23.60090446472168
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 9",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 49.2794075012207
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": -21.774621963500978
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 10",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -17.792797088623048
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": -15.686827659606934
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -17.792797088623048
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 11",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": 16.670175552368165
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": 16.670175552368165
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 12",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -66.01148986816406
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 13",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -22.130767822265626
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 15.000297546386719
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -50.36705780029297
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 14",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -22.130767822265626
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -37.01205825805664
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 15",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 16",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 10.607170104980469
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 17",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 18",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": 10.20915412902832
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        },
+        {
+            "label": "Keyframe 19",
+            "hold_seconds": 0.3199999928474426,
+            "speed_scale": 1.0,
+            "joint_targets": [
+                {
+                    "joint_name": "neck_roll",
+                    "joint_degrees": -13.702658653259278
+                },
+                {
+                    "joint_name": "neck_pitch",
+                    "joint_degrees": 2.5941689014434816
+                },
+                {
+                    "joint_name": "neck_yaw",
+                    "joint_degrees": 7.68795919418335
+                },
+                {
+                    "joint_name": "l_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "r_antenna",
+                    "joint_degrees": 21.470144271850587
+                },
+                {
+                    "joint_name": "l_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "l_shoulder_roll",
+                    "joint_degrees": 26.009342193603517
+                },
+                {
+                    "joint_name": "l_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "l_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "l_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "l_wrist_roll",
+                    "joint_degrees": 16.407573699951173
+                },
+                {
+                    "joint_name": "l_gripper",
+                    "joint_degrees": -20.0
+                },
+                {
+                    "joint_name": "r_shoulder_pitch",
+                    "joint_degrees": -61.43263244628906
+                },
+                {
+                    "joint_name": "r_shoulder_roll",
+                    "joint_degrees": -15.000297546386719
+                },
+                {
+                    "joint_name": "r_arm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_elbow_pitch",
+                    "joint_degrees": -71.30870819091797
+                },
+                {
+                    "joint_name": "r_forearm_yaw",
+                    "joint_degrees": 0.0
+                },
+                {
+                    "joint_name": "r_wrist_pitch",
+                    "joint_degrees": 0.8479372262954712
+                },
+                {
+                    "joint_name": "r_wrist_roll",
+                    "joint_degrees": -16.407573699951173
+                },
+                {
+                    "joint_name": "r_gripper",
+                    "joint_degrees": -38.294490814208987
+                }
+            ]
+        }
+    ]
+}

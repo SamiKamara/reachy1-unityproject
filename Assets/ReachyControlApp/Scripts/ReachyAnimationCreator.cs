@@ -21,16 +21,22 @@ namespace Reachy.ControlApp
 
         private const string SourceRootObjectName = "Reachy";
         private const float JointDragSensitivity = 0.35f;
+        private static readonly Color SelectionHighlightColor = new Color(1f, 0.94f, 0.35f, 0.85f);
+        private static readonly Color SelectionEmissionColor = new Color(0.18f, 0.12f, 0.01f, 1f);
 
         private readonly Dictionary<string, JointBinding> _jointBindings =
             new Dictionary<string, JointBinding>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Collider, string> _colliderToJoint =
             new Dictionary<Collider, string>();
+        private readonly Dictionary<string, List<Renderer>> _jointToRenderers =
+            new Dictionary<string, List<Renderer>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<Transform, string> _transformToJoint =
             new Dictionary<Transform, string>();
         private readonly Dictionary<string, float> _currentPose =
             new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<Renderer> _highlightedRenderers = new List<Renderer>();
         private readonly List<string> _jointOrder = new List<string>();
+        private readonly MaterialPropertyBlock _highlightPropertyBlock = new MaterialPropertyBlock();
 
         private GameObject _sourceRoot;
         private global::Reachy.ReachyController _sourceController;
@@ -40,6 +46,7 @@ namespace Reachy.ControlApp
         private bool _draggingJoint;
         private Vector2 _dragStartMouseGuiPosition;
         private float _dragStartDegrees;
+        private bool _selectionHighlightVisible;
 
         public bool IsReady => _sourceRoot != null;
         public Texture PreviewTexture => null;
@@ -50,13 +57,17 @@ namespace Reachy.ControlApp
 
         public void Dispose()
         {
+            _selectionHighlightVisible = false;
+            ClearJointSelectionHighlight();
             _sourceRoot = null;
             _sourceController = null;
             _headTransform = null;
             _jointBindings.Clear();
             _colliderToJoint.Clear();
+            _jointToRenderers.Clear();
             _transformToJoint.Clear();
             _currentPose.Clear();
+            _highlightedRenderers.Clear();
             _jointOrder.Clear();
             SelectedJointName = string.Empty;
             Status = "Animation creator helper disposed.";
@@ -85,7 +96,9 @@ namespace Reachy.ControlApp
 
             BuildBindings();
             BuildColliderMappings();
+            BuildRendererMappings();
             InitializePoseFromScene();
+            ApplyJointSelectionHighlight();
 
             message = "Animation creator is using the original scene Reachy.";
             Status = "Using the original scene Reachy. Create a pose, then click and drag joints in the center scene.";
@@ -97,7 +110,18 @@ namespace Reachy.ControlApp
             _screenRect = screenRect;
         }
 
-        public void UpdateInteraction(bool allowPoseEditing)
+        public void SetSelectionHighlightVisible(bool visible)
+        {
+            if (_selectionHighlightVisible == visible)
+            {
+                return;
+            }
+
+            _selectionHighlightVisible = visible;
+            ApplyJointSelectionHighlight();
+        }
+
+        public void UpdateInteraction(bool allowPoseEditing, bool mirrorLimbEdits)
         {
             if (!IsReady || _screenRect.width <= 1f || _screenRect.height <= 1f)
             {
@@ -111,7 +135,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            HandleJointDragging(allowPoseEditing, pointerInsideActiveArea, mouseGuiPosition);
+            HandleJointDragging(allowPoseEditing, mirrorLimbEdits, pointerInsideActiveArea, mouseGuiPosition);
         }
 
         public Dictionary<string, float> CapturePose()
@@ -178,6 +202,17 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        public bool SetJointTargetFromEditor(string jointName, float degrees, bool mirrorLimbEdits)
+        {
+            bool appliedAny = SetJointTarget(jointName, degrees);
+            if (mirrorLimbEdits)
+            {
+                appliedAny |= ApplyMirroredJointTarget(jointName, degrees);
+            }
+
+            return appliedAny;
+        }
+
         public bool TryGetJointTarget(string jointName, out float degrees)
         {
             RefreshCurrentPoseFromScene();
@@ -208,12 +243,14 @@ namespace Reachy.ControlApp
             if (string.IsNullOrWhiteSpace(jointName))
             {
                 SelectedJointName = string.Empty;
+                ApplyJointSelectionHighlight();
                 return false;
             }
 
             if (_jointBindings.ContainsKey(jointName) || IsNeckJoint(jointName))
             {
                 SelectedJointName = jointName;
+                ApplyJointSelectionHighlight();
                 Status = $"Selected {GetDisplayName(jointName)} on the scene Reachy.";
                 return true;
             }
@@ -330,6 +367,62 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void BuildRendererMappings()
+        {
+            _jointToRenderers.Clear();
+            if (_sourceRoot == null)
+            {
+                return;
+            }
+
+            Renderer[] renderers = _sourceRoot.GetComponentsInChildren<Renderer>(true);
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                Renderer renderer = renderers[i];
+                if (renderer == null)
+                {
+                    continue;
+                }
+
+                Transform rendererTransform = renderer.transform;
+                if (_headTransform != null &&
+                    (rendererTransform == _headTransform || rendererTransform.IsChildOf(_headTransform)))
+                {
+                    AddRendererMapping("neck_roll", renderer);
+                    AddRendererMapping("neck_pitch", renderer);
+                    AddRendererMapping("neck_yaw", renderer);
+                    continue;
+                }
+
+                string jointName = ResolveJointNameForTransform(rendererTransform);
+                if (string.IsNullOrWhiteSpace(jointName))
+                {
+                    continue;
+                }
+
+                AddRendererMapping(jointName, renderer);
+            }
+        }
+
+        private void AddRendererMapping(string jointName, Renderer renderer)
+        {
+            if (string.IsNullOrWhiteSpace(jointName) || renderer == null)
+            {
+                return;
+            }
+
+            if (!_jointToRenderers.TryGetValue(jointName, out List<Renderer> renderers))
+            {
+                renderers = new List<Renderer>();
+                _jointToRenderers[jointName] = renderers;
+            }
+
+            if (!renderers.Contains(renderer))
+            {
+                renderers.Add(renderer);
+            }
+        }
+
         private void InitializePoseFromScene()
         {
             RefreshCurrentPoseFromScene();
@@ -376,7 +469,11 @@ namespace Reachy.ControlApp
             _currentPose["neck_yaw"] = _neckDegrees.z;
         }
 
-        private void HandleJointDragging(bool allowPoseEditing, bool pointerInsideActiveArea, Vector2 mouseGuiPosition)
+        private void HandleJointDragging(
+            bool allowPoseEditing,
+            bool mirrorLimbEdits,
+            bool pointerInsideActiveArea,
+            Vector2 mouseGuiPosition)
         {
             if (!_draggingJoint && Input.GetMouseButtonDown(0) && pointerInsideActiveArea)
             {
@@ -393,6 +490,7 @@ namespace Reachy.ControlApp
 
                 RefreshCurrentPoseFromScene();
                 SelectedJointName = jointName;
+                ApplyJointSelectionHighlight();
                 _draggingJoint = true;
                 _dragStartMouseGuiPosition = mouseGuiPosition;
                 _dragStartDegrees = _currentPose.TryGetValue(jointName, out float currentDegrees) ? currentDegrees : 0f;
@@ -403,7 +501,7 @@ namespace Reachy.ControlApp
             {
                 Vector2 delta = mouseGuiPosition - _dragStartMouseGuiPosition;
                 float targetDegrees = _dragStartDegrees + ComputeDragDegrees(SelectedJointName, delta);
-                SetJointTarget(SelectedJointName, targetDegrees);
+                SetJointTargetFromEditor(SelectedJointName, targetDegrees, mirrorLimbEdits);
             }
 
             if (_draggingJoint && Input.GetMouseButtonUp(0))
@@ -486,6 +584,99 @@ namespace Reachy.ControlApp
             }
 
             return string.Empty;
+        }
+
+        private bool ApplyMirroredJointTarget(string jointName, float sourceDegrees)
+        {
+            if (!TryGetMirroredJointName(jointName, out string mirroredJointName) ||
+                !_jointBindings.ContainsKey(mirroredJointName))
+            {
+                return false;
+            }
+
+            return SetJointTarget(mirroredJointName, GetMirroredJointDegrees(jointName, sourceDegrees));
+        }
+
+        public static bool TryGetMirroredJointName(string jointName, out string mirroredJointName)
+        {
+            string trimmed = (jointName ?? string.Empty).Trim();
+            if (trimmed.StartsWith("l_", StringComparison.OrdinalIgnoreCase))
+            {
+                mirroredJointName = "r_" + trimmed.Substring(2);
+                return true;
+            }
+
+            if (trimmed.StartsWith("r_", StringComparison.OrdinalIgnoreCase))
+            {
+                mirroredJointName = "l_" + trimmed.Substring(2);
+                return true;
+            }
+
+            mirroredJointName = string.Empty;
+            return false;
+        }
+
+        private static float GetMirroredJointDegrees(string jointName, float sourceDegrees)
+        {
+            string trimmed = (jointName ?? string.Empty).Trim();
+            if (trimmed.IndexOf("roll", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                trimmed.IndexOf("yaw", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return -sourceDegrees;
+            }
+
+            return sourceDegrees;
+        }
+
+        private void ApplyJointSelectionHighlight()
+        {
+            ClearJointSelectionHighlight();
+            if (!_selectionHighlightVisible || string.IsNullOrWhiteSpace(SelectedJointName))
+            {
+                return;
+            }
+
+            if (!_jointToRenderers.TryGetValue(SelectedJointName, out List<Renderer> renderers) ||
+                renderers == null)
+            {
+                return;
+            }
+
+            _highlightPropertyBlock.Clear();
+            _highlightPropertyBlock.SetColor("_BaseColor", SelectionHighlightColor);
+            _highlightPropertyBlock.SetColor("_Color", SelectionHighlightColor);
+            _highlightPropertyBlock.SetColor("_EmissionColor", SelectionEmissionColor);
+            for (int i = 0; i < renderers.Count; i++)
+            {
+                Renderer renderer = renderers[i];
+                if (renderer == null)
+                {
+                    continue;
+                }
+
+                renderer.SetPropertyBlock(_highlightPropertyBlock);
+                _highlightedRenderers.Add(renderer);
+            }
+        }
+
+        private void ClearJointSelectionHighlight()
+        {
+            if (_highlightedRenderers.Count <= 0)
+            {
+                return;
+            }
+
+            _highlightPropertyBlock.Clear();
+            for (int i = 0; i < _highlightedRenderers.Count; i++)
+            {
+                Renderer renderer = _highlightedRenderers[i];
+                if (renderer != null)
+                {
+                    renderer.SetPropertyBlock(_highlightPropertyBlock);
+                }
+            }
+
+            _highlightedRenderers.Clear();
         }
 
         private bool TrySetNeckJointTarget(string jointName, float degrees)

@@ -76,3 +76,11 @@ crashlytics-build.properties
 
 # Keep standalone builds out of the source repository.
 /artifacts/
+
+# Ignore Python Virtual Environments and Caches
+.venv/
+__pycache__/
+win32/
+
+# Local one-off build diagnostics
+build_check.log

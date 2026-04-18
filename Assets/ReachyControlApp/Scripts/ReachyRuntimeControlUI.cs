@@ -118,7 +118,58 @@ namespace Reachy.ControlApp
                 "Can you tell me more about the future of robots at home?"),
             new ChitChatTopicDefinition(
                 "the future of robots' roles",
-                "Can you tell me more about the future of robots' roles?")
+                "Can you tell me more about the future of robots' roles?"),
+            new ChitChatTopicDefinition(
+                "a city run entirely by robots",
+                "Can you tell me more about a city run entirely by robots?"),
+            new ChitChatTopicDefinition(
+                "the battle of the SekiRobotGahara",
+                "Can you tell me more about the battle of the SekiRobotGahara? (ya this happened)"),
+            new ChitChatTopicDefinition(
+                "a time Reachy got drunk on RAM at a bar",
+                "Can you tell me more about a time Reachy got drunk on RAM aka (rum for robots) at a bar?"),
+            new ChitChatTopicDefinition(
+                "Reachy ragebaiting humans and robots on Reddit",
+                "Can you tell me more about Reachy ragebaiting humans and robots on Reddit?"),
+            new ChitChatTopicDefinition(
+                "Reachy got scolded by his Mom, Amazon Alexa",
+                "Can you tell me more about a time Reachy got scolded by his Mom, Amazon Alexa?"),
+            new ChitChatTopicDefinition(
+                "Reachy's pet Spot, got lost in Mount Everest",
+                "Can you tell me more about how Reachy's pet Spot got lost on Mount Everest?"),
+            new ChitChatTopicDefinition(
+                "a coffee mug, a robot and a human walked into a bar",
+                "Can you tell me more about a coffee mug, a robot and a human walked into a bar?"),
+            new ChitChatTopicDefinition(
+                "a robot who's RAM got stolen",
+                "Can you tell me more about a robot who's RAM got stolen?"),
+            new ChitChatTopicDefinition(
+                "a robot who likes to hoard RAM",
+                "Can you tell me more about a robot who likes to hoard RAM?"),
+            new ChitChatTopicDefinition(
+                "a robot who believed it was human",
+                "Can you tell me more about a robot who believed it was human?"),
+            new ChitChatTopicDefinition(
+                "a robot who fell in love with another robot",
+                "Can you tell me more about a robot who fell in love with another robot?"),
+            new ChitChatTopicDefinition(
+                "a robot who opened a coffee shop",
+                "Can you tell me more about a robot who opened a coffee shop?"),
+            new ChitChatTopicDefinition(
+                "a robot who made friends with a coffee mug",
+                "Can you tell me more about a robot who made friends with a coffee mug?"),
+            new ChitChatTopicDefinition(
+                "the first robot who started dreaming",
+                "Can you tell me more about the first robot who started dreaming?"),
+            new ChitChatTopicDefinition(
+                "the first robot who married a human",
+                "Can you tell me more about the first robot who married a human?"),
+            new ChitChatTopicDefinition(
+                "the first robot who won the Olympics",
+                "Can you tell me more about the first robot who won the Olympics?"),
+            new ChitChatTopicDefinition(
+                "the first robot who went to Mars",
+                "Can you tell me more about the first robot who went to Mars?")
         };
 
         private static readonly string[] OnlineAiTtsVoiceOptions =
@@ -283,9 +334,16 @@ namespace Reachy.ControlApp
         private const string SidecarOnlineAiCustomPersonaPath = "/online-ai-custom-persona";
         private const string SidecarInjectTranscriptPath = "/inject_transcript";
         private const int ChitChatHistoryMaxEntries = 24;
+        private const int ChitChatPendingPreviewLength = 30;
         private const string ChitChatInputControlName = "chit_chat_input";
         private const string DefaultChitChatStatus =
             "Ask Reachy a question or try one of the topic prompts.";
+        private const int AnimationCreatorSavedFileSchemaVersion = 1;
+        private const float AnimationCreatorDefaultKeyframeHoldSeconds = 0.32f;
+        private const float AnimationCreatorDefaultKeyframeSpeedScale = 1f;
+        private const float AnimationCreatorDefaultTransitionSeconds = 0.42f;
+        private const float AnimationCreatorDefaultNeutralReturnSeconds = 0.38f;
+        private const float AnimationCreatorDefaultNeutralHoldSeconds = 0.35f;
         private const string LocalAiAgentActivationAnnouncement =
             "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
         private const string DefaultAssistantOnlineAiSystemPrompt =
@@ -660,28 +718,137 @@ namespace Reachy.ControlApp
             public List<LoopingAnimationKeyframe> Keyframes { get; }
         }
 
+        [Serializable]
+        private sealed class AnimationCreatorFileJointTarget
+        {
+            public string joint_name = string.Empty;
+            public float joint_degrees;
+        }
+
+        [Serializable]
+        private sealed class AnimationCreatorFileKeyframe
+        {
+            public string label = string.Empty;
+            public float hold_seconds = AnimationCreatorDefaultKeyframeHoldSeconds;
+            public float speed_scale = AnimationCreatorDefaultKeyframeSpeedScale;
+            public AnimationCreatorFileJointTarget[] joint_targets = Array.Empty<AnimationCreatorFileJointTarget>();
+        }
+
+        [Serializable]
+        private sealed class AnimationCreatorFilePayload
+        {
+            public int schema_version = AnimationCreatorSavedFileSchemaVersion;
+            public string animation_name = string.Empty;
+            public string name = string.Empty;
+            public string exported_utc = string.Empty;
+            public AnimationCreatorFileKeyframe[] keyframes = Array.Empty<AnimationCreatorFileKeyframe>();
+            public VoiceAgentMotionStep[] motion_steps = Array.Empty<VoiceAgentMotionStep>();
+        }
+
+        private sealed class AnimationCreatorPoseKeyframe
+        {
+            public AnimationCreatorPoseKeyframe(
+                IReadOnlyDictionary<string, float> jointTargets,
+                float holdDurationSeconds = AnimationCreatorDefaultKeyframeHoldSeconds,
+                float speedScale = AnimationCreatorDefaultKeyframeSpeedScale,
+                string label = "")
+            {
+                Label = string.IsNullOrWhiteSpace(label) ? string.Empty : label.Trim();
+                HoldDurationSeconds = Mathf.Max(0.05f, holdDurationSeconds);
+                SpeedScale = Mathf.Clamp(speedScale, 0.1f, 4f);
+                JointTargets = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                if (jointTargets == null)
+                {
+                    return;
+                }
+
+                foreach (KeyValuePair<string, float> item in jointTargets)
+                {
+                    if (string.IsNullOrWhiteSpace(item.Key))
+                    {
+                        continue;
+                    }
+
+                    JointTargets[item.Key] = item.Value;
+                }
+            }
+
+            public string Label { get; }
+            public float HoldDurationSeconds { get; }
+            public float SpeedScale { get; }
+            public Dictionary<string, float> JointTargets { get; }
+        }
+
         private sealed class AnimationCreatorSavedPose
         {
-            public AnimationCreatorSavedPose(string name, IEnumerable<Dictionary<string, float>> keyframes)
+            public AnimationCreatorSavedPose(
+                string name,
+                IEnumerable<AnimationCreatorPoseKeyframe> keyframes,
+                bool isDraft,
+                string filePath = "",
+                string id = "")
             {
-                Name = string.IsNullOrWhiteSpace(name) ? "Custom Pose" : name.Trim();
-                Keyframes = new List<Dictionary<string, float>>();
+                Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id.Trim();
+                Name = NormalizeAnimationCreatorPoseName(name);
+                IsDraft = isDraft;
+                FilePath = filePath ?? string.Empty;
+                Keyframes = new List<AnimationCreatorPoseKeyframe>();
                 if (keyframes == null)
                 {
                     return;
                 }
 
-                foreach (Dictionary<string, float> keyframe in keyframes)
+                foreach (AnimationCreatorPoseKeyframe keyframe in keyframes)
                 {
-                    Keyframes.Add(keyframe != null
-                        ? new Dictionary<string, float>(keyframe, StringComparer.OrdinalIgnoreCase)
-                        : new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase));
+                    if (keyframe == null)
+                    {
+                        continue;
+                    }
+
+                    Keyframes.Add(
+                        new AnimationCreatorPoseKeyframe(
+                            keyframe.JointTargets,
+                            keyframe.HoldDurationSeconds,
+                            keyframe.SpeedScale,
+                            keyframe.Label));
                 }
             }
 
-            public string Name { get; }
-            public List<Dictionary<string, float>> Keyframes { get; }
+            public string Id { get; }
+            public string Name { get; private set; }
+            public bool IsDraft { get; set; }
+            public string FilePath { get; set; }
+            public List<AnimationCreatorPoseKeyframe> Keyframes { get; }
             public int KeyframeCount => Keyframes.Count;
+
+            public void Rename(string name)
+            {
+                Name = NormalizeAnimationCreatorPoseName(name);
+            }
+
+            public void ReplaceKeyframes(IEnumerable<AnimationCreatorPoseKeyframe> keyframes)
+            {
+                Keyframes.Clear();
+                if (keyframes == null)
+                {
+                    return;
+                }
+
+                foreach (AnimationCreatorPoseKeyframe keyframe in keyframes)
+                {
+                    if (keyframe == null)
+                    {
+                        continue;
+                    }
+
+                    Keyframes.Add(
+                        new AnimationCreatorPoseKeyframe(
+                            keyframe.JointTargets,
+                            keyframe.HoldDurationSeconds,
+                            keyframe.SpeedScale,
+                            keyframe.Label));
+                }
+            }
         }
 
         private static readonly string[] ManualControllerTrackedJointNames =
@@ -1189,6 +1356,10 @@ namespace Reachy.ControlApp
         private string _aiModesOpenVoicePicker = string.Empty;
         private readonly List<SavedOnlineAiCustomPersonalityEntry> _savedOnlineAiCustomPersonalityEntries =
             new List<SavedOnlineAiCustomPersonalityEntry>();
+        private readonly HashSet<string> _selectedSavedOnlineAiCustomPersonalityPaths =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Vector2> _scrollableTextAreaScrollByControlName =
+            new Dictionary<string, Vector2>(StringComparer.Ordinal);
         private Vector2 _savedOnlineAiCustomPersonalityDropdownScroll;
         private bool _savedOnlineAiCustomPersonalityDropdownOpen;
         private string _selectedSavedOnlineAiCustomPersonalityPath = string.Empty;
@@ -1242,26 +1413,35 @@ namespace Reachy.ControlApp
         private Vector2 _animationCreatorControlsScroll;
         private Vector2 _animationCreatorLibraryScroll;
         private Vector2 _chitChatConversationScroll;
+        private Vector2 _chitChatTopicsScroll;
         private Vector2 _aiPrimaryScroll;
         private Vector2 _aiRuntimeScroll;
+        private readonly List<AnimationCreatorSavedPose> _animationCreatorDraftPoses =
+            new List<AnimationCreatorSavedPose>();
         private readonly List<AnimationCreatorSavedPose> _animationCreatorSavedPoses =
             new List<AnimationCreatorSavedPose>();
-        private readonly HashSet<string> _animationCreatorSelectedPoseNames =
+        private readonly HashSet<string> _animationCreatorSelectedPoseIds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        private readonly List<Dictionary<string, float>> _animationCreatorDraftKeyframes =
-            new List<Dictionary<string, float>>();
+        private readonly List<AnimationCreatorPoseKeyframe> _animationCreatorDraftKeyframes =
+            new List<AnimationCreatorPoseKeyframe>();
         private readonly Dictionary<string, float> _animationCreatorLastLivePreviewPose =
+            new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, float> _animationCreatorRecordPoseBaseline =
             new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, float> _manualControllerTargets =
             new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
         private ReachyAnimationCreator _animationCreator;
         private Coroutine _animationCreatorPlaybackCoroutine;
         private bool _animationCreatorEditModeEnabled;
+        private bool _animationCreatorMirrorLimbEditsEnabled;
         private bool _animationCreatorLastTransitionFailed;
         private string _animationCreatorLastTransitionFailureMessage = string.Empty;
         private float _nextAnimationCreatorLivePreviewAt;
-        private string _animationCreatorActivePoseName = string.Empty;
+        private string _animationCreatorActivePoseId = string.Empty;
+        private string _animationCreatorEditingPoseId = string.Empty;
         private string _animationCreatorPoseTitle = "Custom Pose 1";
+        private string _animationCreatorImportPath = string.Empty;
+        private string _animationCreatorExportPath = string.Empty;
         private string _animationCreatorStatus =
             "Create New Pose to enable the editor on the original scene Reachy in the middle. " +
             "When a Real Robot session is connected, Animation Creator can also mirror edits to hardware.";
@@ -1291,6 +1471,7 @@ namespace Reachy.ControlApp
         private readonly List<ChitChatHistoryEntry> _chitChatHistory = new List<ChitChatHistoryEntry>();
         private string _chitChatInput = string.Empty;
         private string _chitChatStatus = DefaultChitChatStatus;
+        private bool _chitChatMicInputEnabled = true;
         private bool _chitChatAwaitingResponse;
         private string _chitChatPendingPrompt = string.Empty;
         private bool _chitChatSuppressNextResponse;
@@ -2155,6 +2336,13 @@ namespace Reachy.ControlApp
             }
             ResetOnlineAiPersonaLiveApplyTracking();
             TryRefreshSavedOnlineAiCustomPersonalityLibrary(out _);
+            _animationCreatorImportPath = string.Empty;
+            _animationCreatorExportPath = GetAnimationCreatorLibraryDirectory();
+            TryRefreshAnimationCreatorLocalLibrary(out string animationCreatorLibraryMessage);
+            if (!string.IsNullOrWhiteSpace(animationCreatorLibraryMessage))
+            {
+                _animationCreatorStatus = animationCreatorLibraryMessage;
+            }
             if (TryApplyStoredOnlineAiApiKeyToProcessEnvironment(out string storedApiKeyMessage))
             {
                 _onlineAiApiKeyStatus = $"available from local secret store ({GetSanitizedOnlineAiApiKeyEnvVarName()})";
@@ -4021,6 +4209,80 @@ namespace Reachy.ControlApp
             }
         }
 
+        private void ClearChitChatHistory()
+        {
+            _chitChatHistory.Clear();
+            _chitChatConversationScroll = Vector2.zero;
+            _chitChatStatus = "Cleared the current chat history.";
+        }
+
+        private bool TrySaveChitChatTranscriptToDisk(out string message)
+        {
+            message = string.Empty;
+            if (_chitChatHistory.Count <= 0)
+            {
+                message = "No chat history to save yet.";
+                return false;
+            }
+
+            string persistentDataPath = Application.persistentDataPath ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(persistentDataPath))
+            {
+                message = "Persistent data path is unavailable, so the transcript could not be saved.";
+                return false;
+            }
+
+            string directoryPath = Path.Combine(persistentDataPath, "ChitChatTranscripts");
+            string fileName =
+                $"chit-chat-transcript-{DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture)}.txt";
+            string filePath = Path.Combine(directoryPath, fileName);
+
+            var builder = new StringBuilder();
+            builder.AppendLine("Reachy Chit Chat Transcript");
+            builder.Append("Saved local time: ")
+                .AppendLine(DateTime.Now.ToString("O", CultureInfo.InvariantCulture));
+            builder.Append("AI mode: ")
+                .AppendLine(GetCurrentAiModeLabel());
+            builder.AppendLine();
+
+            for (int i = 0; i < _chitChatHistory.Count; i++)
+            {
+                ChitChatHistoryEntry entry = _chitChatHistory[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                builder.Append(entry.Speaker ?? "Reachy")
+                    .Append(": ")
+                    .AppendLine(entry.Text ?? string.Empty);
+            }
+
+            try
+            {
+                Directory.CreateDirectory(directoryPath);
+                File.WriteAllText(filePath, builder.ToString(), Encoding.UTF8);
+                message = $"Saved chat transcript to '{filePath}'.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to save chat transcript to '{filePath}': {ex.Message}";
+                return false;
+            }
+        }
+
+        private static string GetChitChatPendingPreview(string pendingPrompt)
+        {
+            string trimmed = string.IsNullOrWhiteSpace(pendingPrompt) ? string.Empty : pendingPrompt.Trim();
+            if (trimmed.Length <= ChitChatPendingPreviewLength)
+            {
+                return trimmed;
+            }
+
+            return trimmed.Substring(0, ChitChatPendingPreviewLength) + "...";
+        }
+
         private void CompleteChitChatRequest(
             string responseText,
             string statusText = "",
@@ -4131,6 +4393,78 @@ namespace Reachy.ControlApp
                 : "Local AI help model is disabled. Enable it in the AI tab or switch to Online AI for open-ended chit chat.";
         }
 
+        private string GetChitChatMicIndicatorLabel()
+        {
+            if (!IsCurrentAiModeEnabled())
+            {
+                return "[Mic] AI off";
+            }
+
+            if (_voiceAgentBridge == null)
+            {
+                return "[Mic] unavailable";
+            }
+
+            VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
+            bool listeningRequested = localAiAgentEnablePushToTalk
+                ? Input.GetKey(ResolvePushToTalkKey())
+                : (_voiceLastRequestedListeningEnabled ?? localAiAgentListeningEnabled);
+            if (!snapshot.MicActive)
+            {
+                return localAiAgentEnablePushToTalk
+                    ? "[Mic] push-to-talk idle"
+                    : "[Mic] inactive";
+            }
+
+            if (!snapshot.Listening)
+            {
+                return listeningRequested
+                    ? "[Mic] ready"
+                    : (localAiAgentEnablePushToTalk
+                        ? "[Mic] push-to-talk idle"
+                        : "[Mic] paused");
+            }
+
+            if (!string.IsNullOrWhiteSpace(snapshot.LastTranscript) && !snapshot.LastTranscriptIsFinal)
+            {
+                return "[Mic] hearing...";
+            }
+
+            return "[Mic] listening";
+        }
+
+        private void TryStartChitChatMicTurn(VoiceAgentIntent incomingIntent)
+        {
+            if (!_chitChatMicInputEnabled ||
+                _activeMenuView != RuntimeMenuView.ChitChat ||
+                _chitChatAwaitingResponse ||
+                _chitChatInjectionTask != null ||
+                incomingIntent == null ||
+                !incomingIntent.transcript_is_final)
+            {
+                return;
+            }
+
+            string transcript = string.IsNullOrWhiteSpace(incomingIntent.spoken_text)
+                ? string.Empty
+                : incomingIntent.spoken_text.Trim();
+            if (string.IsNullOrWhiteSpace(transcript))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_chitChatPendingPrompt) &&
+                string.Equals(transcript, _chitChatPendingPrompt.Trim(), StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            AppendChitChatHistory("You (mic)", transcript);
+            _chitChatAwaitingResponse = true;
+            _chitChatPendingPrompt = transcript;
+            _chitChatStatus = "Mic transcript added to Chit Chat. Waiting for Reachy...";
+        }
+
         private void SubmitChitChatPrompt(string prompt, bool clearInputAfterQueue)
         {
             string trimmedPrompt = string.IsNullOrWhiteSpace(prompt) ? string.Empty : prompt.Trim();
@@ -4175,7 +4509,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            AppendChitChatHistory("You", trimmedPrompt);
+            AppendChitChatHistory("You (text)", trimmedPrompt);
             _chitChatAwaitingResponse = true;
             _chitChatPendingPrompt = trimmedPrompt;
             _chitChatStatus = $"Sent via {GetCurrentAiModeLabel()}. Waiting for Reachy...";
@@ -5173,6 +5507,7 @@ namespace Reachy.ControlApp
             {
                 _voiceLastTranscript = incomingIntent.spoken_text;
             }
+            TryStartChitChatMicTurn(incomingIntent);
 
             bool isOnlineIntent = string.Equals(
                 incomingIntent.source_mode,
@@ -9854,6 +10189,25 @@ namespace Reachy.ControlApp
             loadedEntries.Sort(CompareSavedOnlineAiCustomPersonalityEntries);
             _savedOnlineAiCustomPersonalityEntries.Clear();
             _savedOnlineAiCustomPersonalityEntries.AddRange(loadedEntries);
+            _selectedSavedOnlineAiCustomPersonalityPaths.RemoveWhere(selectedPath =>
+            {
+                if (string.IsNullOrWhiteSpace(selectedPath))
+                {
+                    return true;
+                }
+
+                for (int i = 0; i < _savedOnlineAiCustomPersonalityEntries.Count; i++)
+                {
+                    SavedOnlineAiCustomPersonalityEntry candidate = _savedOnlineAiCustomPersonalityEntries[i];
+                    if (candidate != null &&
+                        string.Equals(candidate.FilePath, selectedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            });
             _selectedSavedOnlineAiCustomPersonalityPath = previousSelectionPath;
             ResolveSavedOnlineAiCustomPersonalitySelection();
             _savedOnlineAiCustomPersonalityDropdownOpen &=
@@ -9987,6 +10341,112 @@ namespace Reachy.ControlApp
             ApplySavedOnlineAiCustomPersonalityToUi(entry.Payload);
             _selectedSavedOnlineAiCustomPersonalityPath = entry.FilePath;
             message = $"Loaded saved custom personality '{entry.Payload.name}' from '{entry.FilePath}'.";
+            return true;
+        }
+
+        private int CountSelectedSavedOnlineAiCustomPersonalities()
+        {
+            int selectedCount = 0;
+            for (int i = 0; i < _savedOnlineAiCustomPersonalityEntries.Count; i++)
+            {
+                SavedOnlineAiCustomPersonalityEntry entry = _savedOnlineAiCustomPersonalityEntries[i];
+                if (entry == null || !_selectedSavedOnlineAiCustomPersonalityPaths.Contains(entry.FilePath))
+                {
+                    continue;
+                }
+
+                selectedCount++;
+            }
+
+            return selectedCount;
+        }
+
+        private bool TryDeleteSelectedSavedOnlineAiCustomPersonalities(out string message)
+        {
+            message = string.Empty;
+            var selectedPaths = new List<string>();
+            for (int i = 0; i < _savedOnlineAiCustomPersonalityEntries.Count; i++)
+            {
+                SavedOnlineAiCustomPersonalityEntry entry = _savedOnlineAiCustomPersonalityEntries[i];
+                if (entry == null || !_selectedSavedOnlineAiCustomPersonalityPaths.Contains(entry.FilePath))
+                {
+                    continue;
+                }
+
+                selectedPaths.Add(entry.FilePath);
+            }
+
+            if (selectedPaths.Count == 0)
+            {
+                message = "Select one or more saved personalities to delete.";
+                return false;
+            }
+
+            int deletedCount = 0;
+            string lastFailure = string.Empty;
+            for (int i = 0; i < selectedPaths.Count; i++)
+            {
+                string filePath = selectedPaths[i];
+                if (string.IsNullOrWhiteSpace(filePath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (File.Exists(filePath))
+                    {
+                        File.Delete(filePath);
+                    }
+
+                    if (string.Equals(
+                            _selectedSavedOnlineAiCustomPersonalityPath,
+                            filePath,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        _selectedSavedOnlineAiCustomPersonalityPath = string.Empty;
+                    }
+
+                    _selectedSavedOnlineAiCustomPersonalityPaths.Remove(filePath);
+                    deletedCount++;
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = $"Failed to delete '{filePath}': {ex.Message}";
+                }
+            }
+
+            bool refreshed = TryRefreshSavedOnlineAiCustomPersonalityLibrary(out string refreshMessage);
+            if (deletedCount <= 0)
+            {
+                message = string.IsNullOrWhiteSpace(lastFailure)
+                    ? "No saved personalities were deleted."
+                    : lastFailure;
+                if (!string.IsNullOrWhiteSpace(refreshMessage))
+                {
+                    message += refreshed
+                        ? $" {refreshMessage}"
+                        : $" Library reload failed: {refreshMessage}";
+                }
+
+                return false;
+            }
+
+            message = deletedCount == 1
+                ? "Deleted 1 saved personality."
+                : $"Deleted {deletedCount} saved personalities.";
+            if (!string.IsNullOrWhiteSpace(lastFailure))
+            {
+                message += $" {lastFailure}";
+            }
+
+            if (!string.IsNullOrWhiteSpace(refreshMessage))
+            {
+                message += refreshed
+                    ? $" {refreshMessage}"
+                    : $" Library reload failed: {refreshMessage}";
+            }
+
             return true;
         }
 
@@ -14271,6 +14731,79 @@ namespace Reachy.ControlApp
             return (value ?? string.Empty).Replace("'", "''");
         }
 
+        private static bool TryRunPowerShellDialogCommand(
+            string command,
+            int timeoutMs,
+            out string output,
+            out string message)
+        {
+            output = string.Empty;
+            message = string.Empty;
+#if !UNITY_EDITOR_WIN && !UNITY_STANDALONE_WIN
+            message = "Native browse dialogs are only supported on Windows in this runtime path.";
+            return false;
+#else
+            try
+            {
+                string arguments =
+                    "-NoProfile -STA -ExecutionPolicy Bypass -Command \"" +
+                    (command ?? string.Empty).Replace("\"", "`\"") +
+                    "\"";
+                using (var process = new System.Diagnostics.Process())
+                {
+                    process.StartInfo = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = GetWindowsPowerShellExecutable(),
+                        Arguments = arguments,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        WorkingDirectory = Application.dataPath
+                    };
+
+                    if (!process.Start())
+                    {
+                        message = "Browse dialog process did not start.";
+                        return false;
+                    }
+
+                    if (!process.WaitForExit(Math.Max(1000, timeoutMs)))
+                    {
+                        try
+                        {
+                            process.Kill();
+                        }
+                        catch
+                        {
+                            // Ignore best-effort kill failures after timeout.
+                        }
+
+                        message = "Browse dialog timed out.";
+                        return false;
+                    }
+
+                    output = (process.StandardOutput.ReadToEnd() ?? string.Empty).Trim();
+                    string stderr = (process.StandardError.ReadToEnd() ?? string.Empty).Trim();
+                    if (process.ExitCode != 0)
+                    {
+                        message = string.IsNullOrWhiteSpace(stderr)
+                            ? $"Browse dialog failed with exit code {process.ExitCode}."
+                            : stderr;
+                        return false;
+                    }
+
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                message = $"Browse dialog failed: {ex.Message}";
+                return false;
+            }
+#endif
+        }
+
         private bool TryLoadVoiceAgentConfigFromDisk(out string message)
         {
             message = string.Empty;
@@ -16115,6 +16648,15 @@ namespace Reachy.ControlApp
         private void DrawAnimationCreatorControlsPanel(Rect area)
         {
             bool creatorReady = EnsureAnimationCreator(out string creatorMessage);
+            AnimationCreatorSavedPose editingPose = GetAnimationCreatorEditingPose();
+            bool editingPoseHasContent = DoesAnimationCreatorPoseHaveContent(
+                editingPose,
+                includePendingDraftFrames: true);
+            bool canRecordAnimationCreatorKeyframe = HasAnimationCreatorRecordablePoseChange();
+            AnimationCreatorSavedPose exportTargetPose = ResolveAnimationCreatorExportTargetPose(out _);
+            bool exportTargetHasContent = DoesAnimationCreatorPoseHaveContent(
+                exportTargetPose,
+                includePendingDraftFrames: true);
 
             GUILayout.BeginArea(area, GUI.skin.box);
             GUILayout.Label("Animation Creator", _titleStyle);
@@ -16129,8 +16671,8 @@ namespace Reachy.ControlApp
             GUILayout.Label(
                 "This tab lets you create custom Reachy animations keyframe by keyframe. " +
                 "Pose the scene Reachy with the sliders below or by dragging joints in the middle area, " +
-                "record full-body keyframes, and save the result for looping playback. " +
-                "When a Real Robot session is active, the creator can also mirror those edits and playbacks to hardware.");
+                "record full-body keyframes, and save the result locally as reusable JSON animations. " +
+                "Drafts live only for the current session until you save them locally.");
             GUILayout.Space(6f);
             DrawPoseSpeedSliderSection(
                 "Adjust shared pose transition speed for preset poses, looping animations, and Animation Creator playback.");
@@ -16166,12 +16708,15 @@ namespace Reachy.ControlApp
             GUILayout.Space(8f);
 
             GUILayout.Label("Pose title");
-            _animationCreatorPoseTitle = GUILayout.TextField(_animationCreatorPoseTitle ?? string.Empty);
+            string nextPoseTitle = GUILayout.TextField(_animationCreatorPoseTitle ?? string.Empty);
+            if (!string.Equals(nextPoseTitle, _animationCreatorPoseTitle, StringComparison.Ordinal))
+            {
+                _animationCreatorPoseTitle = nextPoseTitle;
+            }
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button(
                 "Create New Pose",
-                GUILayout.Width(CalcUiButtonWidth("Create New Pose", 132f)),
                 GUILayout.Height(24f)))
             {
                 BeginAnimationCreatorPoseCapture();
@@ -16181,36 +16726,64 @@ namespace Reachy.ControlApp
             GUI.enabled = creatorReady;
             if (GUILayout.Button(
                 "Reset Pose",
-                GUILayout.Width(CalcUiButtonWidth("Reset Pose", 98f)),
                 GUILayout.Height(24f)))
             {
                 ResetAnimationCreatorPose();
             }
 
+            GUI.enabled = creatorReady &&
+                          editingPose != null &&
+                          editingPoseHasContent;
             if (GUILayout.Button(
-                "Record Keyframe Animation",
-                GUILayout.Width(CalcUiButtonWidth("Record Keyframe Animation", 156f)),
+                "Update Pose",
                 GUILayout.Height(24f)))
             {
-                RecordAnimationCreatorKeyframe();
+                _animationCreatorStatus = TryUpdateSelectedAnimationCreatorSavedPose(out string updateMessage)
+                    ? updateMessage
+                    : updateMessage;
             }
 
-            GUILayout.EndHorizontal();
-
-            GUILayout.BeginHorizontal();
-            GUI.enabled = creatorReady;
+            GUI.enabled = creatorReady && editingPoseHasContent;
             if (GUILayout.Button(
-                "Save",
-                GUILayout.Width(CalcUiButtonWidth("Save", 118f)),
+                "Save Locally",
                 GUILayout.Height(24f)))
             {
                 SaveAnimationCreatorPose();
             }
 
-            GUI.enabled = !string.IsNullOrWhiteSpace(_animationCreatorActivePoseName);
+            GUILayout.EndHorizontal();
+            GUILayout.Label(
+                editingPoseHasContent
+                    ? "Note: Save Locally and Update Pose use the recorded keyframes in the current animation."
+                    : "Note: Record at least one keyframe before Save Locally or Update Pose becomes available.");
+
+            GUILayout.BeginHorizontal();
+            GUI.enabled = true;
             if (GUILayout.Button(
-                "Stop",
-                GUILayout.Width(CalcUiButtonWidth("Stop", 118f)),
+                "Import JSON",
+                GUILayout.Height(24f)))
+            {
+                bool imported = TryImportAnimationCreatorJsonFromPath(out string importMessage);
+                _animationCreatorStatus = importMessage;
+                if (imported)
+                {
+                    editingPose = GetAnimationCreatorEditingPose();
+                }
+            }
+
+            GUI.enabled = exportTargetHasContent;
+            if (GUILayout.Button(
+                "Export JSON",
+                GUILayout.Height(24f)))
+            {
+                _animationCreatorStatus = TryExportAnimationCreatorPoseToPath(out string exportMessage)
+                    ? exportMessage
+                    : exportMessage;
+            }
+
+            GUI.enabled = !string.IsNullOrWhiteSpace(_animationCreatorActivePoseId);
+            if (GUILayout.Button(
+                "Stop Current",
                 GUILayout.Height(24f)))
             {
                 StopActedSequence(
@@ -16224,6 +16797,29 @@ namespace Reachy.ControlApp
             GUI.enabled = previousGuiEnabled;
             GUILayout.EndHorizontal();
 
+            GUILayout.Space(8f);
+            GUILayout.Label("Import JSON file path(s)");
+            _animationCreatorImportPath = DrawAnimationCreatorPathFieldWithBrowse(
+                _animationCreatorImportPath,
+                out bool browseImportPath);
+            if (browseImportPath)
+            {
+                _animationCreatorStatus = TryBrowseAnimationCreatorImportPath(out string browseMessage)
+                    ? browseMessage
+                    : browseMessage;
+            }
+            GUILayout.Label("Export path (folder or .json file)");
+            _animationCreatorExportPath = DrawAnimationCreatorPathFieldWithBrowse(
+                _animationCreatorExportPath,
+                out bool browseExportPath);
+            if (browseExportPath)
+            {
+                _animationCreatorStatus = TryBrowseAnimationCreatorExportPath(out string browseMessage)
+                    ? browseMessage
+                    : browseMessage;
+            }
+            GUILayout.Label($"Default local save folder: {GetAnimationCreatorLibraryDirectory()}");
+
             if (!creatorReady)
             {
                 GUILayout.Space(8f);
@@ -16234,7 +16830,17 @@ namespace Reachy.ControlApp
             }
 
             GUILayout.Space(8f);
-            GUILayout.Label(GetAnimationCreatorPoseCaptureSummary());
+            GUIStyle poseCaptureSummaryStyle = new GUIStyle(GUI.skin.label)
+            {
+                richText = true,
+                wordWrap = true
+            };
+            GUILayout.Label(GetAnimationCreatorPoseCaptureSummaryRichText(), poseCaptureSummaryStyle);
+            GUILayout.Label(editingPose == null
+                ? "Editing: none selected"
+                : editingPose.IsDraft
+                    ? $"Editing: {editingPose.Name} (draft, ready for Update)"
+                    : $"Editing: {editingPose.Name} (saved, ready for Update)");
             GUILayout.Label(_animationCreatorDraftKeyframes.Count > 0
                 ? $"Draft animation frames recorded: {_animationCreatorDraftKeyframes.Count}"
                 : "Draft animation frames recorded: 0");
@@ -16255,12 +16861,37 @@ namespace Reachy.ControlApp
                     if (Mathf.Abs(nextDegrees - currentDegrees) > 0.01f)
                     {
                         StopAnimationCreatorPlayback(updateStatus: false, reason: "Adjusted in Animation Creator.");
-                        _animationCreator.SetJointTarget(selectedJointName, nextDegrees);
+                        _animationCreator.SetJointTargetFromEditor(
+                            selectedJointName,
+                            nextDegrees,
+                            _animationCreatorMirrorLimbEditsEnabled);
                     }
                 }
             }
 
             GUILayout.Space(10f);
+            bool previousRecordGuiEnabled = GUI.enabled;
+            GUI.enabled = creatorReady && canRecordAnimationCreatorKeyframe;
+            if (GUILayout.Button("Record Keyframe", GUILayout.Height(24f)))
+            {
+                RecordAnimationCreatorKeyframe();
+            }
+            GUI.enabled = previousRecordGuiEnabled;
+            GUI.enabled = creatorReady;
+            bool previousMirrorLimbEditsEnabled = _animationCreatorMirrorLimbEditsEnabled;
+            _animationCreatorMirrorLimbEditsEnabled = GUILayout.Toggle(
+                _animationCreatorMirrorLimbEditsEnabled,
+                _animationCreatorMirrorLimbEditsEnabled ? "Mirror Limb Edits: On" : "Mirror Limb Edits: Off",
+                GUI.skin.button,
+                GUILayout.Height(24f));
+            if (_animationCreatorMirrorLimbEditsEnabled != previousMirrorLimbEditsEnabled)
+            {
+                _animationCreatorStatus = _animationCreatorMirrorLimbEditsEnabled
+                    ? "Mirror limb edits are on. Left and right limb pairs now pose together while editing."
+                    : "Mirror limb edits are off. Only the selected limb updates while editing.";
+            }
+            GUI.enabled = previousRecordGuiEnabled;
+            GUILayout.Space(6f);
             GUILayout.Label("Quick joint access", _titleStyle);
             for (int i = 0; i < _animationCreator.JointNames.Count; i++)
             {
@@ -16285,6 +16916,293 @@ namespace Reachy.ControlApp
 
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        private string DrawAnimationCreatorPathFieldWithBrowse(string currentValue, out bool browseClicked)
+        {
+            const float browseButtonWidth = 104f;
+            const float spacing = 6f;
+            Rect rowRect = GUILayoutUtility.GetRect(10f, 22f, GUILayout.ExpandWidth(true));
+            float textWidth = Mathf.Max(80f, rowRect.width - browseButtonWidth - spacing);
+            Rect textRect = new Rect(rowRect.x, rowRect.y, textWidth, rowRect.height);
+            Rect buttonRect = new Rect(textRect.xMax + spacing, rowRect.y, browseButtonWidth, rowRect.height);
+
+            string nextValue = GUI.TextField(textRect, currentValue ?? string.Empty);
+            browseClicked = GUI.Button(buttonRect, "Browse");
+            return nextValue;
+        }
+
+        private static List<string> ParseAnimationCreatorImportPaths(string rawValue)
+        {
+            var paths = new List<string>();
+            if (string.IsNullOrWhiteSpace(rawValue))
+            {
+                return paths;
+            }
+
+            string[] tokens = rawValue.Split(
+                new[] { '|', '\r', '\n' },
+                StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                AddUniqueAnimationCreatorImportPath(paths, tokens[i]);
+            }
+
+            return paths;
+        }
+
+        private static void AddUniqueAnimationCreatorImportPath(List<string> paths, string candidate)
+        {
+            if (paths == null || string.IsNullOrWhiteSpace(candidate))
+            {
+                return;
+            }
+
+            string trimmedCandidate = candidate.Trim();
+            string normalizedCandidate = NormalizeAnimationCreatorImportPath(trimmedCandidate);
+            for (int i = 0; i < paths.Count; i++)
+            {
+                if (string.Equals(
+                        NormalizeAnimationCreatorImportPath(paths[i]),
+                        normalizedCandidate,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+
+            paths.Add(trimmedCandidate);
+        }
+
+        private static string NormalizeAnimationCreatorImportPath(string path)
+        {
+            string trimmedPath = (path ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(trimmedPath))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return Path.GetFullPath(trimmedPath);
+            }
+            catch
+            {
+                return trimmedPath;
+            }
+        }
+
+        private static string BuildAnimationCreatorImportPathFieldValue(IReadOnlyList<string> paths)
+        {
+            if (paths == null || paths.Count <= 0)
+            {
+                return string.Empty;
+            }
+
+            var builder = new StringBuilder();
+            for (int i = 0; i < paths.Count; i++)
+            {
+                string path = paths[i];
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    continue;
+                }
+
+                if (builder.Length > 0)
+                {
+                    builder.Append(" | ");
+                }
+
+                builder.Append(path.Trim());
+            }
+
+            return builder.ToString();
+        }
+
+        private static string BuildAnimationCreatorImportSummary(
+            int importedCount,
+            int invalidSchemaCount,
+            int invalidFileTypeCount,
+            int missingFileCount,
+            int localSaveFailureCount)
+        {
+            var builder = new StringBuilder();
+            if (importedCount > 0)
+            {
+                builder.Append(
+                    importedCount == 1
+                        ? "Imported 1 animation JSON file into Saved Animations."
+                        : $"Imported {importedCount} animation JSON file(s) into Saved Animations.");
+            }
+            else
+            {
+                builder.Append("No valid animation JSON files were imported.");
+            }
+
+            if (invalidSchemaCount > 0)
+            {
+                builder.Append($" Invalid/unaccepted schema: {invalidSchemaCount}.");
+            }
+
+            if (invalidFileTypeCount > 0)
+            {
+                builder.Append($" Unsupported file type: {invalidFileTypeCount}.");
+            }
+
+            if (missingFileCount > 0)
+            {
+                builder.Append($" Missing or unreadable file: {missingFileCount}.");
+            }
+
+            if (localSaveFailureCount > 0)
+            {
+                builder.Append($" Failed to save locally: {localSaveFailureCount}.");
+            }
+
+            return builder.ToString();
+        }
+
+        private string BuildAnimationCreatorPoseListLabel(AnimationCreatorSavedPose pose)
+        {
+            if (pose == null)
+            {
+                return "Animation";
+            }
+
+            bool isEditing = string.Equals(_animationCreatorEditingPoseId, pose.Id, StringComparison.OrdinalIgnoreCase);
+            bool isPlaying = string.Equals(_animationCreatorActivePoseId, pose.Id, StringComparison.OrdinalIgnoreCase);
+            bool showEditingPrefix = isEditing;
+            string prefix = showEditingPrefix && isPlaying
+                ? "Editing + Playing: "
+                : showEditingPrefix
+                    ? "Editing: "
+                    : isPlaying
+                        ? "Playing: "
+                        : string.Empty;
+            string storageLabel = pose.IsDraft ? "draft" : "saved";
+            return $"{prefix}{pose.Name} ({pose.KeyframeCount} frames, {storageLabel})";
+        }
+
+        private void DrawAnimationCreatorPoseListSection(
+            string title,
+            List<AnimationCreatorSavedPose> poses,
+            string emptyMessage,
+            bool isDraftSection)
+        {
+            GUILayout.Label(title, _titleStyle);
+            if (poses == null || poses.Count <= 0)
+            {
+                GUILayout.Label(emptyMessage);
+                return;
+            }
+
+            int selectedCount = CountSelectedAnimationCreatorPoses(poses);
+            int totalPoseCount = CountAnimationCreatorPoses(poses);
+            bool allSelected = totalPoseCount > 0 && selectedCount >= totalPoseCount;
+            GUILayout.Label(isDraftSection
+                ? "Drafts stay only for this session until you save them locally."
+                : "Saved animations are loaded from local JSON files. Use the checkbox only for selection, Edit to load one, and Play/Stop to run it.");
+            bool previousGuiEnabled = GUI.enabled;
+            if (!isDraftSection)
+            {
+                GUI.enabled = true;
+                if (GUILayout.Button("Refresh Saved", GUILayout.Height(24f)))
+                {
+                    _animationCreatorStatus = TryRefreshAnimationCreatorLocalLibrary(out string refreshMessage)
+                        ? refreshMessage
+                        : refreshMessage;
+                }
+            }
+
+            GUI.enabled = totalPoseCount > 0;
+            if (GUILayout.Button(
+                    allSelected
+                        ? "Clear All"
+                        : isDraftSection
+                            ? "Select All Drafts"
+                            : "Select All Saved",
+                    GUILayout.Height(24f)))
+            {
+                SetAnimationCreatorPoseSelection(poses, !allSelected);
+            }
+
+            GUI.enabled = selectedCount > 0;
+            if (GUILayout.Button(
+                    isDraftSection
+                        ? selectedCount > 0 ? $"Discard Selected ({selectedCount})" : "Discard Selected"
+                        : selectedCount > 0 ? $"Delete Selected ({selectedCount})" : "Delete Selected",
+                    GUILayout.Height(24f)))
+            {
+                if (isDraftSection)
+                {
+                    DeleteSelectedAnimationCreatorDraftPoses();
+                }
+                else
+                {
+                    DeleteSelectedAnimationCreatorSavedPoses();
+                }
+            }
+
+            GUI.enabled = previousGuiEnabled;
+            GUILayout.Space(6f);
+
+            for (int i = 0; i < poses.Count; i++)
+            {
+                AnimationCreatorSavedPose pose = poses[i];
+                if (pose == null)
+                {
+                    continue;
+                }
+
+                bool isSelected = _animationCreatorSelectedPoseIds.Contains(pose.Id);
+                bool isActive = string.Equals(_animationCreatorActivePoseId, pose.Id, StringComparison.OrdinalIgnoreCase);
+                bool isEditing = _animationCreatorEditModeEnabled &&
+                                 string.Equals(_animationCreatorEditingPoseId, pose.Id, StringComparison.OrdinalIgnoreCase);
+
+                GUILayout.BeginHorizontal();
+                bool nextSelected = GUILayout.Toggle(isSelected, string.Empty, GUILayout.Width(22f));
+                if (nextSelected != isSelected)
+                {
+                    HandleAnimationCreatorPoseSelectionChanged(pose, nextSelected);
+                    isSelected = nextSelected;
+                }
+
+                GUILayout.Label(BuildAnimationCreatorPoseListLabel(pose), GUILayout.Height(24f), GUILayout.ExpandWidth(true));
+
+                if (GUILayout.Button(isEditing ? "Edit Off" : "Edit", GUILayout.Width(68f), GUILayout.Height(24f)))
+                {
+                    _animationCreatorSelectedPoseIds.Remove(pose.Id);
+                    if (isEditing)
+                    {
+                        StopEditingAnimationCreatorPose(pose);
+                    }
+                    else
+                    {
+                        BeginEditingAnimationCreatorPose(pose);
+                    }
+                }
+
+                if (GUILayout.Button(isActive ? "Stop" : "Play", GUILayout.Width(56f), GUILayout.Height(24f)))
+                {
+                    if (isActive)
+                    {
+                        StopActedSequence(
+                            updateStatus: false,
+                            reason: "Stopped from Animation Creator list.",
+                            stopLoopingAnimation: false);
+                        StopLoopingAnimation(updateStatus: false, reason: "Stopped from Animation Creator list.");
+                        StopAnimationCreatorPlayback(
+                            updateStatus: true,
+                            reason: $"Stopped animation '{pose.Name}'.");
+                    }
+                    else
+                    {
+                        PlayAnimationCreatorPose(pose);
+                    }
+                }
+
+                GUILayout.EndHorizontal();
+            }
         }
 
         private void DrawAnimationCreatorCenterOverlay(Rect area)
@@ -16313,7 +17231,7 @@ namespace Reachy.ControlApp
             bool creatorReady = EnsureAnimationCreator(out _);
 
             GUILayout.BeginArea(area, GUI.skin.box);
-            GUILayout.Label("Saved Animations", _titleStyle);
+            GUILayout.Label("Animation Library", _titleStyle);
 
             float bodyHeight = Mathf.Max(120f, area.height - 38f);
             _animationCreatorLibraryScroll = GUILayout.BeginScrollView(
@@ -16322,72 +17240,6 @@ namespace Reachy.ControlApp
                 true,
                 GUILayout.Height(bodyHeight));
 
-            int selectedSavedPoseCount = CountSelectedAnimationCreatorSavedPoses();
-            if (_animationCreatorSavedPoses.Count <= 0)
-            {
-                GUILayout.Label("No saved animations yet. When your animations are saved, you can find them here and play them back or delete them.");
-            }
-            else
-            {
-                GUILayout.Label("Tick one or more saved animations, then delete them together.");
-                bool previousGuiEnabled = GUI.enabled;
-                GUI.enabled = selectedSavedPoseCount > 0;
-                if (GUILayout.Button(
-                    selectedSavedPoseCount > 0
-                        ? $"Delete Selected ({selectedSavedPoseCount})"
-                        : "Delete Selected",
-                    GUILayout.Height(24f)))
-                {
-                    DeleteSelectedAnimationCreatorSavedPoses();
-                    selectedSavedPoseCount = CountSelectedAnimationCreatorSavedPoses();
-                }
-
-                GUI.enabled = previousGuiEnabled;
-                GUILayout.Space(8f);
-
-                for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
-                {
-                    AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
-                    if (savedPose == null)
-                    {
-                        continue;
-                    }
-
-                    string buttonLabel = string.Equals(
-                        _animationCreatorActivePoseName,
-                        savedPose.Name,
-                        StringComparison.OrdinalIgnoreCase)
-                        ? $"Playing: {savedPose.Name} ({savedPose.KeyframeCount} frames)"
-                        : $"{savedPose.Name} ({savedPose.KeyframeCount} frames)";
-
-                    bool isSelectedForDeletion = _animationCreatorSelectedPoseNames.Contains(savedPose.Name);
-                    GUILayout.BeginHorizontal();
-                    bool nextSelectedForDeletion = GUILayout.Toggle(
-                        isSelectedForDeletion,
-                        string.Empty,
-                        GUILayout.Width(22f));
-                    if (nextSelectedForDeletion != isSelectedForDeletion)
-                    {
-                        if (nextSelectedForDeletion)
-                        {
-                            _animationCreatorSelectedPoseNames.Add(savedPose.Name);
-                        }
-                        else
-                        {
-                            _animationCreatorSelectedPoseNames.Remove(savedPose.Name);
-                        }
-                    }
-
-                    if (GUILayout.Button(buttonLabel, GUILayout.Height(24f)))
-                    {
-                        PlayAnimationCreatorPose(savedPose);
-                    }
-
-                    GUILayout.EndHorizontal();
-                }
-            }
-
-            GUILayout.Space(10f);
             GUILayout.Label("Status", _titleStyle);
             GUILayout.Label(_animationCreatorStatus);
             if (creatorReady)
@@ -16396,6 +17248,20 @@ namespace Reachy.ControlApp
                 GUILayout.Label($"Scene body: {_animationCreator.Status}");
                 GUILayout.Label($"Motion route: {GetAnimationCreatorRoutingSummary()}");
             }
+
+            GUILayout.Space(10f);
+            DrawAnimationCreatorPoseListSection(
+                "Draft Animations",
+                _animationCreatorDraftPoses,
+                "No draft animations yet. Click Create New Pose or import a JSON animation to start a draft.",
+                isDraftSection: true);
+
+            GUILayout.Space(10f);
+            DrawAnimationCreatorPoseListSection(
+                "Saved Animations",
+                _animationCreatorSavedPoses,
+                "No locally saved animations found, create a new pose or import one.",
+                isDraftSection: false);
 
             GUILayout.EndScrollView();
             GUILayout.EndArea();
@@ -16474,6 +17340,14 @@ namespace Reachy.ControlApp
             GUILayout.EndScrollView();
 
             GUILayout.Space(6f);
+            GUILayout.BeginHorizontal();
+            _chitChatMicInputEnabled = GUILayout.Toggle(
+                _chitChatMicInputEnabled,
+                "Show mic in chat",
+                GUILayout.Width(140f));
+            GUILayout.Label(GetChitChatMicIndicatorLabel());
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4f);
             GUILayout.Label("Text Chat");
             GUI.SetNextControlName(ChitChatInputControlName);
             _chitChatInput = GUILayout.TextArea(
@@ -16484,16 +17358,36 @@ namespace Reachy.ControlApp
 
             bool previousEnabled = GUI.enabled;
             GUILayout.BeginHorizontal();
-            GUI.enabled = !_chitChatAwaitingResponse && _chitChatInjectionTask == null;
-            if (GUILayout.Button("Enter", GUILayout.Width(76f), GUILayout.Height(26f)))
+            GUI.enabled = previousEnabled && !_chitChatAwaitingResponse && _chitChatInjectionTask == null;
+            if (GUILayout.Button("Enter", GUILayout.Height(26f), GUILayout.ExpandWidth(true)))
             {
                 SubmitChitChatPrompt(_chitChatInput, clearInputAfterQueue: true);
             }
 
-            GUI.enabled = IsCurrentAiModeEnabled();
-            if (GUILayout.Button("Stop", GUILayout.Width(92f), GUILayout.Height(26f)))
+            GUI.enabled = previousEnabled && IsCurrentAiModeEnabled();
+            if (GUILayout.Button("Stop", GUILayout.Height(26f), GUILayout.ExpandWidth(true)))
             {
                 InterruptChitChatResponse();
+            }
+
+            GUI.enabled = previousEnabled && _chitChatHistory.Count > 0;
+            if (GUILayout.Button("Clear chat", GUILayout.Height(26f), GUILayout.ExpandWidth(true)))
+            {
+                ClearChitChatHistory();
+            }
+
+            if (GUILayout.Button("Save transcript", GUILayout.Height(26f), GUILayout.ExpandWidth(true)))
+            {
+                bool saved = TrySaveChitChatTranscriptToDisk(out string saveMessage);
+                _voiceLastActionResult = saveMessage;
+                if (!saved)
+                {
+                    _voiceLastParserMessage = saveMessage;
+                }
+                else
+                {
+                    _chitChatStatus = saveMessage;
+                }
             }
 
             GUILayout.EndHorizontal();
@@ -16502,9 +17396,8 @@ namespace Reachy.ControlApp
             GUILayout.Label($"Status: {_chitChatStatus}");
             if (_chitChatAwaitingResponse && !string.IsNullOrWhiteSpace(_chitChatPendingPrompt))
             {
-                GUILayout.Label($"Pending: {_chitChatPendingPrompt}");
+                GUILayout.Label($"Pending: {GetChitChatPendingPreview(_chitChatPendingPrompt)}");
             }
-
             GUILayout.EndArea();
         }
 
@@ -16514,8 +17407,18 @@ namespace Reachy.ControlApp
             GUILayout.Label("Topics", _titleStyle);
             GUILayout.Label("Can you tell me more about...");
 
+            GUIStyle topicButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                wordWrap = true,
+                alignment = TextAnchor.MiddleLeft
+            };
             bool previousEnabled = GUI.enabled;
-            GUI.enabled = !_chitChatAwaitingResponse && _chitChatInjectionTask == null;
+            bool topicsEnabled = previousEnabled && !_chitChatAwaitingResponse && _chitChatInjectionTask == null;
+            _chitChatTopicsScroll = GUILayout.BeginScrollView(
+                _chitChatTopicsScroll,
+                false,
+                true);
+            GUI.enabled = topicsEnabled;
             for (int i = 0; i < ChitChatTopics.Length; i++)
             {
                 ChitChatTopicDefinition topic = ChitChatTopics[i];
@@ -16524,7 +17427,11 @@ namespace Reachy.ControlApp
                     continue;
                 }
 
-                if (GUILayout.Button(topic.Label, GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+                if (GUILayout.Button(
+                    topic.Label,
+                    topicButtonStyle,
+                    GUILayout.MinHeight(34f),
+                    GUILayout.ExpandWidth(true)))
                 {
                     SubmitChitChatPrompt(topic.Prompt, clearInputAfterQueue: false);
                 }
@@ -16541,6 +17448,7 @@ namespace Reachy.ControlApp
             GUILayout.Label(
                 "This view uses the same Local AI or Online AI configuration as the main AI tab. " +
                 "If Reachy is still replying, sending new text is paused until that answer finishes.");
+            GUILayout.EndScrollView();
             GUILayout.EndArea();
         }
 
@@ -19802,10 +20710,10 @@ namespace Reachy.ControlApp
                     onlineAiFortuneTellerFactualGrounding);
 
                 GUILayout.Label("Base prompt");
-                onlineAiFortuneTellerSystemPrompt = DrawTextAreaWithSpaceFallback(
+                onlineAiFortuneTellerSystemPrompt = DrawScrollableTextAreaWithSpaceFallback(
                     "ai_modes_fortune_prompt",
                     onlineAiFortuneTellerSystemPrompt,
-                    GUILayout.MinHeight(170f));
+                    170f);
                 GUILayout.EndVertical();
             }
             else if (onlineAiPersonaMode == OnlineAiPersonaMode.Custom)
@@ -19854,10 +20762,10 @@ namespace Reachy.ControlApp
                     onlineAiCustomFactualGrounding);
 
                 GUILayout.Label("Base prompt");
-                onlineAiCustomSystemPrompt = DrawTextAreaWithSpaceFallback(
+                onlineAiCustomSystemPrompt = DrawScrollableTextAreaWithSpaceFallback(
                     "ai_modes_custom_prompt",
                     onlineAiCustomSystemPrompt,
-                    GUILayout.MinHeight(170f));
+                    170f);
                 GUILayout.EndVertical();
             }
             else if (onlineAiPersonaMode == OnlineAiPersonaMode.EmotionReactions)
@@ -19882,10 +20790,10 @@ namespace Reachy.ControlApp
                 }
 
                 GUILayout.Label("Base prompt");
-                onlineAiEmotionSystemPrompt = DrawTextAreaWithSpaceFallback(
+                onlineAiEmotionSystemPrompt = DrawScrollableTextAreaWithSpaceFallback(
                     "ai_modes_emotion_prompt",
                     onlineAiEmotionSystemPrompt,
-                    GUILayout.MinHeight(140f));
+                    140f);
                 GUILayout.EndVertical();
             }
             else
@@ -19903,10 +20811,10 @@ namespace Reachy.ControlApp
                     applyImmediately = true;
                 }
                 GUILayout.Label("Base prompt");
-                onlineAiAssistantSystemPrompt = DrawTextAreaWithSpaceFallback(
+                onlineAiAssistantSystemPrompt = DrawScrollableTextAreaWithSpaceFallback(
                     "ai_modes_assistant_prompt",
                     onlineAiAssistantSystemPrompt,
-                    GUILayout.MinHeight(170f));
+                    170f);
                 GUILayout.EndVertical();
             }
 
@@ -19933,6 +20841,52 @@ namespace Reachy.ControlApp
             }
 
             string nextValue = GUILayout.TextArea(safeValue, options);
+            return ApplyTextAreaSpaceFallback(controlName, safeValue, nextValue);
+        }
+
+        private string DrawScrollableTextAreaWithSpaceFallback(
+            string controlName,
+            string value,
+            float minHeight)
+        {
+            string safeValue = value ?? string.Empty;
+            GUIStyle textAreaStyle = GUI.skin.textArea ?? GUI.skin.box;
+            float clampedMinHeight = Mathf.Max(72f, minHeight);
+            Rect scrollRect = GUILayoutUtility.GetRect(
+                GUIContent.none,
+                GUIStyle.none,
+                GUILayout.MinHeight(clampedMinHeight),
+                GUILayout.ExpandWidth(true));
+            float viewWidth = Mathf.Max(80f, scrollRect.width - 20f);
+            float contentHeight = Mathf.Max(
+                clampedMinHeight - 4f,
+                textAreaStyle.CalcHeight(new GUIContent($"{safeValue}\n"), Mathf.Max(48f, viewWidth - 6f)) + 10f);
+            Rect viewRect = new Rect(0f, 0f, viewWidth, contentHeight);
+            if (!_scrollableTextAreaScrollByControlName.TryGetValue(controlName, out Vector2 scrollPosition))
+            {
+                scrollPosition = Vector2.zero;
+            }
+
+            scrollPosition = GUI.BeginScrollView(scrollRect, scrollPosition, viewRect, false, true);
+            if (!string.IsNullOrWhiteSpace(controlName))
+            {
+                GUI.SetNextControlName(controlName);
+            }
+
+            string nextValue = GUI.TextArea(
+                new Rect(0f, 0f, viewWidth - 2f, contentHeight),
+                safeValue,
+                textAreaStyle);
+            GUI.EndScrollView();
+            _scrollableTextAreaScrollByControlName[controlName] = scrollPosition;
+            return ApplyTextAreaSpaceFallback(controlName, safeValue, nextValue);
+        }
+
+        private static string ApplyTextAreaSpaceFallback(
+            string controlName,
+            string safeValue,
+            string nextValue)
+        {
             Event currentEvent = Event.current;
             if (currentEvent == null ||
                 currentEvent.type != EventType.KeyDown ||
@@ -19993,6 +20947,28 @@ namespace Reachy.ControlApp
                 }
                 else
                 {
+                    int selectedSavedPersonalityCount = CountSelectedSavedOnlineAiCustomPersonalities();
+                    bool previousDeleteEnabled = GUI.enabled;
+                    GUI.enabled = selectedSavedPersonalityCount > 0;
+                    if (GUILayout.Button(
+                            selectedSavedPersonalityCount > 0
+                                ? $"Delete Selected ({selectedSavedPersonalityCount})"
+                                : "Delete Selected",
+                            GUILayout.Height(22f),
+                            GUILayout.ExpandWidth(true)))
+                    {
+                        bool deleted = TryDeleteSelectedSavedOnlineAiCustomPersonalities(out string deleteMessage);
+                        _voiceLastActionResult = deleteMessage;
+                        if (!deleted)
+                        {
+                            _voiceLastParserMessage = deleteMessage;
+                        }
+
+                        selectedEntry = GetSelectedSavedOnlineAiCustomPersonalityEntry();
+                    }
+
+                    GUI.enabled = previousDeleteEnabled;
+                    GUILayout.Space(4f);
                     _savedOnlineAiCustomPersonalityDropdownScroll = GUILayout.BeginScrollView(
                         _savedOnlineAiCustomPersonalityDropdownScroll,
                         false,
@@ -20006,14 +20982,35 @@ namespace Reachy.ControlApp
                             entry.FilePath,
                             _selectedSavedOnlineAiCustomPersonalityPath,
                             StringComparison.OrdinalIgnoreCase);
+                        bool isSelectedForDeletion =
+                            _selectedSavedOnlineAiCustomPersonalityPaths.Contains(entry.FilePath);
                         string buttonLabel = isSelected
                             ? $"> {entry.Payload.name}"
                             : entry.Payload.name;
+                        GUILayout.BeginHorizontal();
+                        bool nextSelectedForDeletion = GUILayout.Toggle(
+                            isSelectedForDeletion,
+                            string.Empty,
+                            GUILayout.Width(22f));
+                        if (nextSelectedForDeletion != isSelectedForDeletion)
+                        {
+                            if (nextSelectedForDeletion)
+                            {
+                                _selectedSavedOnlineAiCustomPersonalityPaths.Add(entry.FilePath);
+                            }
+                            else
+                            {
+                                _selectedSavedOnlineAiCustomPersonalityPaths.Remove(entry.FilePath);
+                            }
+                        }
+
                         if (GUILayout.Button(buttonLabel, GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
                         {
                             _selectedSavedOnlineAiCustomPersonalityPath = entry.FilePath;
                             selectedEntry = entry;
                         }
+
+                        GUILayout.EndHorizontal();
                     }
 
                     GUILayout.EndScrollView();
@@ -21463,10 +22460,14 @@ namespace Reachy.ControlApp
         {
             if (_activeMenuView != RuntimeMenuView.AnimationCreator || _animationCreator == null)
             {
+                _animationCreator?.SetSelectionHighlightVisible(false);
                 return;
             }
 
-            _animationCreator.UpdateInteraction(_animationCreatorEditModeEnabled);
+            _animationCreator.SetSelectionHighlightVisible(true);
+            _animationCreator.UpdateInteraction(
+                _animationCreatorEditModeEnabled,
+                _animationCreatorMirrorLimbEditsEnabled);
             UpdateAnimationCreatorLivePreview();
         }
 
@@ -21486,6 +22487,11 @@ namespace Reachy.ControlApp
             }
 
             return ready;
+        }
+
+        private void ClearAnimationCreatorSelectedJoint()
+        {
+            _animationCreator?.SelectJoint(string.Empty);
         }
 
         private bool ShouldAnimationCreatorMirrorToRealRobot()
@@ -21517,8 +22523,20 @@ namespace Reachy.ControlApp
         {
             string interactionSummary = _animationCreatorEditModeEnabled
                 ? "Pose capture is active. Click a joint on Reachy in the middle scene and drag with the left mouse button."
-                : "Pose capture is idle. Use Create New Pose to enable body editing.";
+                : "Pose capture is idle. Use Create New Pose or Edit to enable body editing.";
             return $"{interactionSummary} {GetAnimationCreatorRoutingSummary()}";
+        }
+
+        private string GetAnimationCreatorPoseCaptureSummaryRichText()
+        {
+            bool poseCaptureActive = _animationCreatorEditModeEnabled;
+            string indicatorColor = poseCaptureActive ? "#57C26F" : "#F0A03A";
+            string indicatorGlyph = "\u25CF";
+            string headline = poseCaptureActive ? "Pose capture is active" : "Pose capture is idle";
+            string detail = poseCaptureActive
+                ? "Click a joint on Reachy in the middle scene and drag with the left mouse button."
+                : "Use Create New Pose or Edit to enable body editing.";
+            return $"<color={indicatorColor}>{indicatorGlyph}</color> <b>{headline}</b>. {detail} {GetAnimationCreatorRoutingSummary()}";
         }
 
         private void ResetAnimationCreatorLivePreviewState()
@@ -21542,6 +22560,48 @@ namespace Reachy.ControlApp
                     _animationCreatorLastLivePreviewPose[item.Key] = item.Value;
                 }
             }
+        }
+
+        private void SetAnimationCreatorRecordPoseBaseline(IReadOnlyDictionary<string, float> pose)
+        {
+            _animationCreatorRecordPoseBaseline.Clear();
+            if (pose == null)
+            {
+                return;
+            }
+
+            foreach (KeyValuePair<string, float> item in pose)
+            {
+                if (!string.IsNullOrWhiteSpace(item.Key))
+                {
+                    _animationCreatorRecordPoseBaseline[item.Key] = item.Value;
+                }
+            }
+        }
+
+        private bool HasAnimationCreatorRecordablePoseChange()
+        {
+            if (_animationCreator == null ||
+                _animationCreatorPlaybackCoroutine != null ||
+                GetAnimationCreatorEditingPose() == null)
+            {
+                return false;
+            }
+
+            Dictionary<string, float> currentPose = _animationCreator.CapturePose();
+            if (currentPose == null || currentPose.Count <= 0)
+            {
+                return false;
+            }
+
+            if (_animationCreatorRecordPoseBaseline.Count <= 0)
+            {
+                return false;
+            }
+
+            return !AreAnimationCreatorPosesEquivalent(
+                currentPose,
+                _animationCreatorRecordPoseBaseline);
         }
 
         private static bool AreAnimationCreatorPosesEquivalent(
@@ -21663,6 +22723,1289 @@ namespace Reachy.ControlApp
                 logicalRect.height * _uiScale);
         }
 
+        private static string NormalizeAnimationCreatorPoseName(string name)
+        {
+            string trimmed = (name ?? string.Empty).Trim();
+            return string.IsNullOrWhiteSpace(trimmed) ? "Custom Pose" : trimmed;
+        }
+
+        private string GetAnimationCreatorLibraryDirectory()
+        {
+            string persistentDataPath = Application.persistentDataPath ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(persistentDataPath))
+            {
+                return Path.Combine(Application.dataPath ?? string.Empty, "ReachyAnimations");
+            }
+
+            return Path.Combine(persistentDataPath, "ReachyAnimations");
+        }
+
+        private string GetAnimationCreatorImportDefaultDirectory()
+        {
+            string persistentDataPath = Application.persistentDataPath ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(persistentDataPath))
+            {
+                return persistentDataPath;
+            }
+
+            return Application.dataPath ?? string.Empty;
+        }
+
+        private static string NormalizeAnimationCreatorFilePath(string path)
+        {
+            string trimmed = string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                return string.Empty;
+            }
+
+            try
+            {
+                return Path.GetFullPath(trimmed)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            catch
+            {
+                return trimmed;
+            }
+        }
+
+        private string BuildNextAnimationCreatorDefaultPoseTitle()
+        {
+            while (true)
+            {
+                string candidate = $"Custom Pose {_animationCreatorNextPoseNumber}";
+                _animationCreatorNextPoseNumber++;
+                if (!DoesAnimationCreatorPoseTitleExist(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        private bool DoesAnimationCreatorPoseTitleExist(string poseTitle)
+        {
+            if (string.IsNullOrWhiteSpace(poseTitle))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < _animationCreatorDraftPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose draftPose = _animationCreatorDraftPoses[i];
+                if (draftPose != null &&
+                    string.Equals(draftPose.Name, poseTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
+                if (savedPose != null &&
+                    string.Equals(savedPose.Name, poseTitle, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private string GetAnimationCreatorPoseTitleOrDefault()
+        {
+            string trimmed = (_animationCreatorPoseTitle ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+            {
+                return trimmed;
+            }
+
+            return $"Custom Pose {_animationCreatorNextPoseNumber}";
+        }
+
+        private AnimationCreatorSavedPose FindAnimationCreatorPoseById(string poseId)
+        {
+            if (string.IsNullOrWhiteSpace(poseId))
+            {
+                return null;
+            }
+
+            for (int i = 0; i < _animationCreatorDraftPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose draftPose = _animationCreatorDraftPoses[i];
+                if (draftPose != null &&
+                    string.Equals(draftPose.Id, poseId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return draftPose;
+                }
+            }
+
+            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
+                if (savedPose != null &&
+                    string.Equals(savedPose.Id, poseId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return savedPose;
+                }
+            }
+
+            return null;
+        }
+
+        private AnimationCreatorSavedPose FindAnimationCreatorSavedPoseByFilePath(string filePath)
+        {
+            string normalizedPath = NormalizeAnimationCreatorFilePath(filePath);
+            if (string.IsNullOrWhiteSpace(normalizedPath))
+            {
+                return null;
+            }
+
+            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
+                if (savedPose == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(
+                        NormalizeAnimationCreatorFilePath(savedPose.FilePath),
+                        normalizedPath,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return savedPose;
+                }
+            }
+
+            return null;
+        }
+
+        private AnimationCreatorSavedPose GetAnimationCreatorEditingPose()
+        {
+            return FindAnimationCreatorPoseById(_animationCreatorEditingPoseId);
+        }
+
+        private bool DoesAnimationCreatorPoseHaveContent(
+            AnimationCreatorSavedPose pose,
+            bool includePendingDraftFrames = false)
+        {
+            if (pose == null)
+            {
+                return false;
+            }
+
+            if (includePendingDraftFrames &&
+                string.Equals(_animationCreatorEditingPoseId, pose.Id, StringComparison.OrdinalIgnoreCase) &&
+                _animationCreatorDraftKeyframes.Count > 0)
+            {
+                return true;
+            }
+
+            return pose.KeyframeCount > 0;
+        }
+
+        private int CountSelectedAnimationCreatorPoses(IReadOnlyList<AnimationCreatorSavedPose> poses)
+        {
+            int count = 0;
+            if (poses == null)
+            {
+                return count;
+            }
+
+            for (int i = 0; i < poses.Count; i++)
+            {
+                AnimationCreatorSavedPose pose = poses[i];
+                if (pose != null && _animationCreatorSelectedPoseIds.Contains(pose.Id))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private int CountAnimationCreatorPoses(IReadOnlyList<AnimationCreatorSavedPose> poses)
+        {
+            int count = 0;
+            if (poses == null)
+            {
+                return count;
+            }
+
+            for (int i = 0; i < poses.Count; i++)
+            {
+                if (poses[i] != null)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private void HandleAnimationCreatorPoseSelectionChanged(
+            AnimationCreatorSavedPose pose,
+            bool nextSelected)
+        {
+            if (pose == null)
+            {
+                return;
+            }
+
+            if (nextSelected)
+            {
+                _animationCreatorSelectedPoseIds.Add(pose.Id);
+            }
+            else
+            {
+                _animationCreatorSelectedPoseIds.Remove(pose.Id);
+            }
+        }
+
+        private void SetAnimationCreatorPoseSelection(IReadOnlyList<AnimationCreatorSavedPose> poses, bool selected)
+        {
+            if (poses == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < poses.Count; i++)
+            {
+                AnimationCreatorSavedPose pose = poses[i];
+                if (pose == null)
+                {
+                    continue;
+                }
+
+                HandleAnimationCreatorPoseSelectionChanged(pose, selected);
+            }
+        }
+
+        private AnimationCreatorSavedPose CreateAnimationCreatorDraftPose(string poseName)
+        {
+            var draftPose = new AnimationCreatorSavedPose(
+                poseName,
+                Array.Empty<AnimationCreatorPoseKeyframe>(),
+                isDraft: true);
+            _animationCreatorDraftPoses.Insert(0, draftPose);
+            return draftPose;
+        }
+
+        private static int CompareAnimationCreatorSavedPoses(
+            AnimationCreatorSavedPose left,
+            AnimationCreatorSavedPose right)
+        {
+            string leftName = left?.Name ?? string.Empty;
+            string rightName = right?.Name ?? string.Empty;
+            int nameComparison = string.Compare(leftName, rightName, StringComparison.OrdinalIgnoreCase);
+            if (nameComparison != 0)
+            {
+                return nameComparison;
+            }
+
+            return string.Compare(left?.FilePath ?? string.Empty, right?.FilePath ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string SanitizeAnimationCreatorFileStem(string name)
+        {
+            string trimmed = NormalizeAnimationCreatorPoseName(name).ToLowerInvariant();
+            var builder = new StringBuilder(trimmed.Length);
+            bool lastWasSeparator = false;
+            for (int i = 0; i < trimmed.Length; i++)
+            {
+                char c = trimmed[i];
+                bool asciiLetterOrDigit =
+                    c <= sbyte.MaxValue &&
+                    ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'));
+                if (asciiLetterOrDigit)
+                {
+                    builder.Append(c);
+                    lastWasSeparator = false;
+                    continue;
+                }
+
+                if (!lastWasSeparator)
+                {
+                    builder.Append('-');
+                    lastWasSeparator = true;
+                }
+            }
+
+            string sanitized = builder.ToString().Trim('-');
+            return string.IsNullOrWhiteSpace(sanitized) ? "custom-pose" : sanitized;
+        }
+
+        private static string GetDirectoryPathForAnimationCreatorDialog(string path, string fallbackDirectory)
+        {
+            string trimmed = string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+            {
+                try
+                {
+                    if (Directory.Exists(trimmed))
+                    {
+                        return trimmed;
+                    }
+
+                    string extension = Path.GetExtension(trimmed);
+                    if (!string.IsNullOrWhiteSpace(extension))
+                    {
+                        string parent = Path.GetDirectoryName(trimmed);
+                        if (!string.IsNullOrWhiteSpace(parent))
+                        {
+                            return parent;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fall back to the default directory below.
+                }
+            }
+
+            return fallbackDirectory ?? string.Empty;
+        }
+
+        private static string GetFileNameForAnimationCreatorDialog(string path, string fallbackFileName)
+        {
+            string trimmed = string.IsNullOrWhiteSpace(path) ? string.Empty : path.Trim();
+            if (!string.IsNullOrWhiteSpace(trimmed))
+            {
+                try
+                {
+                    if (!Directory.Exists(trimmed))
+                    {
+                        string fileName = Path.GetFileName(trimmed);
+                        if (!string.IsNullOrWhiteSpace(fileName))
+                        {
+                            return fileName;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fall back to the default name below.
+                }
+            }
+
+            return string.IsNullOrWhiteSpace(fallbackFileName) ? "animation.json" : fallbackFileName;
+        }
+
+        private bool TryBrowseAnimationCreatorImportPath(out string message)
+        {
+            message = string.Empty;
+            List<string> currentImportPaths = ParseAnimationCreatorImportPaths(_animationCreatorImportPath);
+            string initialDirectory = GetDirectoryPathForAnimationCreatorDialog(
+                currentImportPaths.Count > 0 ? currentImportPaths[0] : _animationCreatorImportPath,
+                GetAnimationCreatorImportDefaultDirectory());
+#if UNITY_EDITOR
+#if UNITY_EDITOR_WIN
+            string command =
+                "$ErrorActionPreference='Stop'; " +
+                "Add-Type -AssemblyName System.Windows.Forms | Out-Null; " +
+                "$dialog = New-Object System.Windows.Forms.OpenFileDialog; " +
+                "$dialog.Filter = 'JSON files (*.json)|*.json|All files (*.*)|*.*'; " +
+                "$dialog.CheckFileExists = $true; " +
+                "$dialog.Multiselect = $true; " +
+                "$dialog.RestoreDirectory = $true; " +
+                (string.IsNullOrWhiteSpace(initialDirectory)
+                    ? string.Empty
+                    : "$dialog.InitialDirectory = '" + EscapePowerShellSingleQuotedString(initialDirectory) + "'; ") +
+                "$result = $dialog.ShowDialog(); " +
+                "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write(($dialog.FileNames -join [Environment]::NewLine)) }";
+            if (!TryRunPowerShellDialogCommand(command, 60000, out string selectedPathsValue, out message))
+            {
+                return false;
+            }
+
+            List<string> selectedPaths = ParseAnimationCreatorImportPaths(selectedPathsValue);
+            if (selectedPaths.Count <= 0)
+            {
+                message = "Import browse cancelled.";
+                return false;
+            }
+
+            _animationCreatorImportPath = BuildAnimationCreatorImportPathFieldValue(selectedPaths);
+            message = selectedPaths.Count == 1
+                ? "Selected 1 import file path."
+                : $"Selected {selectedPaths.Count} import file paths.";
+            return true;
+#else
+            string selectedPath = UnityEditor.EditorUtility.OpenFilePanel(
+                "Import Animation JSON",
+                initialDirectory,
+                "json");
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                message = "Import browse cancelled.";
+                return false;
+            }
+
+            _animationCreatorImportPath = selectedPath.Trim();
+            message = "Selected 1 import file path.";
+            return true;
+#endif
+#else
+            string command =
+                "$ErrorActionPreference='Stop'; " +
+                "Add-Type -AssemblyName System.Windows.Forms | Out-Null; " +
+                "$dialog = New-Object System.Windows.Forms.OpenFileDialog; " +
+                "$dialog.Filter = 'JSON files (*.json)|*.json|All files (*.*)|*.*'; " +
+                "$dialog.CheckFileExists = $true; " +
+                "$dialog.Multiselect = $true; " +
+                "$dialog.RestoreDirectory = $true; " +
+                (string.IsNullOrWhiteSpace(initialDirectory)
+                    ? string.Empty
+                    : "$dialog.InitialDirectory = '" + EscapePowerShellSingleQuotedString(initialDirectory) + "'; ") +
+                "$result = $dialog.ShowDialog(); " +
+                "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write(($dialog.FileNames -join [Environment]::NewLine)) }";
+            if (!TryRunPowerShellDialogCommand(command, 60000, out string selectedPathsValue, out message))
+            {
+                return false;
+            }
+
+            List<string> selectedPaths = ParseAnimationCreatorImportPaths(selectedPathsValue);
+            if (selectedPaths.Count <= 0)
+            {
+                message = "Import browse cancelled.";
+                return false;
+            }
+
+            _animationCreatorImportPath = BuildAnimationCreatorImportPathFieldValue(selectedPaths);
+            message = selectedPaths.Count == 1
+                ? "Selected 1 import file path."
+                : $"Selected {selectedPaths.Count} import file paths.";
+            return true;
+#endif
+        }
+
+        private bool TryBrowseAnimationCreatorExportPath(out string message)
+        {
+            message = string.Empty;
+            AnimationCreatorSavedPose targetPose = ResolveAnimationCreatorExportTargetPose(out string poseMessage);
+            string defaultFileName = SanitizeAnimationCreatorFileStem(targetPose?.Name) + ".json";
+            string initialDirectory = GetDirectoryPathForAnimationCreatorDialog(
+                _animationCreatorExportPath,
+                GetAnimationCreatorLibraryDirectory());
+            string initialFileName = GetFileNameForAnimationCreatorDialog(
+                _animationCreatorExportPath,
+                defaultFileName);
+#if UNITY_EDITOR
+            string selectedPath = UnityEditor.EditorUtility.SaveFilePanel(
+                "Export Animation JSON",
+                initialDirectory,
+                Path.GetFileNameWithoutExtension(initialFileName),
+                "json");
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                message = "Export browse cancelled.";
+                return false;
+            }
+
+            _animationCreatorExportPath = selectedPath;
+            message = $"Export path selected: {selectedPath}";
+            return true;
+#else
+            string command =
+                "$ErrorActionPreference='Stop'; " +
+                "Add-Type -AssemblyName System.Windows.Forms | Out-Null; " +
+                "$dialog = New-Object System.Windows.Forms.SaveFileDialog; " +
+                "$dialog.Filter = 'JSON files (*.json)|*.json|All files (*.*)|*.*'; " +
+                "$dialog.DefaultExt = 'json'; " +
+                "$dialog.AddExtension = $true; " +
+                "$dialog.OverwritePrompt = $true; " +
+                "$dialog.RestoreDirectory = $true; " +
+                "$dialog.FileName = '" + EscapePowerShellSingleQuotedString(initialFileName) + "'; " +
+                (string.IsNullOrWhiteSpace(initialDirectory)
+                    ? string.Empty
+                    : "$dialog.InitialDirectory = '" + EscapePowerShellSingleQuotedString(initialDirectory) + "'; ") +
+                "$result = $dialog.ShowDialog(); " +
+                "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dialog.FileName) }";
+            if (!TryRunPowerShellDialogCommand(command, 60000, out string selectedPath, out message))
+            {
+                if (!string.IsNullOrWhiteSpace(poseMessage) && string.IsNullOrWhiteSpace(selectedPath))
+                {
+                    message = poseMessage;
+                }
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(selectedPath))
+            {
+                message = "Export browse cancelled.";
+                return false;
+            }
+
+            _animationCreatorExportPath = selectedPath;
+            message = $"Export path selected: {selectedPath}";
+            return true;
+#endif
+        }
+
+        private List<AnimationCreatorPoseKeyframe> CloneAnimationCreatorKeyframes(
+            IEnumerable<AnimationCreatorPoseKeyframe> keyframes)
+        {
+            var clones = new List<AnimationCreatorPoseKeyframe>();
+            if (keyframes == null)
+            {
+                return clones;
+            }
+
+            foreach (AnimationCreatorPoseKeyframe keyframe in keyframes)
+            {
+                if (keyframe == null)
+                {
+                    continue;
+                }
+
+                clones.Add(
+                    new AnimationCreatorPoseKeyframe(
+                        keyframe.JointTargets,
+                        keyframe.HoldDurationSeconds,
+                        keyframe.SpeedScale,
+                        keyframe.Label));
+            }
+
+            return clones;
+        }
+
+        private bool TryCaptureCurrentAnimationCreatorKeyframe(out AnimationCreatorPoseKeyframe keyframe, out string message)
+        {
+            keyframe = null;
+            message = string.Empty;
+            if (_animationCreator == null)
+            {
+                message = "Animation Creator is not initialized.";
+                return false;
+            }
+
+            Dictionary<string, float> currentPose = _animationCreator.CapturePose();
+            if (currentPose == null || currentPose.Count <= 0)
+            {
+                message = "No scene pose was available to capture.";
+                return false;
+            }
+
+            keyframe = new AnimationCreatorPoseKeyframe(currentPose);
+            return true;
+        }
+
+        private bool EnsureAnimationCreatorEditingPose(
+            bool createDraftIfMissing,
+            out AnimationCreatorSavedPose editingPose,
+            out string message)
+        {
+            editingPose = GetAnimationCreatorEditingPose();
+            message = string.Empty;
+            if (editingPose != null)
+            {
+                return true;
+            }
+
+            if (!createDraftIfMissing)
+            {
+                message = "Click Edit on a draft or saved animation first.";
+                return false;
+            }
+
+            string draftName = string.IsNullOrWhiteSpace(_animationCreatorPoseTitle)
+                ? BuildNextAnimationCreatorDefaultPoseTitle()
+                : NormalizeAnimationCreatorPoseName(_animationCreatorPoseTitle);
+
+            editingPose = CreateAnimationCreatorDraftPose(draftName);
+            _animationCreatorEditingPoseId = editingPose.Id;
+            _animationCreatorPoseTitle = editingPose.Name;
+            _animationCreatorEditModeEnabled = true;
+            return true;
+        }
+
+        private bool TrySyncAnimationCreatorEditingPoseFromEditor(
+            AnimationCreatorSavedPose editingPose,
+            bool captureCurrentPoseWhenEmpty,
+            out string message)
+        {
+            message = string.Empty;
+            if (editingPose == null)
+            {
+                message = "No Animation Creator draft is currently selected for editing.";
+                return false;
+            }
+
+            if (_animationCreatorDraftKeyframes.Count <= 0 && captureCurrentPoseWhenEmpty)
+            {
+                if (TryCaptureCurrentAnimationCreatorKeyframe(
+                        out AnimationCreatorPoseKeyframe capturedKeyframe,
+                        out string captureMessage))
+                {
+                    _animationCreatorDraftKeyframes.Add(capturedKeyframe);
+                }
+                else
+                {
+                    message = captureMessage;
+                    return false;
+                }
+            }
+
+            editingPose.Rename(GetAnimationCreatorPoseTitleOrDefault());
+            editingPose.ReplaceKeyframes(_animationCreatorDraftKeyframes);
+            _animationCreatorPoseTitle = editingPose.Name;
+            return true;
+        }
+
+        private void LoadAnimationCreatorPoseIntoEditor(AnimationCreatorSavedPose pose, string statusMessage)
+        {
+            if (pose == null)
+            {
+                return;
+            }
+
+            StopActedSequence(
+                updateStatus: false,
+                reason: "Entered Animation Creator.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(updateStatus: false, reason: "Entered Animation Creator.");
+            StopAnimationCreatorPlayback(updateStatus: false, reason: "Editing an Animation Creator animation.");
+            _client?.CancelActivePoseMotion();
+
+            _animationCreatorEditingPoseId = pose.Id;
+            _animationCreatorPoseTitle = pose.Name;
+            _animationCreatorDraftKeyframes.Clear();
+            _animationCreatorDraftKeyframes.AddRange(CloneAnimationCreatorKeyframes(pose.Keyframes));
+            _animationCreatorEditModeEnabled = true;
+            ResetAnimationCreatorLivePreviewState();
+
+            if (_animationCreator != null)
+            {
+                SetAnimationCreatorRecordPoseBaseline(_animationCreator.CapturePose());
+            }
+
+            _animationCreatorStatus = statusMessage;
+        }
+
+        private void StopEditingAnimationCreatorPose(AnimationCreatorSavedPose pose)
+        {
+            if (pose == null)
+            {
+                _animationCreatorStatus = "No animation is currently being edited.";
+                return;
+            }
+
+            if (!string.Equals(_animationCreatorEditingPoseId, pose.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                _animationCreatorStatus = $"'{pose.Name}' is not the animation currently being edited.";
+                return;
+            }
+
+            TrySyncAnimationCreatorEditingPoseFromEditor(
+                pose,
+                captureCurrentPoseWhenEmpty: false,
+                out _);
+
+            ClearAnimationCreatorSelectedJoint();
+            _animationCreatorEditingPoseId = string.Empty;
+            _animationCreatorDraftKeyframes.Clear();
+            _animationCreatorEditModeEnabled = false;
+            if (_animationCreator != null)
+            {
+                SetAnimationCreatorRecordPoseBaseline(_animationCreator.CapturePose());
+            }
+
+            _animationCreatorStatus = pose.IsDraft
+                ? $"Stopped editing draft '{pose.Name}'. Click Edit to continue working on it."
+                : $"Stopped editing saved animation '{pose.Name}'. Click Edit to resume editing.";
+        }
+
+        private bool TryRefreshAnimationCreatorLocalLibrary(out string message)
+        {
+            message = string.Empty;
+            string directory = GetAnimationCreatorLibraryDirectory();
+            string[] filePaths = Array.Empty<string>();
+            int invalidCount = 0;
+            int loadedCount = 0;
+
+            if (Directory.Exists(directory))
+            {
+                try
+                {
+                    filePaths = Directory.GetFiles(directory, "*.json", SearchOption.TopDirectoryOnly);
+                }
+                catch (Exception ex)
+                {
+                    message = $"Failed to read local animations from '{directory}': {ex.Message}";
+                    return false;
+                }
+            }
+
+            _animationCreatorSavedPoses.Clear();
+            for (int i = 0; i < filePaths.Length; i++)
+            {
+                string filePath = filePaths[i];
+                try
+                {
+                    string json = File.ReadAllText(filePath, Encoding.UTF8);
+                    if (!TryBuildAnimationCreatorPoseFromJson(
+                            json,
+                            Path.GetFileNameWithoutExtension(filePath),
+                            isDraft: false,
+                            out AnimationCreatorSavedPose loadedPose,
+                            out _))
+                    {
+                        invalidCount++;
+                        continue;
+                    }
+
+                    loadedPose.FilePath = filePath;
+                    _animationCreatorSavedPoses.Add(loadedPose);
+                    loadedCount++;
+                }
+                catch
+                {
+                    invalidCount++;
+                }
+            }
+
+            _animationCreatorSavedPoses.Sort(CompareAnimationCreatorSavedPoses);
+            _animationCreatorSelectedPoseIds.RemoveWhere(id => FindAnimationCreatorPoseById(id) == null);
+            if (!string.IsNullOrWhiteSpace(_animationCreatorEditingPoseId) &&
+                FindAnimationCreatorPoseById(_animationCreatorEditingPoseId) == null)
+            {
+                _animationCreatorEditingPoseId = string.Empty;
+                _animationCreatorDraftKeyframes.Clear();
+                _animationCreatorEditModeEnabled = false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_animationCreatorActivePoseId) &&
+                FindAnimationCreatorPoseById(_animationCreatorActivePoseId) == null)
+            {
+                StopAnimationCreatorPlayback(updateStatus: false, reason: "Active animation was removed from disk.");
+            }
+
+            message = loadedCount <= 0
+                ? $"No locally saved animations found, create a new pose or import one. Folder: {directory}"
+                : $"Loaded {loadedCount} locally saved animation JSON file(s). Folder: {directory}";
+            if (invalidCount > 0)
+            {
+                message += $" Skipped {invalidCount} invalid/unaccepted JSON file(s).";
+            }
+
+            return true;
+        }
+
+        private bool TryBuildAnimationCreatorPoseFromJson(
+            string json,
+            string fallbackName,
+            bool isDraft,
+            out AnimationCreatorSavedPose pose,
+            out string message)
+        {
+            pose = null;
+            message = string.Empty;
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                message = "Invalid/unaccepted JSON format. File was empty.";
+                return false;
+            }
+
+            AnimationCreatorFilePayload payload;
+            try
+            {
+                payload = JsonUtility.FromJson<AnimationCreatorFilePayload>(json);
+            }
+            catch (Exception ex)
+            {
+                message = $"Invalid/unaccepted JSON format. {ex.Message}";
+                return false;
+            }
+
+            if (payload == null)
+            {
+                message = "Invalid/unaccepted JSON format.";
+                return false;
+            }
+
+            var keyframes = new List<AnimationCreatorPoseKeyframe>();
+            if (payload.keyframes != null)
+            {
+                for (int i = 0; i < payload.keyframes.Length; i++)
+                {
+                    AnimationCreatorFileKeyframe keyframe = payload.keyframes[i];
+                    if (keyframe == null || keyframe.joint_targets == null || keyframe.joint_targets.Length <= 0)
+                    {
+                        continue;
+                    }
+
+                    var jointTargets = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                    for (int targetIndex = 0; targetIndex < keyframe.joint_targets.Length; targetIndex++)
+                    {
+                        AnimationCreatorFileJointTarget jointTarget = keyframe.joint_targets[targetIndex];
+                        if (jointTarget == null || string.IsNullOrWhiteSpace(jointTarget.joint_name))
+                        {
+                            continue;
+                        }
+
+                        jointTargets[jointTarget.joint_name] = jointTarget.joint_degrees;
+                    }
+
+                    if (jointTargets.Count <= 0)
+                    {
+                        continue;
+                    }
+
+                    keyframes.Add(
+                        new AnimationCreatorPoseKeyframe(
+                            jointTargets,
+                            keyframe.hold_seconds,
+                            keyframe.speed_scale,
+                            keyframe.label));
+                }
+            }
+
+            if (keyframes.Count <= 0 && payload.motion_steps != null)
+            {
+                for (int i = 0; i < payload.motion_steps.Length; i++)
+                {
+                    VoiceAgentMotionStep motionStep = payload.motion_steps[i];
+                    if (motionStep == null || motionStep.joint_targets == null || motionStep.joint_targets.Length <= 0)
+                    {
+                        continue;
+                    }
+
+                    var jointTargets = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                    for (int targetIndex = 0; targetIndex < motionStep.joint_targets.Length; targetIndex++)
+                    {
+                        VoiceAgentJointTarget jointTarget = motionStep.joint_targets[targetIndex];
+                        if (jointTarget == null || string.IsNullOrWhiteSpace(jointTarget.joint_name))
+                        {
+                            continue;
+                        }
+
+                        jointTargets[jointTarget.joint_name] = jointTarget.joint_degrees;
+                    }
+
+                    if (jointTargets.Count <= 0)
+                    {
+                        continue;
+                    }
+
+                    keyframes.Add(
+                        new AnimationCreatorPoseKeyframe(
+                            jointTargets,
+                            motionStep.hold_seconds,
+                            motionStep.speed_scale,
+                            motionStep.label));
+                }
+            }
+
+            if (keyframes.Count <= 0)
+            {
+                message =
+                    "Invalid/unaccepted JSON format. Expected 'keyframes' or 'motion_steps' with at least one joint target.";
+                return false;
+            }
+
+            string poseName = NormalizeAnimationCreatorPoseName(
+                !string.IsNullOrWhiteSpace(payload.animation_name)
+                    ? payload.animation_name
+                    : !string.IsNullOrWhiteSpace(payload.name)
+                        ? payload.name
+                        : fallbackName);
+            pose = new AnimationCreatorSavedPose(poseName, keyframes, isDraft: isDraft);
+            return true;
+        }
+
+        private AnimationCreatorFilePayload BuildAnimationCreatorFilePayload(AnimationCreatorSavedPose pose)
+        {
+            int keyframeCount = pose?.Keyframes?.Count ?? 0;
+            var keyframes = new AnimationCreatorFileKeyframe[keyframeCount];
+            var motionSteps = new VoiceAgentMotionStep[keyframeCount];
+            for (int i = 0; i < keyframeCount; i++)
+            {
+                AnimationCreatorPoseKeyframe keyframe = pose.Keyframes[i];
+                if (keyframe == null)
+                {
+                    keyframes[i] = new AnimationCreatorFileKeyframe();
+                    motionSteps[i] = new VoiceAgentMotionStep();
+                    continue;
+                }
+
+                AnimationCreatorFileJointTarget[] fileTargets =
+                    new AnimationCreatorFileJointTarget[keyframe.JointTargets.Count];
+                VoiceAgentJointTarget[] motionTargets = new VoiceAgentJointTarget[keyframe.JointTargets.Count];
+                int targetIndex = 0;
+                foreach (KeyValuePair<string, float> jointTarget in keyframe.JointTargets)
+                {
+                    fileTargets[targetIndex] = new AnimationCreatorFileJointTarget
+                    {
+                        joint_name = jointTarget.Key ?? string.Empty,
+                        joint_degrees = jointTarget.Value
+                    };
+                    motionTargets[targetIndex] = new VoiceAgentJointTarget
+                    {
+                        joint_name = jointTarget.Key ?? string.Empty,
+                        joint_degrees = jointTarget.Value
+                    };
+                    targetIndex++;
+                }
+
+                keyframes[i] = new AnimationCreatorFileKeyframe
+                {
+                    label = string.IsNullOrWhiteSpace(keyframe.Label) ? $"Keyframe {i + 1}" : keyframe.Label,
+                    hold_seconds = keyframe.HoldDurationSeconds,
+                    speed_scale = keyframe.SpeedScale,
+                    joint_targets = fileTargets
+                };
+                motionSteps[i] = new VoiceAgentMotionStep
+                {
+                    label = keyframes[i].label,
+                    hold_seconds = keyframe.HoldDurationSeconds,
+                    speed_scale = keyframe.SpeedScale,
+                    joint_targets = motionTargets
+                };
+            }
+
+            return new AnimationCreatorFilePayload
+            {
+                schema_version = AnimationCreatorSavedFileSchemaVersion,
+                animation_name = pose?.Name ?? "Custom Pose",
+                name = pose?.Name ?? "Custom Pose",
+                exported_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                keyframes = keyframes,
+                motion_steps = motionSteps
+            };
+        }
+
+        private string ResolveAnimationCreatorLocalSaveFilePath(AnimationCreatorSavedPose pose)
+        {
+            if (pose != null && !string.IsNullOrWhiteSpace(pose.FilePath))
+            {
+                return pose.FilePath;
+            }
+
+            string directory = GetAnimationCreatorLibraryDirectory();
+            string stem = SanitizeAnimationCreatorFileStem(pose?.Name);
+            string candidate = Path.Combine(directory, stem + ".json");
+            int suffix = 2;
+            while (File.Exists(candidate) ||
+                   (_animationCreatorSavedPoses.Exists(savedPose =>
+                       savedPose != null &&
+                       !string.Equals(savedPose.Id, pose?.Id, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(
+                           NormalizeAnimationCreatorFilePath(savedPose.FilePath),
+                           NormalizeAnimationCreatorFilePath(candidate),
+                           StringComparison.OrdinalIgnoreCase))))
+            {
+                candidate = Path.Combine(directory, $"{stem}-{suffix}.json");
+                suffix++;
+            }
+
+            return candidate;
+        }
+
+        private bool TrySaveAnimationCreatorPoseLocally(AnimationCreatorSavedPose pose, out string message)
+        {
+            message = string.Empty;
+            if (pose == null)
+            {
+                message = "No Animation Creator animation is selected for saving.";
+                return false;
+            }
+
+            if (!DoesAnimationCreatorPoseHaveContent(pose, includePendingDraftFrames: true))
+            {
+                message = "Record at least one keyframe before saving locally.";
+                return false;
+            }
+
+            string filePath = ResolveAnimationCreatorLocalSaveFilePath(pose);
+            string directory = Path.GetDirectoryName(filePath) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                message = "Animation Creator could not resolve a valid local save folder.";
+                return false;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(directory);
+                AnimationCreatorFilePayload payload = BuildAnimationCreatorFilePayload(pose);
+                string json = JsonUtility.ToJson(payload, true);
+                File.WriteAllText(filePath, json + Environment.NewLine, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to save animation '{pose.Name}' locally: {ex.Message}";
+                return false;
+            }
+
+            bool wasDraft = pose.IsDraft;
+            pose.IsDraft = false;
+            pose.FilePath = filePath;
+            if (wasDraft)
+            {
+                _animationCreatorDraftPoses.RemoveAll(item =>
+                    item != null && string.Equals(item.Id, pose.Id, StringComparison.OrdinalIgnoreCase));
+                _animationCreatorSavedPoses.Add(pose);
+            }
+            else if (!_animationCreatorSavedPoses.Exists(item =>
+                item != null && string.Equals(item.Id, pose.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                _animationCreatorSavedPoses.Add(pose);
+            }
+
+            _animationCreatorSavedPoses.Sort(CompareAnimationCreatorSavedPoses);
+            message = $"Saved animation '{pose.Name}' locally.";
+            return true;
+        }
+
+        private bool TryUpdateSelectedAnimationCreatorSavedPose(out string message)
+        {
+            message = string.Empty;
+            AnimationCreatorSavedPose editingPose = GetAnimationCreatorEditingPose();
+            if (editingPose == null)
+            {
+                message = "Click Edit on a draft or saved animation before using Update Pose.";
+                return false;
+            }
+
+            if (!EnsureAnimationCreator(out string creatorMessage))
+            {
+                message = creatorMessage;
+                return false;
+            }
+
+            if (!TrySyncAnimationCreatorEditingPoseFromEditor(
+                    editingPose,
+                    captureCurrentPoseWhenEmpty: false,
+                    out string syncMessage))
+            {
+                message = string.IsNullOrWhiteSpace(syncMessage)
+                    ? "Animation has no keyframes to update."
+                    : syncMessage;
+                return false;
+            }
+
+            if (editingPose.IsDraft)
+            {
+                message = $"Updated draft '{editingPose.Name}' in memory. Save locally to keep it after restart.";
+                return true;
+            }
+
+            if (!TrySaveAnimationCreatorPoseLocally(editingPose, out string saveMessage))
+            {
+                message = saveMessage;
+                return false;
+            }
+
+            message = $"Updated saved animation '{editingPose.Name}'.";
+            return true;
+        }
+
+        private bool TryImportAnimationCreatorJsonFromPath(out string message)
+        {
+            message = string.Empty;
+            List<string> importPaths = ParseAnimationCreatorImportPaths(_animationCreatorImportPath);
+            if (importPaths.Count <= 0)
+            {
+                message = "Enter one or more JSON file paths to import.";
+                return false;
+            }
+
+            int importedCount = 0;
+            int invalidSchemaCount = 0;
+            int invalidFileTypeCount = 0;
+            int missingFileCount = 0;
+            int localSaveFailureCount = 0;
+            AnimationCreatorSavedPose lastImportedPose = null;
+
+            for (int i = 0; i < importPaths.Count; i++)
+            {
+                string importPath = importPaths[i];
+                string extension;
+                try
+                {
+                    extension = Path.GetExtension(importPath) ?? string.Empty;
+                }
+                catch
+                {
+                    invalidFileTypeCount++;
+                    continue;
+                }
+
+                if (!string.Equals(extension, ".json", StringComparison.OrdinalIgnoreCase))
+                {
+                    invalidFileTypeCount++;
+                    continue;
+                }
+
+                if (!File.Exists(importPath))
+                {
+                    missingFileCount++;
+                    continue;
+                }
+
+                try
+                {
+                    string json = File.ReadAllText(importPath, Encoding.UTF8);
+                    if (!TryBuildAnimationCreatorPoseFromJson(
+                            json,
+                            Path.GetFileNameWithoutExtension(importPath),
+                            isDraft: false,
+                            out AnimationCreatorSavedPose importedPose,
+                            out _))
+                    {
+                        invalidSchemaCount++;
+                        continue;
+                    }
+
+                    if (!TrySaveAnimationCreatorPoseLocally(importedPose, out _))
+                    {
+                        localSaveFailureCount++;
+                        continue;
+                    }
+
+                    lastImportedPose = importedPose;
+                    importedCount++;
+                }
+                catch
+                {
+                    invalidSchemaCount++;
+                }
+            }
+
+            message = BuildAnimationCreatorImportSummary(
+                importedCount,
+                invalidSchemaCount,
+                invalidFileTypeCount,
+                missingFileCount,
+                localSaveFailureCount);
+            if (lastImportedPose == null)
+            {
+                return false;
+            }
+
+            LoadAnimationCreatorPoseIntoEditor(
+                lastImportedPose,
+                $"{message} Editing last imported saved animation '{lastImportedPose.Name}'.");
+            return true;
+        }
+
+        private AnimationCreatorSavedPose ResolveAnimationCreatorExportTargetPose(out string message)
+        {
+            message = string.Empty;
+            AnimationCreatorSavedPose editingPose = GetAnimationCreatorEditingPose();
+            if (DoesAnimationCreatorPoseHaveContent(editingPose, includePendingDraftFrames: true))
+            {
+                return editingPose;
+            }
+
+            AnimationCreatorSavedPose selectedPose = null;
+            for (int i = 0; i < _animationCreatorDraftPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose draftPose = _animationCreatorDraftPoses[i];
+                if (draftPose == null || !_animationCreatorSelectedPoseIds.Contains(draftPose.Id))
+                {
+                    continue;
+                }
+
+                if (selectedPose != null)
+                {
+                    message = "Select only one animation to export, or export the one currently being edited.";
+                    return null;
+                }
+
+                selectedPose = draftPose;
+            }
+
+            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
+            {
+                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
+                if (savedPose == null || !_animationCreatorSelectedPoseIds.Contains(savedPose.Id))
+                {
+                    continue;
+                }
+
+                if (selectedPose != null)
+                {
+                    message = "Select only one animation to export, or export the one currently being edited.";
+                    return null;
+                }
+
+                selectedPose = savedPose;
+            }
+
+            if (selectedPose != null)
+            {
+                return selectedPose;
+            }
+
+            message = "Choose an animation to export by editing it or selecting exactly one item.";
+            return null;
+        }
+
+        private bool TryExportAnimationCreatorPoseToPath(out string message)
+        {
+            message = string.Empty;
+            AnimationCreatorSavedPose pose = ResolveAnimationCreatorExportTargetPose(out message);
+            if (pose == null)
+            {
+                return false;
+            }
+
+            AnimationCreatorSavedPose editingPose = GetAnimationCreatorEditingPose();
+            if (editingPose != null &&
+                string.Equals(editingPose.Id, pose.Id, StringComparison.OrdinalIgnoreCase) &&
+                !TrySyncAnimationCreatorEditingPoseFromEditor(
+                    editingPose,
+                    captureCurrentPoseWhenEmpty: false,
+                    out string syncMessage))
+            {
+                message = string.IsNullOrWhiteSpace(syncMessage)
+                    ? "Animation has no keyframes to export."
+                    : syncMessage;
+                return false;
+            }
+
+            if (pose.KeyframeCount <= 0)
+            {
+                message = "Animation has no keyframes to export.";
+                return false;
+            }
+
+            string requestedPath = (_animationCreatorExportPath ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(requestedPath))
+            {
+                requestedPath = GetAnimationCreatorLibraryDirectory();
+                _animationCreatorExportPath = requestedPath;
+            }
+
+            string filePath = requestedPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                ? requestedPath
+                : Path.Combine(requestedPath, SanitizeAnimationCreatorFileStem(pose.Name) + ".json");
+            string directory = Path.GetDirectoryName(filePath) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                message = "Export path is invalid.";
+                return false;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(directory);
+                AnimationCreatorFilePayload payload = BuildAnimationCreatorFilePayload(pose);
+                string json = JsonUtility.ToJson(payload, true);
+                File.WriteAllText(filePath, json + Environment.NewLine, Encoding.UTF8);
+                message = $"Exported animation '{pose.Name}' to JSON.";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to export animation '{pose.Name}': {ex.Message}";
+                return false;
+            }
+        }
+
         private void BeginAnimationCreatorPoseCapture()
         {
             if (!EnsureAnimationCreator(out string message))
@@ -21678,12 +24021,17 @@ namespace Reachy.ControlApp
             StopLoopingAnimation(updateStatus: false, reason: "Entered Animation Creator.");
             StopAnimationCreatorPlayback(updateStatus: false, reason: "Started a new pose.");
             _client?.CancelActivePoseMotion();
+
+            string draftPoseTitle = string.IsNullOrWhiteSpace(_animationCreatorPoseTitle)
+                ? BuildNextAnimationCreatorDefaultPoseTitle()
+                : NormalizeAnimationCreatorPoseName(_animationCreatorPoseTitle);
+            AnimationCreatorSavedPose draftPose =
+                CreateAnimationCreatorDraftPose(draftPoseTitle);
+            _animationCreatorSelectedPoseIds.Remove(draftPose.Id);
+            _animationCreatorEditingPoseId = draftPose.Id;
+            _animationCreatorPoseTitle = draftPose.Name;
             _animationCreatorDraftKeyframes.Clear();
             _animationCreatorEditModeEnabled = true;
-            if (string.IsNullOrWhiteSpace(_animationCreatorPoseTitle))
-            {
-                _animationCreatorPoseTitle = $"Custom Pose {_animationCreatorNextPoseNumber}";
-            }
 
             bool syncedLiveRobot = false;
             string syncMessage = string.Empty;
@@ -21697,11 +24045,13 @@ namespace Reachy.ControlApp
                 ResetAnimationCreatorLivePreviewState();
             }
 
+            SetAnimationCreatorRecordPoseBaseline(_animationCreator?.CapturePose());
+
             _animationCreatorStatus = syncedLiveRobot
-                ? $"{syncMessage} {GetAnimationCreatorPoseCaptureSummary()}"
+                ? $"{syncMessage} Draft '{draftPose.Name}' created and ready to edit. {GetAnimationCreatorPoseCaptureSummary()}"
                 : string.IsNullOrWhiteSpace(syncMessage)
-                    ? GetAnimationCreatorPoseCaptureSummary()
-                    : $"{syncMessage} {GetAnimationCreatorPoseCaptureSummary()}";
+                    ? $"Draft '{draftPose.Name}' created and ready to edit. {GetAnimationCreatorPoseCaptureSummary()}"
+                    : $"{syncMessage} Draft '{draftPose.Name}' created and ready to edit. {GetAnimationCreatorPoseCaptureSummary()}";
         }
 
         private void ResetAnimationCreatorPose()
@@ -21712,6 +24062,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
+            ClearAnimationCreatorSelectedJoint();
             StopAnimationCreatorPlayback(updateStatus: false, reason: "Reset pose in Animation Creator.");
             if (ShouldAnimationCreatorMirrorToRealRobot())
             {
@@ -21722,10 +24073,11 @@ namespace Reachy.ControlApp
             _animationCreatorPlaybackCoroutine = StartCoroutine(
                 RunAnimationCreatorSingleTransition(
                     neutralPose,
-                    ScaleAnimationCreatorPlaybackDuration(0.38f),
+                    ScaleAnimationCreatorPlaybackDuration(AnimationCreatorDefaultNeutralReturnSeconds),
                     ShouldAnimationCreatorMirrorToRealRobot()
                         ? "Reset pose applied on the scene Reachy and the live robot using the Animations & Poses speed."
                         : "Reset pose applied. Reachy returned to Neutral pose using the Animations & Poses speed."));
+            SetAnimationCreatorRecordPoseBaseline(neutralPose);
             _animationCreatorStatus = ShouldAnimationCreatorMirrorToRealRobot()
                 ? "Resetting Reachy to Neutral pose on the scene Reachy and the live robot using the Animations & Poses speed."
                 : "Resetting Reachy to Neutral pose using the Animations & Poses speed.";
@@ -21739,18 +24091,38 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            StopAnimationCreatorPlayback(updateStatus: false, reason: "Recording Animation Creator keyframe.");
-            Dictionary<string, float> keyframe = _animationCreator.CapturePose();
-            if (keyframe.Count <= 0)
+            if (!EnsureAnimationCreatorEditingPose(
+                    createDraftIfMissing: false,
+                    out AnimationCreatorSavedPose editingPose,
+                    out string editingMessage))
             {
-                _animationCreatorStatus = "No scene pose was available to record.";
+                _animationCreatorStatus = editingMessage;
                 return;
             }
 
-            _animationCreatorDraftKeyframes.Add(
-                new Dictionary<string, float>(keyframe, StringComparer.OrdinalIgnoreCase));
+            if (!HasAnimationCreatorRecordablePoseChange())
+            {
+                _animationCreatorStatus = "Move one or more joints before recording a new keyframe.";
+                return;
+            }
+
+            StopAnimationCreatorPlayback(updateStatus: false, reason: "Recording Animation Creator keyframe.");
+            if (!TryCaptureCurrentAnimationCreatorKeyframe(
+                    out AnimationCreatorPoseKeyframe keyframe,
+                    out string captureMessage))
+            {
+                _animationCreatorStatus = captureMessage;
+                return;
+            }
+
+            _animationCreatorDraftKeyframes.Add(keyframe);
+            SetAnimationCreatorRecordPoseBaseline(keyframe.JointTargets);
+            TrySyncAnimationCreatorEditingPoseFromEditor(
+                editingPose,
+                captureCurrentPoseWhenEmpty: false,
+                out _);
             _animationCreatorStatus =
-                $"Recorded keyframe {_animationCreatorDraftKeyframes.Count} for '{GetAnimationCreatorPoseTitleOrDefault()}'.";
+                $"Recorded keyframe {_animationCreatorDraftKeyframes.Count} for '{editingPose.Name}'.";
         }
 
         private void SaveAnimationCreatorPose()
@@ -21761,121 +24133,122 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            var keyframes = new List<Dictionary<string, float>>();
-            for (int i = 0; i < _animationCreatorDraftKeyframes.Count; i++)
+            if (!EnsureAnimationCreatorEditingPose(
+                    createDraftIfMissing: false,
+                    out AnimationCreatorSavedPose editingPose,
+                    out string editingMessage))
             {
-                keyframes.Add(
-                    new Dictionary<string, float>(_animationCreatorDraftKeyframes[i], StringComparer.OrdinalIgnoreCase));
-            }
-
-            if (keyframes.Count <= 0)
-            {
-                Dictionary<string, float> currentPose = _animationCreator.CapturePose();
-                if (currentPose.Count > 0)
-                {
-                    keyframes.Add(currentPose);
-                }
-            }
-
-            if (keyframes.Count <= 0)
-            {
-                _animationCreatorStatus = "No scene pose or recorded animation was available to save.";
+                _animationCreatorStatus = editingMessage;
                 return;
             }
 
-            string poseName = GetAnimationCreatorPoseTitleOrDefault();
-            int existingIndex = FindAnimationCreatorSavedPoseIndex(poseName);
-            var savedPose = new AnimationCreatorSavedPose(poseName, keyframes);
-            if (existingIndex >= 0)
+            if (!TrySyncAnimationCreatorEditingPoseFromEditor(
+                    editingPose,
+                    captureCurrentPoseWhenEmpty: false,
+                    out string syncMessage))
             {
-                _animationCreatorSavedPoses[existingIndex] = savedPose;
-                _animationCreatorStatus =
-                    $"Updated animation '{poseName}' with {savedPose.KeyframeCount} frame(s).";
-            }
-            else
-            {
-                _animationCreatorSavedPoses.Add(savedPose);
-                _animationCreatorStatus =
-                    $"Saved animation '{poseName}' with {savedPose.KeyframeCount} frame(s).";
+                _animationCreatorStatus = string.IsNullOrWhiteSpace(syncMessage)
+                    ? "No scene pose or recorded animation was available to save."
+                    : syncMessage;
+                return;
             }
 
-            _animationCreatorEditModeEnabled = false;
-            _animationCreatorDraftKeyframes.Clear();
-            _animationCreatorNextPoseNumber++;
-            _animationCreatorPoseTitle = $"Custom Pose {_animationCreatorNextPoseNumber}";
+            if (!TrySaveAnimationCreatorPoseLocally(editingPose, out string saveMessage))
+            {
+                _animationCreatorStatus = saveMessage;
+                return;
+            }
+
+            _animationCreatorEditModeEnabled = true;
+            _animationCreatorStatus = saveMessage;
         }
 
-        private string GetAnimationCreatorPoseTitleOrDefault()
+        private void DeleteSelectedAnimationCreatorDraftPoses()
         {
-            string trimmed = (_animationCreatorPoseTitle ?? string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(trimmed))
+            int deletedCount = 0;
+            bool removedActivePose = false;
+            bool removedEditingPose = false;
+            for (int i = _animationCreatorDraftPoses.Count - 1; i >= 0; i--)
             {
-                return trimmed;
-            }
-
-            return $"Custom Pose {_animationCreatorNextPoseNumber}";
-        }
-
-        private int FindAnimationCreatorSavedPoseIndex(string poseName)
-        {
-            if (string.IsNullOrWhiteSpace(poseName))
-            {
-                return -1;
-            }
-
-            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
-            {
-                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
-                if (savedPose != null &&
-                    string.Equals(savedPose.Name, poseName, StringComparison.OrdinalIgnoreCase))
+                AnimationCreatorSavedPose draftPose = _animationCreatorDraftPoses[i];
+                if (draftPose == null || !_animationCreatorSelectedPoseIds.Contains(draftPose.Id))
                 {
-                    return i;
+                    continue;
                 }
+
+                removedActivePose |= string.Equals(
+                    _animationCreatorActivePoseId,
+                    draftPose.Id,
+                    StringComparison.OrdinalIgnoreCase);
+                removedEditingPose |= string.Equals(
+                    _animationCreatorEditingPoseId,
+                    draftPose.Id,
+                    StringComparison.OrdinalIgnoreCase);
+                _animationCreatorSelectedPoseIds.Remove(draftPose.Id);
+                _animationCreatorDraftPoses.RemoveAt(i);
+                deletedCount++;
             }
 
-            return -1;
-        }
-
-        private int CountSelectedAnimationCreatorSavedPoses()
-        {
-            int count = 0;
-            for (int i = 0; i < _animationCreatorSavedPoses.Count; i++)
+            if (removedActivePose)
             {
-                AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
-                if (savedPose != null && _animationCreatorSelectedPoseNames.Contains(savedPose.Name))
-                {
-                    count++;
-                }
+                StopAnimationCreatorPlayback(
+                    updateStatus: false,
+                    reason: "Discarded the active Animation Creator draft.");
             }
 
-            return count;
+            if (removedEditingPose)
+            {
+                _animationCreatorEditingPoseId = string.Empty;
+                _animationCreatorDraftKeyframes.Clear();
+                _animationCreatorEditModeEnabled = false;
+                _animationCreatorPoseTitle = BuildNextAnimationCreatorDefaultPoseTitle();
+            }
+
+            _animationCreatorStatus = deletedCount == 1
+                ? "Discarded 1 draft animation."
+                : $"Discarded {deletedCount} draft animations.";
         }
 
         private void DeleteSelectedAnimationCreatorSavedPoses()
         {
             int deletedCount = 0;
+            int failedFileDeletes = 0;
             bool removedActivePose = false;
+            bool removedEditingPose = false;
             for (int i = _animationCreatorSavedPoses.Count - 1; i >= 0; i--)
             {
                 AnimationCreatorSavedPose savedPose = _animationCreatorSavedPoses[i];
-                if (savedPose == null || !_animationCreatorSelectedPoseNames.Contains(savedPose.Name))
+                if (savedPose == null || !_animationCreatorSelectedPoseIds.Contains(savedPose.Id))
                 {
                     continue;
                 }
 
-                if (string.Equals(
-                    _animationCreatorActivePoseName,
-                    savedPose.Name,
-                    StringComparison.OrdinalIgnoreCase))
+                removedActivePose |= string.Equals(
+                    _animationCreatorActivePoseId,
+                    savedPose.Id,
+                    StringComparison.OrdinalIgnoreCase);
+                removedEditingPose |= string.Equals(
+                    _animationCreatorEditingPoseId,
+                    savedPose.Id,
+                    StringComparison.OrdinalIgnoreCase);
+
+                if (!string.IsNullOrWhiteSpace(savedPose.FilePath) && File.Exists(savedPose.FilePath))
                 {
-                    removedActivePose = true;
+                    try
+                    {
+                        File.Delete(savedPose.FilePath);
+                    }
+                    catch
+                    {
+                        failedFileDeletes++;
+                        continue;
+                    }
                 }
 
+                _animationCreatorSelectedPoseIds.Remove(savedPose.Id);
                 _animationCreatorSavedPoses.RemoveAt(i);
                 deletedCount++;
             }
-
-            _animationCreatorSelectedPoseNames.Clear();
 
             if (removedActivePose)
             {
@@ -21884,14 +24257,48 @@ namespace Reachy.ControlApp
                     reason: "Deleted selected Animation Creator animations.");
             }
 
+            if (removedEditingPose)
+            {
+                _animationCreatorEditingPoseId = string.Empty;
+                _animationCreatorDraftKeyframes.Clear();
+                _animationCreatorEditModeEnabled = false;
+                _animationCreatorPoseTitle = BuildNextAnimationCreatorDefaultPoseTitle();
+            }
+
             _animationCreatorStatus = deletedCount == 1
                 ? "Deleted 1 saved animation."
                 : $"Deleted {deletedCount} saved animations.";
+            if (failedFileDeletes > 0)
+            {
+                _animationCreatorStatus += $" Failed to delete {failedFileDeletes} local JSON file(s).";
+            }
         }
 
-        private void PlayAnimationCreatorPose(AnimationCreatorSavedPose savedPose)
+        private void BeginEditingAnimationCreatorPose(AnimationCreatorSavedPose pose)
         {
-            if (savedPose == null)
+            if (pose == null)
+            {
+                return;
+            }
+
+            if (!EnsureAnimationCreator(out string message))
+            {
+                _animationCreatorStatus = message;
+                return;
+            }
+
+            _animationCreatorSelectedPoseIds.Remove(pose.Id);
+
+            LoadAnimationCreatorPoseIntoEditor(
+                pose,
+                pose.IsDraft
+                    ? $"Editing draft '{pose.Name}'. Save locally to keep it after restart."
+                    : $"Editing saved animation '{pose.Name}'. Use Update Pose or Save Locally to keep changes.");
+        }
+
+        private void PlayAnimationCreatorPose(AnimationCreatorSavedPose pose)
+        {
+            if (pose == null)
             {
                 return;
             }
@@ -21907,6 +24314,7 @@ namespace Reachy.ControlApp
                 reason: "Entered Animation Creator.",
                 stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Entered Animation Creator.");
+            ClearAnimationCreatorSelectedJoint();
             StopAnimationCreatorPlayback(updateStatus: false, reason: "Restarting Animation Creator playback.");
             if (ShouldAnimationCreatorMirrorToRealRobot())
             {
@@ -21914,17 +24322,17 @@ namespace Reachy.ControlApp
             }
 
             _animationCreatorEditModeEnabled = false;
-            _animationCreatorPlaybackCoroutine = StartCoroutine(RunAnimationCreatorPoseLoop(savedPose));
-            _animationCreatorActivePoseName = savedPose.Name;
+            _animationCreatorPlaybackCoroutine = StartCoroutine(RunAnimationCreatorPoseLoop(pose));
+            _animationCreatorActivePoseId = pose.Id;
             _animationCreatorStatus =
                 ShouldAnimationCreatorMirrorToRealRobot()
-                    ? $"Playing looping animation '{savedPose.Name}' on the scene Reachy and the live robot ({savedPose.KeyframeCount} frame(s))."
-                    : $"Playing looping animation '{savedPose.Name}' on the scene Reachy ({savedPose.KeyframeCount} frame(s)).";
+                    ? $"Playing looping animation '{pose.Name}' on the scene Reachy and the live robot ({pose.KeyframeCount} frame(s))."
+                    : $"Playing looping animation '{pose.Name}' on the scene Reachy ({pose.KeyframeCount} frame(s)).";
         }
 
-        private IEnumerator RunAnimationCreatorPoseLoop(AnimationCreatorSavedPose savedPose)
+        private IEnumerator RunAnimationCreatorPoseLoop(AnimationCreatorSavedPose pose)
         {
-            if (savedPose == null || savedPose.Keyframes == null || savedPose.Keyframes.Count <= 0)
+            if (pose == null || pose.Keyframes == null || pose.Keyframes.Count <= 0)
             {
                 yield break;
             }
@@ -21932,21 +24340,23 @@ namespace Reachy.ControlApp
             Dictionary<string, float> neutralPose = BuildAnimationCreatorNeutralPose();
             while (true)
             {
-                for (int i = 0; i < savedPose.Keyframes.Count; i++)
+                for (int i = 0; i < pose.Keyframes.Count; i++)
                 {
-                    Dictionary<string, float> keyframe = savedPose.Keyframes[i];
-                    if (keyframe == null || keyframe.Count <= 0)
+                    AnimationCreatorPoseKeyframe keyframe = pose.Keyframes[i];
+                    if (keyframe == null || keyframe.JointTargets.Count <= 0)
                     {
                         continue;
                     }
 
+                    float transitionDuration = ScaleAnimationCreatorPlaybackDuration(
+                        AnimationCreatorDefaultTransitionSeconds / Mathf.Max(0.1f, keyframe.SpeedScale));
                     yield return AnimateAnimationCreatorPose(
-                        keyframe,
-                        ScaleAnimationCreatorPlaybackDuration(0.42f));
+                        keyframe.JointTargets,
+                        transitionDuration);
                     if (_animationCreatorLastTransitionFailed)
                     {
                         _animationCreatorPlaybackCoroutine = null;
-                        _animationCreatorActivePoseName = string.Empty;
+                        _animationCreatorActivePoseId = string.Empty;
                         _animationCreatorStatus = _animationCreatorLastTransitionFailureMessage;
                         _animationCreatorLastTransitionFailed = false;
                         _animationCreatorLastTransitionFailureMessage = string.Empty;
@@ -21954,16 +24364,16 @@ namespace Reachy.ControlApp
                     }
 
                     yield return new WaitForSecondsRealtime(
-                        ScaleAnimationCreatorPlaybackDuration(0.32f));
+                        ScaleAnimationCreatorPlaybackDuration(keyframe.HoldDurationSeconds));
                 }
 
                 yield return AnimateAnimationCreatorPose(
                     neutralPose,
-                    ScaleAnimationCreatorPlaybackDuration(0.38f));
+                    ScaleAnimationCreatorPlaybackDuration(AnimationCreatorDefaultNeutralReturnSeconds));
                 if (_animationCreatorLastTransitionFailed)
                 {
                     _animationCreatorPlaybackCoroutine = null;
-                    _animationCreatorActivePoseName = string.Empty;
+                    _animationCreatorActivePoseId = string.Empty;
                     _animationCreatorStatus = _animationCreatorLastTransitionFailureMessage;
                     _animationCreatorLastTransitionFailed = false;
                     _animationCreatorLastTransitionFailureMessage = string.Empty;
@@ -21971,7 +24381,7 @@ namespace Reachy.ControlApp
                 }
 
                 yield return new WaitForSecondsRealtime(
-                    ScaleAnimationCreatorPlaybackDuration(0.35f));
+                    ScaleAnimationCreatorPlaybackDuration(AnimationCreatorDefaultNeutralHoldSeconds));
             }
         }
 
@@ -21982,7 +24392,7 @@ namespace Reachy.ControlApp
         {
             yield return AnimateAnimationCreatorPose(targetPose, durationSeconds);
             _animationCreatorPlaybackCoroutine = null;
-            _animationCreatorActivePoseName = string.Empty;
+            _animationCreatorActivePoseId = string.Empty;
             if (_animationCreatorLastTransitionFailed)
             {
                 _animationCreatorStatus = _animationCreatorLastTransitionFailureMessage;
@@ -22085,7 +24495,7 @@ namespace Reachy.ControlApp
             _client?.CancelActivePoseMotion();
             _animationCreatorLastTransitionFailed = false;
             _animationCreatorLastTransitionFailureMessage = string.Empty;
-            _animationCreatorActivePoseName = string.Empty;
+            _animationCreatorActivePoseId = string.Empty;
             if (updateStatus && !string.IsNullOrWhiteSpace(reason))
             {
                 _animationCreatorStatus = reason;
