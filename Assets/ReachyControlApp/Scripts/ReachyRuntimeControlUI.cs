@@ -282,10 +282,14 @@ namespace Reachy.ControlApp
         private const string BoredAudioFileName = "bored_robotic_small.mp3";
         private const string CuriousAudioFileName = "curious_robotic_small.mp3";
         private const string SadAudioFileName = "sad_whimper.mp3";
+        private const string ThinkingAudioFileName = "thinking_robotic_small.mp3";
+        private const string AngryAudioFileName = "angry_robotic_small.mp3";
         private const string HappyActedSequenceName = "happy";
         private const string Sad1ActedSequenceName = "sad";
         private const string BoredActedSequenceName = "bored";
         private const string CuriousActedSequenceName = "curious";
+        private const string ThinkingActedSequenceName = "thinking";
+        private const string AngryActedSequenceName = "angry";
         private const string CuriousPose1Name = "Curious1";
         private const string CuriousPose2Name = "Curious2";
         private const string CuriousPose3Name = "Curious3";
@@ -294,6 +298,14 @@ namespace Reachy.ControlApp
         private const string BoredPose2Name = "Bored2";
         private const string BoredPose3Name = "Bored3";
         private const string BoredPose4Name = "Bored4";
+        private const string ThinkingPose1Name = "Thinking1";
+        private const string ThinkingPose2Name = "Thinking2";
+        private const string ThinkingPose3Name = "Thinking3";
+        private const string ThinkingPose4Name = "Thinking4";
+        private const string AngryPose1Name = "Angry1";
+        private const string AngryPose2Name = "Angry2";
+        private const string AngryPose3Name = "Angry3";
+        private const string AngryPose4Name = "Angry4";
         private const float EmotionPoseHoldSeconds = 2.5f;
         private const string RobotSpeakerTtsMirrorPath = "speak";
         private const string RobotSpeakerAudioMirrorPath = "play-audio";
@@ -422,7 +434,15 @@ namespace Reachy.ControlApp
             BoredPose1Name,
             BoredPose2Name,
             BoredPose3Name,
-            BoredPose4Name
+            BoredPose4Name,
+            ThinkingPose1Name,
+            ThinkingPose2Name,
+            ThinkingPose3Name,
+            ThinkingPose4Name,
+            AngryPose1Name,
+            AngryPose2Name,
+            AngryPose3Name,
+            AngryPose4Name
         };
         private static readonly string[] DefaultSidecarKnownJoints =
         {
@@ -609,7 +629,8 @@ namespace Reachy.ControlApp
             "reaction mode",
             "silent emotion mode",
             "happy sad mode",
-            "happy sad bored curious mode"
+            "happy sad bored curious mode",
+            "happy sad bored curious thinking angry mode"
         };
         private static readonly OnlineAiEmotionReactionProfile[] DefaultOnlineAiEmotionReactionProfiles =
             CreateDefaultOnlineAiEmotionReactionProfiles();
@@ -1507,6 +1528,8 @@ namespace Reachy.ControlApp
         private AudioClip _boredAudioClip;
         private AudioClip _curiousAudioClip;
         private AudioClip _sadAudioClip;
+        private AudioClip _thinkingAudioClip;
+        private AudioClip _angryAudioClip;
         private readonly Dictionary<UiModeAudioCue, AudioClip> _uiModeAudioClips =
             new Dictionary<UiModeAudioCue, AudioClip>();
         private int _robotSpeakerAudioMirrorRequestVersion;
@@ -5818,6 +5841,16 @@ namespace Reachy.ControlApp
                 return TryStartSad1ActedSequence(out message);
             }
 
+            if (string.Equals(normalizedSequenceName, ThinkingActedSequenceName, StringComparison.OrdinalIgnoreCase))
+            {
+                return TryStartThinkingActedSequence(out message);
+            }
+
+            if (string.Equals(normalizedSequenceName, AngryActedSequenceName, StringComparison.OrdinalIgnoreCase))
+            {
+                return TryStartAngryActedSequence(out message);
+            }
+
             if (string.Equals(
                     normalizedSequenceName,
                     ReachyIntroductionActedSequenceName,
@@ -9777,6 +9810,24 @@ namespace Reachy.ControlApp
                     description =
                         "Use when the transcript feels disappointed, hurt, lonely, worried, grieving, apologetic, exhausted, or emotionally heavy.",
                     enabled = true
+                },
+                new OnlineAiEmotionReactionProfile
+                {
+                    emotion_key = "thinking",
+                    display_name = "Thinking",
+                    acted_sequence_name = ThinkingActedSequenceName,
+                    description =
+                        "Use when the transcript feels reflective, analytical, uncertain, careful, contemplative, or like the speaker is weighing options.",
+                    enabled = true
+                },
+                new OnlineAiEmotionReactionProfile
+                {
+                    emotion_key = "angry",
+                    display_name = "Angry",
+                    acted_sequence_name = AngryActedSequenceName,
+                    description =
+                        "Use when the transcript feels frustrated, irritated, indignant, offended, confrontational, or emotionally heated.",
+                    enabled = true
                 }
             };
         }
@@ -9879,6 +9930,26 @@ namespace Reachy.ControlApp
                         enabled = profile.enabled
                     });
                 }
+            }
+
+            OnlineAiEmotionReactionProfile[] defaultProfiles = CreateDefaultOnlineAiEmotionReactionProfiles();
+            for (int i = 0; i < defaultProfiles.Length; i++)
+            {
+                OnlineAiEmotionReactionProfile defaultProfile = defaultProfiles[i];
+                string defaultKey = NormalizeEmotionReactionKey(defaultProfile?.emotion_key);
+                if (string.IsNullOrWhiteSpace(defaultKey) || !seenKeys.Add(defaultKey))
+                {
+                    continue;
+                }
+
+                normalizedProfiles.Add(new OnlineAiEmotionReactionProfile
+                {
+                    emotion_key = defaultKey,
+                    display_name = defaultProfile.display_name,
+                    acted_sequence_name = defaultProfile.acted_sequence_name,
+                    description = defaultProfile.description,
+                    enabled = defaultProfile.enabled
+                });
             }
 
             if (normalizedProfiles.Count <= 0)
@@ -10755,6 +10826,8 @@ namespace Reachy.ControlApp
             builder.Append("- Prefer curious for inquisitive, puzzled, exploratory, fascinated, surprised, or discovery-oriented content.\n");
             builder.Append("- Prefer bored for flat, uninterested, unimpressed, tired, impatient, or under-stimulated content.\n");
             builder.Append("- Prefer sad for disappointed, hurt, lonely, grieving, ashamed, apologetic, worried, or emotionally heavy content.\n");
+            builder.Append("- Prefer thinking for reflective, analytical, uncertain, careful, contemplative, or weighing-options content.\n");
+            builder.Append("- Prefer angry for frustrated, irritated, indignant, offended, confrontational, or heated content.\n");
             builder.Append("- Keep the response movement-only with no speech.\n");
             builder.Append("Configured emotion reactions:\n");
             for (int i = 0; i < reactions.Length; i++)
@@ -11020,7 +11093,8 @@ namespace Reachy.ControlApp
                 "emotion reactions mode",
                 "reaction mode",
                 "silent emotion mode",
-                "happy sad mode");
+                "happy sad mode",
+                "happy sad bored curious thinking angry mode");
             int targetedModeCount =
                 (targetsAssistant ? 1 : 0) +
                 (targetsFortuneTeller ? 1 : 0) +
@@ -11044,7 +11118,8 @@ namespace Reachy.ControlApp
                 "emotion reactions mode",
                 "reaction mode",
                 "silent emotion mode",
-                "happy sad mode");
+                "happy sad mode",
+                "happy sad bored curious thinking angry mode");
             bool explicitSwitchVerb = ContainsAnyNormalizedPhrase(
                 normalizedTranscript,
                 "switch",
@@ -15467,10 +15542,18 @@ namespace Reachy.ControlApp
                 {
                     config.known_poses = DefaultSidecarKnownPoses;
                 }
+                else
+                {
+                    config.known_poses = MergeDistinctStrings(config.known_poses, DefaultSidecarKnownPoses);
+                }
 
                 if (config.known_joints == null || config.known_joints.Length == 0)
                 {
                     config.known_joints = DefaultSidecarKnownJoints;
+                }
+                else
+                {
+                    config.known_joints = MergeDistinctStrings(config.known_joints, DefaultSidecarKnownJoints);
                 }
 
                 if (config.tts_barge_in_phrases == null || config.tts_barge_in_phrases.Length == 0)
@@ -18275,6 +18358,8 @@ namespace Reachy.ControlApp
             bool isCuriousActive = IsActedSequenceActive(CuriousActedSequenceName);
             bool isBoredActive = IsActedSequenceActive(BoredActedSequenceName);
             bool isSadActive = IsActedSequenceActive(Sad1ActedSequenceName);
+            bool isThinkingActive = IsActedSequenceActive(ThinkingActedSequenceName);
+            bool isAngryActive = IsActedSequenceActive(AngryActedSequenceName);
 
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label(ReachyIntroductionActedSequenceName, _titleStyle);
@@ -18334,6 +18419,24 @@ namespace Reachy.ControlApp
             GUILayout.EndVertical();
 
             GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label(ThinkingActedSequenceName, _titleStyle);
+            GUILayout.Label(
+                $"Plays '{ThinkingAudioFileName}' once through four custom thinking poses with chin-rest pauses, scanning head turns, and a final focused look before returning to Neutral Arms.");
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && !isThinkingActive;
+            if (GUILayout.Button(isThinkingActive ? "Running" : "Start", GUILayout.Height(26f)))
+            {
+                bool ok = TryStartThinkingActedSequence(out string message);
+                if (!ok)
+                {
+                    SetStatus("Acted sequence failed", message);
+                }
+            }
+
+            GUI.enabled = previousEnabled;
+            GUILayout.EndVertical();
+
+            GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label(BoredActedSequenceName, _titleStyle);
             GUILayout.Label(
                 $"Plays '{BoredAudioFileName}' once through four custom boredom poses with drooping shoulders, side glances, and dramatic antenna slumps before returning to Neutral Arms.");
@@ -18342,6 +18445,24 @@ namespace Reachy.ControlApp
             if (GUILayout.Button(isBoredActive ? "Running" : "Start", GUILayout.Height(26f)))
             {
                 bool ok = TryStartBoredActedSequence(out string message);
+                if (!ok)
+                {
+                    SetStatus("Acted sequence failed", message);
+                }
+            }
+
+            GUI.enabled = previousEnabled;
+            GUILayout.EndVertical();
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label(AngryActedSequenceName, _titleStyle);
+            GUILayout.Label(
+                $"Plays '{AngryAudioFileName}' once through four custom angry poses with tense shoulders, flared arms, and a final glare before returning to Neutral Arms.");
+
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress && !isAngryActive;
+            if (GUILayout.Button(isAngryActive ? "Running" : "Start", GUILayout.Height(26f)))
+            {
+                bool ok = TryStartAngryActedSequence(out string message);
                 if (!ok)
                 {
                     SetStatus("Acted sequence failed", message);
@@ -18706,6 +18827,96 @@ namespace Reachy.ControlApp
             return true;
         }
 
+        private bool TryStartThinkingActedSequence(out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Acted sequence start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Acted sequence start blocked: robot is not connected.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{ThinkingActedSequenceName}'.");
+            StopVoiceHelloReturnTimer(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{ThinkingActedSequenceName}'.");
+            StopActedSequence(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{ThinkingActedSequenceName}'.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{ThinkingActedSequenceName}'.");
+
+            _activeActedSequenceName = ThinkingActedSequenceName;
+            _actedSequenceCoroutine = StartCoroutine(RunThinkingActedSequenceCoroutine());
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "start",
+                $"sequence={ThinkingActedSequenceName}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message = $"Acted sequence '{ThinkingActedSequenceName}' started.";
+            SetStatus("Acted sequence started", message);
+            return true;
+        }
+
+        private bool TryStartAngryActedSequence(out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Acted sequence start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Acted sequence start blocked: robot is not connected.";
+                return false;
+            }
+
+            StopVoiceShowMovementSequence(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{AngryActedSequenceName}'.");
+            StopVoiceHelloReturnTimer(
+                updateStatus: false,
+                reason: $"Interrupted by acted sequence '{AngryActedSequenceName}'.");
+            StopActedSequence(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{AngryActedSequenceName}'.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{AngryActedSequenceName}'.");
+
+            _activeActedSequenceName = AngryActedSequenceName;
+            _actedSequenceCoroutine = StartCoroutine(RunAngryActedSequenceCoroutine());
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "start",
+                $"sequence={AngryActedSequenceName}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message = $"Acted sequence '{AngryActedSequenceName}' started.";
+            SetStatus("Acted sequence started", message);
+            return true;
+        }
+
         private bool TryStartBenderSleepActedSequence(out string message)
         {
             message = string.Empty;
@@ -18979,6 +19190,136 @@ namespace Reachy.ControlApp
             }
 
             TrySendActedSequencePresetPose(sequenceName, BoredPose4Name, "final-slump", 4, 4, out _, out float d4);
+            yield return new WaitForSecondsRealtime(d4 + EmotionPoseHoldSeconds);
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, VoiceHelloReturnPoseName, "return-neutral", 1, 1, out _, out _);
+
+            string doneMessage = $"Acted sequence '{sequenceName}' complete.";
+            LogRuntimeEvent("acted-sequence", "complete", doneMessage, "INFO");
+            ClearActedSequenceState();
+            SetStatus("Acted sequence complete", doneMessage);
+        }
+
+        private IEnumerator RunThinkingActedSequenceCoroutine()
+        {
+            string sequenceName = ThinkingActedSequenceName;
+
+            if (_client == null || !_client.IsConnected)
+            {
+                string msg = $"Acted sequence '{sequenceName}' stopped: robot is not connected.";
+                LogRuntimeEvent("acted-sequence", "stopped", msg, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence stopped", msg);
+                yield break;
+            }
+
+            AudioClip thinkingClip = _thinkingAudioClip;
+            if (thinkingClip == null)
+            {
+                yield return LoadThinkingAudioClipCoroutine((clip, _) => { thinkingClip = clip; });
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, ThinkingPose1Name, "ponder-right", 1, 4, out _, out float d1);
+
+            if (thinkingClip != null)
+            {
+                PlayActedSequenceOneShotAudio(thinkingClip);
+            }
+
+            yield return new WaitForSecondsRealtime(d1 + 0.45f);
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, ThinkingPose2Name, "weigh-left", 2, 4, out _, out float d2);
+            yield return new WaitForSecondsRealtime(d2 + 0.45f);
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, ThinkingPose3Name, "analyze", 3, 4, out _, out float d3);
+            yield return new WaitForSecondsRealtime(d3 + 0.4f);
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, ThinkingPose4Name, "focus", 4, 4, out _, out float d4);
+            yield return new WaitForSecondsRealtime(d4 + EmotionPoseHoldSeconds);
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, VoiceHelloReturnPoseName, "return-neutral", 1, 1, out _, out _);
+
+            string doneMessage = $"Acted sequence '{sequenceName}' complete.";
+            LogRuntimeEvent("acted-sequence", "complete", doneMessage, "INFO");
+            ClearActedSequenceState();
+            SetStatus("Acted sequence complete", doneMessage);
+        }
+
+        private IEnumerator RunAngryActedSequenceCoroutine()
+        {
+            string sequenceName = AngryActedSequenceName;
+
+            if (_client == null || !_client.IsConnected)
+            {
+                string msg = $"Acted sequence '{sequenceName}' stopped: robot is not connected.";
+                LogRuntimeEvent("acted-sequence", "stopped", msg, "WARN");
+                ClearActedSequenceState();
+                SetStatus("Acted sequence stopped", msg);
+                yield break;
+            }
+
+            AudioClip angryClip = _angryAudioClip;
+            if (angryClip == null)
+            {
+                yield return LoadAngryAudioClipCoroutine((clip, _) => { angryClip = clip; });
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, AngryPose1Name, "tense-up", 1, 4, out _, out float d1);
+
+            if (angryClip != null)
+            {
+                PlayActedSequenceOneShotAudio(angryClip);
+            }
+
+            yield return new WaitForSecondsRealtime(Mathf.Max(0.3f, d1 * 0.85f));
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, AngryPose2Name, "flare", 2, 4, out _, out float d2);
+            yield return new WaitForSecondsRealtime(Mathf.Max(0.3f, d2 * 0.75f));
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, AngryPose3Name, "jab", 3, 4, out _, out float d3);
+            yield return new WaitForSecondsRealtime(Mathf.Max(0.35f, d3 * 0.8f));
+            if (_client == null || !_client.IsConnected)
+            {
+                ClearActedSequenceState();
+                yield break;
+            }
+
+            TrySendActedSequencePresetPose(sequenceName, AngryPose4Name, "glare", 4, 4, out _, out float d4);
             yield return new WaitForSecondsRealtime(d4 + EmotionPoseHoldSeconds);
             if (_client == null || !_client.IsConnected)
             {
@@ -19946,6 +20287,112 @@ namespace Reachy.ControlApp
             }
         }
 
+        private IEnumerator LoadThinkingAudioClipCoroutine(Action<AudioClip, string> onComplete)
+        {
+            if (_thinkingAudioClip != null)
+            {
+                onComplete?.Invoke(_thinkingAudioClip, string.Empty);
+                yield break;
+            }
+
+            string audioPath = GetThinkingAudioPath();
+            if (!File.Exists(audioPath))
+            {
+                onComplete?.Invoke(null, $"File not found at '{audioPath}'.");
+                yield break;
+            }
+
+            using (UnityWebRequest request = UnityWebRequestMultimedia.GetAudioClip(
+                       new Uri(audioPath).AbsoluteUri,
+                       AudioType.MPEG))
+            {
+                if (request.downloadHandler is DownloadHandlerAudioClip audioHandler)
+                {
+                    audioHandler.streamAudio = false;
+                }
+
+                yield return request.SendWebRequest();
+
+#if UNITY_2020_2_OR_NEWER
+                bool failed = request.result != UnityWebRequest.Result.Success;
+#else
+                bool failed = request.isHttpError || request.isNetworkError;
+#endif
+                if (failed)
+                {
+                    string errorMessage = string.IsNullOrWhiteSpace(request.error)
+                        ? $"Failed to load '{ThinkingAudioFileName}'."
+                        : request.error;
+                    onComplete?.Invoke(null, errorMessage);
+                    yield break;
+                }
+
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(request);
+                if (clip == null)
+                {
+                    onComplete?.Invoke(null, $"'{ThinkingAudioFileName}' loaded without clip data.");
+                    yield break;
+                }
+
+                clip.name = Path.GetFileNameWithoutExtension(ThinkingAudioFileName);
+                _thinkingAudioClip = clip;
+                onComplete?.Invoke(_thinkingAudioClip, string.Empty);
+            }
+        }
+
+        private IEnumerator LoadAngryAudioClipCoroutine(Action<AudioClip, string> onComplete)
+        {
+            if (_angryAudioClip != null)
+            {
+                onComplete?.Invoke(_angryAudioClip, string.Empty);
+                yield break;
+            }
+
+            string audioPath = GetAngryAudioPath();
+            if (!File.Exists(audioPath))
+            {
+                onComplete?.Invoke(null, $"File not found at '{audioPath}'.");
+                yield break;
+            }
+
+            using (UnityWebRequest request = UnityWebRequestMultimedia.GetAudioClip(
+                       new Uri(audioPath).AbsoluteUri,
+                       AudioType.MPEG))
+            {
+                if (request.downloadHandler is DownloadHandlerAudioClip audioHandler)
+                {
+                    audioHandler.streamAudio = false;
+                }
+
+                yield return request.SendWebRequest();
+
+#if UNITY_2020_2_OR_NEWER
+                bool failed = request.result != UnityWebRequest.Result.Success;
+#else
+                bool failed = request.isHttpError || request.isNetworkError;
+#endif
+                if (failed)
+                {
+                    string errorMessage = string.IsNullOrWhiteSpace(request.error)
+                        ? $"Failed to load '{AngryAudioFileName}'."
+                        : request.error;
+                    onComplete?.Invoke(null, errorMessage);
+                    yield break;
+                }
+
+                AudioClip clip = DownloadHandlerAudioClip.GetContent(request);
+                if (clip == null)
+                {
+                    onComplete?.Invoke(null, $"'{AngryAudioFileName}' loaded without clip data.");
+                    yield break;
+                }
+
+                clip.name = Path.GetFileNameWithoutExtension(AngryAudioFileName);
+                _angryAudioClip = clip;
+                onComplete?.Invoke(_angryAudioClip, string.Empty);
+            }
+        }
+
         private void PlayActedSequenceOneShotAudio(AudioClip clip)
         {
             if (clip == null)
@@ -20280,6 +20727,16 @@ namespace Reachy.ControlApp
             return GetActedSequenceAudioPath(HappyAudioFileName);
         }
 
+        private static string GetThinkingAudioPath()
+        {
+            return GetActedSequenceAudioPath(ThinkingAudioFileName);
+        }
+
+        private static string GetAngryAudioPath()
+        {
+            return GetActedSequenceAudioPath(AngryAudioFileName);
+        }
+
         private static string GetActedSequenceAudioPath(string audioFileName)
         {
             string streamingAssetsPath = Path.Combine(Application.streamingAssetsPath, audioFileName);
@@ -20340,6 +20797,42 @@ namespace Reachy.ControlApp
             }
 
             return sequence;
+        }
+
+        private static string[] MergeDistinctStrings(string[] existingValues, IReadOnlyList<string> requiredValues)
+        {
+            var merged = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (existingValues != null)
+            {
+                for (int i = 0; i < existingValues.Length; i++)
+                {
+                    string value = (existingValues[i] ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(value) || !seen.Add(value))
+                    {
+                        continue;
+                    }
+
+                    merged.Add(value);
+                }
+            }
+
+            if (requiredValues != null)
+            {
+                for (int i = 0; i < requiredValues.Count; i++)
+                {
+                    string value = (requiredValues[i] ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(value) || !seen.Add(value))
+                    {
+                        continue;
+                    }
+
+                    merged.Add(value);
+                }
+            }
+
+            return merged.ToArray();
         }
 
         private static string FindPresetPoseName(IReadOnlyList<string> availablePoses, string desiredPoseName)

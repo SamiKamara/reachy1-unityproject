@@ -130,6 +130,14 @@ DEFAULT_POSES = [
     "Bored2",
     "Bored3",
     "Bored4",
+    "Thinking1",
+    "Thinking2",
+    "Thinking3",
+    "Thinking4",
+    "Angry1",
+    "Angry2",
+    "Angry3",
+    "Angry4",
 ]
 
 DEFAULT_JOINTS = [
@@ -266,6 +274,24 @@ DEFAULT_ONLINE_AI_EMOTION_REACTIONS = (
         "acted_sequence_name": "sad",
         "description": (
             "Use when the transcript feels disappointed, hurt, lonely, worried, grieving, apologetic, exhausted, or emotionally heavy."
+        ),
+        "enabled": True,
+    },
+    {
+        "emotion_key": "thinking",
+        "display_name": "Thinking",
+        "acted_sequence_name": "thinking",
+        "description": (
+            "Use when the transcript feels reflective, analytical, uncertain, careful, contemplative, or like the speaker is weighing options."
+        ),
+        "enabled": True,
+    },
+    {
+        "emotion_key": "angry",
+        "display_name": "Angry",
+        "acted_sequence_name": "angry",
+        "description": (
+            "Use when the transcript feels frustrated, irritated, indignant, offended, confrontational, or emotionally heated."
         ),
         "enabled": True,
     },
@@ -1687,6 +1713,14 @@ def normalize_online_ai_emotion_reactions(value) -> list[dict]:
                 "enabled": enabled,
             }
         )
+
+    for default_reaction in build_default_online_ai_emotion_reactions():
+        default_key = normalize_online_ai_emotion_key(default_reaction.get("emotion_key"))
+        if not default_key or default_key in seen_keys:
+            continue
+
+        seen_keys.add(default_key)
+        normalized_reactions.append(dict(default_reaction))
 
     if not normalized_reactions:
         return build_default_online_ai_emotion_reactions()
@@ -5790,6 +5824,7 @@ class OnlineAIOrchestrator:
             "silent emotion mode",
             "happy sad mode",
             "happy sad bored curious mode",
+            "happy sad bored curious thinking angry mode",
         )
         if (
             int(bool(targets_assistant))
@@ -5814,6 +5849,7 @@ class OnlineAIOrchestrator:
             "silent emotion mode",
             "happy sad mode",
             "happy sad bored curious mode",
+            "happy sad bored curious thinking angry mode",
         )
         explicit_switch_verb = cls._contains_any_normalized_phrase(
             normalized_transcript,
@@ -7164,6 +7200,8 @@ class OnlineAIOrchestrator:
                 "- Favor curious for inquisitive, puzzled, exploratory, fascinated, surprised, or discovery-oriented content.\n"
                 "- Favor bored for flat, uninterested, unimpressed, tired, impatient, or under-stimulated content.\n"
                 "- Favor sad for disappointed, hurt, lonely, worried, grieving, apologetic, exhausted, or emotionally heavy content.\n"
+                "- Favor thinking for reflective, analytical, uncertain, careful, contemplative, or weighing-options content.\n"
+                "- Favor angry for frustrated, irritated, indignant, offended, confrontational, or heated content.\n"
                 "- When the feeling is mixed or subtle, choose the closest configured emotion instead of leaving it blank.\n"
                 "- Keep emotion_reaction.reason short.\n"
                 "- Do not produce any spoken reply.\n"

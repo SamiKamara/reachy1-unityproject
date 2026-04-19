@@ -58,6 +58,14 @@ namespace Reachy.ControlApp
         private const string Bored2PoseName = "Bored2";
         private const string Bored3PoseName = "Bored3";
         private const string Bored4PoseName = "Bored4";
+        private const string Thinking1PoseName = "Thinking1";
+        private const string Thinking2PoseName = "Thinking2";
+        private const string Thinking3PoseName = "Thinking3";
+        private const string Thinking4PoseName = "Thinking4";
+        private const string Angry1PoseName = "Angry1";
+        private const string Angry2PoseName = "Angry2";
+        private const string Angry3PoseName = "Angry3";
+        private const string Angry4PoseName = "Angry4";
         private const float Deg2Rad = (float)(Math.PI / 180.0);
         private const float Rad2Deg = (float)(180.0 / Math.PI);
 
@@ -2838,6 +2846,222 @@ namespace Reachy.ControlApp
                         new PoseJointGoal("neck_yaw", -22.0f),
                         new PoseJointGoal("l_antenna", 26.0f),
                         new PoseJointGoal("r_antenna", -98.0f),
+                    }
+                ),
+                new PosePreset(
+                    Thinking1PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -18.0f),
+                        new PoseJointGoal("r_shoulder_roll", -28.0f),
+                        new PoseJointGoal("r_arm_yaw", -12.0f),
+                        new PoseJointGoal("r_elbow_pitch", -104.0f),
+                        new PoseJointGoal("r_forearm_yaw", -70.0f),
+                        new PoseJointGoal("r_wrist_pitch", 46.0f),
+                        new PoseJointGoal("r_wrist_roll", -20.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -36.0f),
+                        new PoseJointGoal("l_shoulder_roll", 18.0f),
+                        new PoseJointGoal("l_arm_yaw", 10.0f),
+                        new PoseJointGoal("l_elbow_pitch", -88.0f),
+                        new PoseJointGoal("l_forearm_yaw", 30.0f),
+                        new PoseJointGoal("l_wrist_pitch", 18.0f),
+                        new PoseJointGoal("l_wrist_roll", 8.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 8.0f),
+                        new PoseJointGoal("neck_pitch", 14.0f),
+                        new PoseJointGoal("neck_yaw", 20.0f),
+                        new PoseJointGoal("l_antenna", 54.0f),
+                        new PoseJointGoal("r_antenna", -102.0f),
+                    }
+                ),
+                new PosePreset(
+                    Thinking2PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -34.0f),
+                        new PoseJointGoal("r_shoulder_roll", -16.0f),
+                        new PoseJointGoal("r_arm_yaw", -8.0f),
+                        new PoseJointGoal("r_elbow_pitch", -82.0f),
+                        new PoseJointGoal("r_forearm_yaw", -18.0f),
+                        new PoseJointGoal("r_wrist_pitch", 18.0f),
+                        new PoseJointGoal("r_wrist_roll", -6.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -18.0f),
+                        new PoseJointGoal("l_shoulder_roll", 28.0f),
+                        new PoseJointGoal("l_arm_yaw", 18.0f),
+                        new PoseJointGoal("l_elbow_pitch", -112.0f),
+                        new PoseJointGoal("l_forearm_yaw", 72.0f),
+                        new PoseJointGoal("l_wrist_pitch", 40.0f),
+                        new PoseJointGoal("l_wrist_roll", 20.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", -6.0f),
+                        new PoseJointGoal("neck_pitch", 8.0f),
+                        new PoseJointGoal("neck_yaw", -22.0f),
+                        new PoseJointGoal("l_antenna", 102.0f),
+                        new PoseJointGoal("r_antenna", -54.0f),
+                    }
+                ),
+                new PosePreset(
+                    Thinking3PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -46.0f),
+                        new PoseJointGoal("r_shoulder_roll", -18.0f),
+                        new PoseJointGoal("r_arm_yaw", -8.0f),
+                        new PoseJointGoal("r_elbow_pitch", -118.0f),
+                        new PoseJointGoal("r_forearm_yaw", -40.0f),
+                        new PoseJointGoal("r_wrist_pitch", 28.0f),
+                        new PoseJointGoal("r_wrist_roll", -8.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -46.0f),
+                        new PoseJointGoal("l_shoulder_roll", 18.0f),
+                        new PoseJointGoal("l_arm_yaw", 8.0f),
+                        new PoseJointGoal("l_elbow_pitch", -118.0f),
+                        new PoseJointGoal("l_forearm_yaw", 40.0f),
+                        new PoseJointGoal("l_wrist_pitch", 28.0f),
+                        new PoseJointGoal("l_wrist_roll", 8.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 0.0f),
+                        new PoseJointGoal("neck_pitch", 20.0f),
+                        new PoseJointGoal("neck_yaw", 0.0f),
+                        new PoseJointGoal("l_antenna", 96.0f),
+                        new PoseJointGoal("r_antenna", -96.0f),
+                    }
+                ),
+                new PosePreset(
+                    Thinking4PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -58.0f),
+                        new PoseJointGoal("r_shoulder_roll", -24.0f),
+                        new PoseJointGoal("r_arm_yaw", -10.0f),
+                        new PoseJointGoal("r_elbow_pitch", -92.0f),
+                        new PoseJointGoal("r_forearm_yaw", -12.0f),
+                        new PoseJointGoal("r_wrist_pitch", 18.0f),
+                        new PoseJointGoal("r_wrist_roll", -12.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -34.0f),
+                        new PoseJointGoal("l_shoulder_roll", 14.0f),
+                        new PoseJointGoal("l_arm_yaw", 6.0f),
+                        new PoseJointGoal("l_elbow_pitch", -70.0f),
+                        new PoseJointGoal("l_forearm_yaw", 20.0f),
+                        new PoseJointGoal("l_wrist_pitch", 14.0f),
+                        new PoseJointGoal("l_wrist_roll", 8.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", -4.0f),
+                        new PoseJointGoal("neck_pitch", -6.0f),
+                        new PoseJointGoal("neck_yaw", 18.0f),
+                        new PoseJointGoal("l_antenna", 34.0f),
+                        new PoseJointGoal("r_antenna", -118.0f),
+                    }
+                ),
+                new PosePreset(
+                    Angry1PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -26.0f),
+                        new PoseJointGoal("r_shoulder_roll", -18.0f),
+                        new PoseJointGoal("r_arm_yaw", -6.0f),
+                        new PoseJointGoal("r_elbow_pitch", -72.0f),
+                        new PoseJointGoal("r_forearm_yaw", -16.0f),
+                        new PoseJointGoal("r_wrist_pitch", 8.0f),
+                        new PoseJointGoal("r_wrist_roll", -6.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -26.0f),
+                        new PoseJointGoal("l_shoulder_roll", 18.0f),
+                        new PoseJointGoal("l_arm_yaw", 6.0f),
+                        new PoseJointGoal("l_elbow_pitch", -72.0f),
+                        new PoseJointGoal("l_forearm_yaw", 16.0f),
+                        new PoseJointGoal("l_wrist_pitch", 8.0f),
+                        new PoseJointGoal("l_wrist_roll", 6.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 0.0f),
+                        new PoseJointGoal("neck_pitch", 18.0f),
+                        new PoseJointGoal("neck_yaw", 0.0f),
+                        new PoseJointGoal("l_antenna", 28.0f),
+                        new PoseJointGoal("r_antenna", -28.0f),
+                    }
+                ),
+                new PosePreset(
+                    Angry2PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -48.0f),
+                        new PoseJointGoal("r_shoulder_roll", -42.0f),
+                        new PoseJointGoal("r_arm_yaw", -26.0f),
+                        new PoseJointGoal("r_elbow_pitch", -92.0f),
+                        new PoseJointGoal("r_forearm_yaw", -20.0f),
+                        new PoseJointGoal("r_wrist_pitch", 18.0f),
+                        new PoseJointGoal("r_wrist_roll", -14.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -48.0f),
+                        new PoseJointGoal("l_shoulder_roll", 42.0f),
+                        new PoseJointGoal("l_arm_yaw", 26.0f),
+                        new PoseJointGoal("l_elbow_pitch", -92.0f),
+                        new PoseJointGoal("l_forearm_yaw", 20.0f),
+                        new PoseJointGoal("l_wrist_pitch", 18.0f),
+                        new PoseJointGoal("l_wrist_roll", 14.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 0.0f),
+                        new PoseJointGoal("neck_pitch", 8.0f),
+                        new PoseJointGoal("neck_yaw", 0.0f),
+                        new PoseJointGoal("l_antenna", 18.0f),
+                        new PoseJointGoal("r_antenna", -18.0f),
+                    }
+                ),
+                new PosePreset(
+                    Angry3PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -62.0f),
+                        new PoseJointGoal("r_shoulder_roll", -24.0f),
+                        new PoseJointGoal("r_arm_yaw", -8.0f),
+                        new PoseJointGoal("r_elbow_pitch", -118.0f),
+                        new PoseJointGoal("r_forearm_yaw", -58.0f),
+                        new PoseJointGoal("r_wrist_pitch", 34.0f),
+                        new PoseJointGoal("r_wrist_roll", -16.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -24.0f),
+                        new PoseJointGoal("l_shoulder_roll", 28.0f),
+                        new PoseJointGoal("l_arm_yaw", 22.0f),
+                        new PoseJointGoal("l_elbow_pitch", -84.0f),
+                        new PoseJointGoal("l_forearm_yaw", 36.0f),
+                        new PoseJointGoal("l_wrist_pitch", 22.0f),
+                        new PoseJointGoal("l_wrist_roll", 12.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 8.0f),
+                        new PoseJointGoal("neck_pitch", 6.0f),
+                        new PoseJointGoal("neck_yaw", -24.0f),
+                        new PoseJointGoal("l_antenna", 12.0f),
+                        new PoseJointGoal("r_antenna", -72.0f),
+                    }
+                ),
+                new PosePreset(
+                    Angry4PoseName,
+                    new List<PoseJointGoal>
+                    {
+                        new PoseJointGoal("r_shoulder_pitch", -38.0f),
+                        new PoseJointGoal("r_shoulder_roll", -34.0f),
+                        new PoseJointGoal("r_arm_yaw", -20.0f),
+                        new PoseJointGoal("r_elbow_pitch", -84.0f),
+                        new PoseJointGoal("r_forearm_yaw", -26.0f),
+                        new PoseJointGoal("r_wrist_pitch", 18.0f),
+                        new PoseJointGoal("r_wrist_roll", -18.0f),
+                        new PoseJointGoal("r_gripper", 0.0f),
+                        new PoseJointGoal("l_shoulder_pitch", -38.0f),
+                        new PoseJointGoal("l_shoulder_roll", 34.0f),
+                        new PoseJointGoal("l_arm_yaw", 20.0f),
+                        new PoseJointGoal("l_elbow_pitch", -84.0f),
+                        new PoseJointGoal("l_forearm_yaw", 26.0f),
+                        new PoseJointGoal("l_wrist_pitch", 18.0f),
+                        new PoseJointGoal("l_wrist_roll", 18.0f),
+                        new PoseJointGoal("l_gripper", 0.0f),
+                        new PoseJointGoal("neck_roll", 0.0f),
+                        new PoseJointGoal("neck_pitch", 14.0f),
+                        new PoseJointGoal("neck_yaw", 0.0f),
+                        new PoseJointGoal("l_antenna", 8.0f),
+                        new PoseJointGoal("r_antenna", -8.0f),
                     }
                 ),
             };
