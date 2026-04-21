@@ -25,9 +25,10 @@ namespace Reachy.ControlApp
             AnimationsAndPoses = 3,
             AnimationCreator = 4,
             ChitChat = 5,
-            ManualControl = 6,
-            Teleoperation = 7,
-            Connections = 8
+            OzMode = 6,
+            ManualControl = 7,
+            Teleoperation = 8,
+            Connections = 9
         }
 
         private static readonly string[] RuntimeMenuViewLabels =
@@ -38,6 +39,7 @@ namespace Reachy.ControlApp
             "Animations & Poses",
             "Animation Creator",
             "Chit Chat",
+            "Oz Mode",
             "Manual Control",
             "Teleoperation",
             "Connections"
@@ -313,6 +315,7 @@ namespace Reachy.ControlApp
         private const string SidecarMicrophoneSourcePath = "/microphone-source";
         private const int RobotSpeakerAudioMirrorTimeoutSeconds = 15;
         private const string ReachyIntroductionActedSequenceName = "Reachy introduction";
+        private const string OzModeActedSequenceName = "Oz mode";
         private const string ReachyIntroductionHelloWavePoseName = "Hello Pose D";
         private const string ReachyIntroductionDefaultSpeechText =
             "Hello, I am Reachy, a robot made by Pollen Robotics. My main trick is teleoperation, " +
@@ -350,6 +353,10 @@ namespace Reachy.ControlApp
         private const string ChitChatInputControlName = "chit_chat_input";
         private const string DefaultChitChatStatus =
             "Ask Reachy a question or try one of the topic prompts.";
+        private const int OzModeHistoryMaxEntries = 32;
+        private const string OzModeInputControlName = "oz_mode_input";
+        private const string DefaultOzModeStatus =
+            "Write what Reachy should say. Oz mode blocks Local AI and Online AI and uses only TTS plus the introduction speech animation.";
         private const int AnimationCreatorSavedFileSchemaVersion = 1;
         private const float AnimationCreatorDefaultKeyframeHoldSeconds = 0.32f;
         private const float AnimationCreatorDefaultKeyframeSpeedScale = 1f;
@@ -1207,6 +1214,9 @@ namespace Reachy.ControlApp
         [SerializeField]
         [TextArea(5, 12)]
         private string reachyIntroductionSequenceText = ReachyIntroductionDefaultSpeechText;
+        [SerializeField]
+        [TextArea(3, 8)]
+        private string ozModeSpeechText = string.Empty;
         
         [Header("Camera Preview")]
         [SerializeField] private bool showCameraPreview = true;
@@ -1435,6 +1445,8 @@ namespace Reachy.ControlApp
         private Vector2 _animationCreatorLibraryScroll;
         private Vector2 _chitChatConversationScroll;
         private Vector2 _chitChatTopicsScroll;
+        private Vector2 _ozModeHistoryScroll;
+        private Vector2 _ozModeControlsScroll;
         private Vector2 _aiPrimaryScroll;
         private Vector2 _aiRuntimeScroll;
         private readonly List<AnimationCreatorSavedPose> _animationCreatorDraftPoses =
@@ -1490,8 +1502,10 @@ namespace Reachy.ControlApp
         private VoiceTranscriptIntentParser _voiceTranscriptParser;
         private VoiceAgentStatusPanel.State _voiceAgentStatusState;
         private readonly List<ChitChatHistoryEntry> _chitChatHistory = new List<ChitChatHistoryEntry>();
+        private readonly List<ChitChatHistoryEntry> _ozModeHistory = new List<ChitChatHistoryEntry>();
         private string _chitChatInput = string.Empty;
         private string _chitChatStatus = DefaultChitChatStatus;
+        private string _ozModeStatus = DefaultOzModeStatus;
         private bool _chitChatMicInputEnabled = true;
         private bool _chitChatAwaitingResponse;
         private string _chitChatPendingPrompt = string.Empty;
@@ -4720,7 +4734,7 @@ namespace Reachy.ControlApp
             _voiceTranscriptParser.MinTranscriptChars = localAiAgentMinTranscriptChars;
             _voiceTranscriptParser.MinTranscriptWords = localAiAgentMinTranscriptWords;
 
-            bool sidecarShouldBePrepared = aiEnabledNow || _actedSequenceRequestingTtsSidecar;
+            bool sidecarShouldBePrepared = aiEnabledNow || _actedSequenceRequestingTtsSidecar || IsOzModeViewSelected();
             bool bridgeShouldBeEnabled = aiEnabledNow;
             if (localAiAgentAutoStartSidecar)
             {
@@ -11731,6 +11745,11 @@ namespace Reachy.ControlApp
 
         private bool IsCurrentAiModeEnabled()
         {
+            if (IsOzModeViewSelected())
+            {
+                return false;
+            }
+
             return IsOnlineAiModeSelected() ? enableOnlineAiAgent : enableLocalAiAgent;
         }
 
@@ -16144,6 +16163,13 @@ namespace Reachy.ControlApp
                     return;
                 }
 
+                if (_activeMenuView == RuntimeMenuView.OzMode)
+                {
+                    DrawOzModeView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
+                    GUI.matrix = previousMatrix;
+                    return;
+                }
+
                 if (_activeMenuView == RuntimeMenuView.ManualControl)
                 {
                     DrawManualControlView(topY, logicalMargin, logicalScreenWidth, logicalScreenHeight);
@@ -16513,6 +16539,11 @@ namespace Reachy.ControlApp
         private void SetActiveMenuView(RuntimeMenuView candidateView)
         {
             _activeMenuView = candidateView;
+            if (_activeMenuView == RuntimeMenuView.OzMode)
+            {
+                InterruptVoiceAndChatForOzMode("Interrupted by Oz mode selection.");
+            }
+
             if (_activeMenuView != RuntimeMenuView.General)
             {
                 localAiAgentPanelExpanded = false;
@@ -17533,6 +17564,537 @@ namespace Reachy.ControlApp
                 "If Reachy is still replying, sending new text is paused until that answer finishes.");
             GUILayout.EndScrollView();
             GUILayout.EndArea();
+        }
+
+        private bool IsOzModeViewSelected()
+        {
+            return _activeMenuView == RuntimeMenuView.OzMode;
+        }
+
+        private void AppendOzModeHistory(string speaker, string text)
+        {
+            string trimmedText = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+            if (string.IsNullOrWhiteSpace(trimmedText))
+            {
+                return;
+            }
+
+            _ozModeHistory.Add(new ChitChatHistoryEntry(speaker, trimmedText));
+            if (_ozModeHistory.Count > OzModeHistoryMaxEntries)
+            {
+                _ozModeHistory.RemoveAt(0);
+            }
+        }
+
+        private void ClearOzModeHistory()
+        {
+            _ozModeHistory.Clear();
+            _ozModeHistoryScroll = Vector2.zero;
+            _ozModeStatus = "Cleared Oz mode history.";
+        }
+
+        private void HandleOzModeKeyboardSubmit()
+        {
+            Event currentEvent = Event.current;
+            if (currentEvent == null || currentEvent.type != EventType.KeyDown)
+            {
+                return;
+            }
+
+            bool isEnterKey = currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.KeypadEnter;
+            bool allowSubmit = isEnterKey &&
+                               !currentEvent.shift &&
+                               !currentEvent.control &&
+                               !currentEvent.alt &&
+                               !currentEvent.command;
+            if (!allowSubmit)
+            {
+                return;
+            }
+
+            if (!string.Equals(GUI.GetNameOfFocusedControl(), OzModeInputControlName, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            currentEvent.Use();
+            bool ok = TryStartOzModeSpeech(out string message);
+            if (!ok)
+            {
+                _ozModeStatus = message;
+                SetStatus("Oz mode", message);
+            }
+        }
+
+        private void InterruptVoiceAndChatForOzMode(string reason)
+        {
+            bool hadPendingChitChat = _chitChatAwaitingResponse || _chitChatInjectionTask != null;
+            if (hadPendingChitChat)
+            {
+                _chitChatSuppressNextResponse = true;
+            }
+
+            _voiceAgentBridge?.InterruptTtsFeedback(reason);
+            ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: false);
+            StopVoiceShowMovementSequence(updateStatus: false, reason: reason);
+            StopVoiceMotionSequence(updateStatus: false, reason: reason);
+            StopVoiceHelloReturnTimer(updateStatus: false, reason: reason);
+
+            if (_voiceHasPendingAction)
+            {
+                RejectPendingVoiceAction(queueFeedback: false);
+            }
+
+            if (hadPendingChitChat)
+            {
+                _chitChatAwaitingResponse = false;
+                _chitChatPendingPrompt = string.Empty;
+                _chitChatStatus = "Chit Chat paused because Oz mode is active.";
+            }
+        }
+
+        private void DrawOzModeView(
+            float topY,
+            float logicalMargin,
+            float logicalScreenWidth,
+            float logicalScreenHeight)
+        {
+            float usableWidth = Mathf.Max(320f, logicalScreenWidth - (2f * logicalMargin));
+            float usableHeight = Mathf.Max(220f, logicalScreenHeight - topY - logicalMargin);
+            float stackedGap = Mathf.Max(12f, DesignPanelGap);
+            float wideGap = Mathf.Max(12f, DesignPanelGap);
+
+            if (usableWidth < 920f)
+            {
+                float topPanelHeight = Mathf.Max(180f, (usableHeight - stackedGap) * 0.52f);
+                float bottomPanelY = topY + topPanelHeight + stackedGap;
+                float bottomPanelHeight = Mathf.Max(160f, usableHeight - topPanelHeight - stackedGap);
+                DrawOzModeHistoryPanel(new Rect(logicalMargin, topY, usableWidth, topPanelHeight));
+                DrawOzModeControlsPanel(new Rect(logicalMargin, bottomPanelY, usableWidth, bottomPanelHeight));
+                return;
+            }
+
+            float minimumRightPanelWidth = 280f;
+            float leftPanelWidth = Mathf.Clamp(
+                usableWidth * 0.58f,
+                460f,
+                Mathf.Max(460f, usableWidth - wideGap - minimumRightPanelWidth));
+            float rightPanelWidth = Mathf.Max(minimumRightPanelWidth, usableWidth - leftPanelWidth - wideGap);
+            float leftPanelX = logicalMargin;
+            float rightPanelX = leftPanelX + leftPanelWidth + wideGap;
+
+            DrawOzModeHistoryPanel(new Rect(leftPanelX, topY, leftPanelWidth, usableHeight));
+            DrawOzModeControlsPanel(new Rect(rightPanelX, topY, rightPanelWidth, usableHeight));
+        }
+
+        private void DrawOzModeHistoryPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Oz Mode", _titleStyle);
+            GUILayout.Label(
+                "A streamlined introduction sequence: Reachy says exactly what you type and loops the same speech animation while talking.");
+            GUILayout.Label("While this view is open, Local AI and Online AI are blocked. Only TTS stays active.");
+            GUILayout.Label(IsActedSequenceActive(OzModeActedSequenceName)
+                ? $"State: speaking via {TtsModeLabels[(int)localAiAgentTtsMode]}."
+                : "State: idle.");
+
+            float historyHeight = Mathf.Max(140f, area.height - 118f);
+            _ozModeHistoryScroll = GUILayout.BeginScrollView(
+                _ozModeHistoryScroll,
+                false,
+                true,
+                GUILayout.Height(historyHeight));
+
+            if (_ozModeHistory.Count <= 0)
+            {
+                GUILayout.Label("No spoken lines yet. Type text on the right and press Speak.");
+            }
+            else
+            {
+                for (int i = 0; i < _ozModeHistory.Count; i++)
+                {
+                    ChitChatHistoryEntry entry = _ozModeHistory[i];
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    GUILayout.BeginVertical(GUI.skin.box);
+                    GUILayout.Label(entry.Speaker, _titleStyle);
+                    GUILayout.Label(entry.Text);
+                    GUILayout.EndVertical();
+                }
+            }
+
+            GUILayout.EndScrollView();
+            GUILayout.Space(4f);
+            GUILayout.Label($"Status: {_ozModeStatus}");
+            GUILayout.EndArea();
+        }
+
+        private void DrawOzModeControlsPanel(Rect area)
+        {
+            GUILayout.BeginArea(area, GUI.skin.box);
+            GUILayout.Label("Speak", _titleStyle);
+            GUILayout.Label("Choose the TTS backend, type a line, and Reachy will interrupt any previous Oz speech before starting the new one.");
+
+            float bodyHeight = Mathf.Max(80f, area.height - 52f);
+            _ozModeControlsScroll = GUILayout.BeginScrollView(
+                _ozModeControlsScroll,
+                false,
+                true,
+                GUILayout.Height(bodyHeight));
+
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("TTS Mode");
+            int nextTtsMode = GUILayout.Toolbar((int)localAiAgentTtsMode, TtsModeLabels);
+            if (nextTtsMode != (int)localAiAgentTtsMode)
+            {
+                localAiAgentTtsMode = (TtsMode)Mathf.Clamp(nextTtsMode, 0, TtsModeLabels.Length - 1);
+                _ozModeStatus = $"Oz mode will use {TtsModeLabels[(int)localAiAgentTtsMode]}.";
+            }
+
+            GUILayout.Label(localAiAgentTtsMode == TtsMode.Online
+                ? "OpenAI TTS is preferred. If it is unavailable, the existing local fallback path can still take over."
+                : "Local TTS is forced for Oz mode speech.");
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("What Reachy Should Say");
+            ozModeSpeechText = DrawTextAreaWithSpaceFallback(
+                OzModeInputControlName,
+                ozModeSpeechText ?? string.Empty,
+                GUILayout.MinHeight(Mathf.Max(120f, area.height * 0.24f)));
+            HandleOzModeKeyboardSubmit();
+
+            bool previousEnabled = GUI.enabled;
+            GUILayout.BeginHorizontal();
+            GUI.enabled = previousEnabled && !_isConnectAttemptInProgress;
+            if (GUILayout.Button(
+                    IsActedSequenceActive(OzModeActedSequenceName) ? "Speak Again" : "Speak",
+                    GUILayout.Height(28f),
+                    GUILayout.ExpandWidth(true)))
+            {
+                bool ok = TryStartOzModeSpeech(out string message);
+                if (!ok)
+                {
+                    _ozModeStatus = message;
+                    SetStatus("Oz mode", message);
+                }
+            }
+
+            GUI.enabled = previousEnabled;
+            if (GUILayout.Button("Stop", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+            {
+                StopOzModeSpeech();
+            }
+
+            GUI.enabled = previousEnabled && _ozModeHistory.Count > 0;
+            if (GUILayout.Button("Clear history", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+            {
+                ClearOzModeHistory();
+            }
+
+            GUI.enabled = previousEnabled;
+            GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Notes");
+            GUILayout.Label("Oz mode does not use Local AI help or Online AI replies. It only sends your exact text to the active TTS path.");
+            GUILayout.Label(_client != null && _client.IsConnected
+                ? $"Connected mode: {GetConnectedModeLabel()}."
+                : "Robot is not connected yet. Connect to the simulator or robot before speaking.");
+            GUILayout.EndVertical();
+
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
+        }
+
+        private string GetOzModeSpeechText()
+        {
+            return string.IsNullOrWhiteSpace(ozModeSpeechText) ? string.Empty : ozModeSpeechText.Trim();
+        }
+
+        private string GetOzModeSpeakerLabel()
+        {
+            return localAiAgentTtsMode == TtsMode.Local ? "Reachy (Local TTS)" : "Reachy (Online TTS)";
+        }
+
+        private bool TryStartOzModeSpeech(out string message)
+        {
+            message = string.Empty;
+            if (_isConnectAttemptInProgress)
+            {
+                message = "Oz mode start blocked: connect attempt in progress.";
+                return false;
+            }
+
+            if (_client == null || !_client.IsConnected)
+            {
+                message = "Oz mode start blocked: robot is not connected.";
+                return false;
+            }
+
+            string speechText = GetOzModeSpeechText();
+            if (string.IsNullOrWhiteSpace(speechText))
+            {
+                message = "Oz mode start blocked: speech text is empty.";
+                return false;
+            }
+
+            InterruptVoiceAndChatForOzMode($"Interrupted by acted sequence '{OzModeActedSequenceName}'.");
+            StopActedSequence(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{OzModeActedSequenceName}'.",
+                stopLoopingAnimation: false);
+            StopLoopingAnimation(
+                updateStatus: false,
+                reason: $"Restarted by acted sequence '{OzModeActedSequenceName}'.");
+
+            _activeActedSequenceName = OzModeActedSequenceName;
+            _actedSequenceCoroutine = StartCoroutine(RunOzModeSpeechCoroutine(speechText));
+            AppendOzModeHistory(GetOzModeSpeakerLabel(), speechText);
+
+            bool targetsRealRobot = IsRealRobotSessionActive();
+            LogMotionEvent(
+                "acted-sequence",
+                "start",
+                $"sequence={OzModeActedSequenceName}; speechChars={speechText.Length}; ttsMode={GetTtsModeConfigValue()}; mode={GetConnectedModeLabel()}",
+                success: true,
+                targetsRealRobot: targetsRealRobot);
+
+            message =
+                $"Oz mode started. Reachy will say the typed line with {TtsModeLabels[(int)localAiAgentTtsMode]} and loop the introduction speech animation until the line finishes.";
+            _ozModeStatus = message;
+            _voiceLastActionResult = message;
+            SetStatus("Oz mode started", message);
+            return true;
+        }
+
+        private void StopOzModeSpeech()
+        {
+            string stopReason = "Stopped from Oz mode.";
+            bool stoppedActedSequence = StopActedSequence(
+                updateStatus: false,
+                reason: stopReason,
+                returnToNeutralPose: true);
+            if (!stoppedActedSequence && _voiceAgentBridge != null)
+            {
+                _voiceAgentBridge.InterruptTtsFeedback(stopReason);
+                ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: false);
+            }
+
+            string message = stoppedActedSequence
+                ? "Oz mode speech stopped."
+                : "Oz mode was already idle.";
+            _ozModeStatus = message;
+            _voiceLastActionResult = message;
+            SetStatus("Oz mode", message);
+        }
+
+        private IEnumerator RunOzModeSpeechCoroutine(string speechText)
+        {
+            string sequenceName = OzModeActedSequenceName;
+            speechText = string.IsNullOrWhiteSpace(speechText) ? string.Empty : speechText.Trim();
+
+            if (ShouldActedSequencePrepareLocalTtsSidecar())
+            {
+                _actedSequenceRequestingTtsSidecar = true;
+                if (!_localAiAgentSidecarReady)
+                {
+                    string preparingMessage =
+                        $"Waiting for local TTS service before running '{sequenceName}'.";
+                    LogRuntimeEvent("acted-sequence", "tts-preparing", preparingMessage, "INFO");
+                    _ozModeStatus = preparingMessage;
+                    SetStatus("Oz mode preparing speech", preparingMessage);
+                }
+
+                float ttsReadyDeadline = Time.unscaledTime + localAiAgentSidecarStartupTimeoutSeconds;
+                while (!_localAiAgentSidecarReady && Time.unscaledTime < ttsReadyDeadline)
+                {
+                    UpdateLocalAiAgentSidecarStartup(enableRequested: true);
+                    yield return null;
+                }
+
+                UpdateLocalAiAgentSidecarStartup(enableRequested: true);
+                if (!_localAiAgentSidecarReady)
+                {
+                    string sidecarDetail = string.IsNullOrWhiteSpace(_localAiAgentSidecarStatus)
+                        ? $"Timed out waiting for local TTS after {localAiAgentSidecarStartupTimeoutSeconds:F1}s."
+                        : _localAiAgentSidecarStatus.Trim();
+                    string blockedMessage =
+                        $"Acted sequence '{sequenceName}' could not start speech because local TTS is unavailable. {sidecarDetail}";
+                    LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
+                    ClearActedSequenceState();
+                    _ozModeStatus = blockedMessage;
+                    SetStatus("Oz mode blocked", blockedMessage);
+                    yield break;
+                }
+            }
+
+            bool queuedSpeech = TryQueueActedSequenceSpeech(
+                speechText,
+                out int baselineSuccessfulTtsCount,
+                out int baselineFailedTtsCount,
+                out string queueMessage);
+            if (!queuedSpeech)
+            {
+                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, queueMessage, shouldReturnToNeutral: false);
+                _ozModeStatus = queueMessage;
+                yield break;
+            }
+
+            bool startedLoop = TryStartLoopingAnimation(
+                SpeechLoopingAnimationName,
+                out string loopMessage,
+                updateStatus: false,
+                stopActedSequence: false);
+            if (!startedLoop)
+            {
+                yield return CompleteActedSequenceAfterSpeech(sequenceName, false, loopMessage, shouldReturnToNeutral: false);
+                _ozModeStatus = loopMessage;
+                yield break;
+            }
+
+            LogRuntimeEvent(
+                "acted-sequence",
+                "tts-queued",
+                $"Queued Oz mode speech for '{sequenceName}' ({speechText.Length} chars).",
+                "INFO");
+
+            float speechQueuedAt = Time.unscaledTime;
+            float speechTimeoutSeconds = GetActedSequenceSpeechTimeoutSeconds(speechText);
+            float speechDeadline = speechQueuedAt + speechTimeoutSeconds;
+            float fallbackSpeechCompletionAt =
+                speechQueuedAt + EstimateActedSequenceSpeechDurationSeconds(speechText);
+            bool shouldTrackLocalTtsPlayback = ShouldActedSequenceTrackLocalTtsPlayback();
+            float nextLocalTtsProbeAt = Time.unscaledTime;
+            Task<SidecarProbeResult> localTtsProbeTask = null;
+            bool ttsAccepted = false;
+            bool observedLocalTtsHealth = false;
+            bool observedLocalTtsPlaybackStart = false;
+            bool latestLocalTtsSpeaking = false;
+            bool ttsSucceeded = false;
+            string speechCompletionMessage = string.Empty;
+
+            while (true)
+            {
+                if (shouldTrackLocalTtsPlayback &&
+                    localTtsProbeTask == null &&
+                    Time.unscaledTime >= nextLocalTtsProbeAt)
+                {
+                    string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                        ? VoiceAgentBridge.DefaultEndpoint
+                        : localAiAgentEndpoint.Trim();
+                    int probeTimeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 150, 1000);
+                    localTtsProbeTask = Task.Run(() => ProbeSidecar(intentEndpoint, probeTimeoutMs));
+                    nextLocalTtsProbeAt = Time.unscaledTime + 0.2f;
+                }
+
+                if (localTtsProbeTask != null && localTtsProbeTask.IsCompleted)
+                {
+                    try
+                    {
+                        SidecarProbeResult probeResult = localTtsProbeTask.Result;
+                        if (probeResult.Success && probeResult.Reachable && probeResult.HealthAvailable)
+                        {
+                            observedLocalTtsHealth = true;
+                            latestLocalTtsSpeaking = probeResult.TtsSpeaking;
+                            if (latestLocalTtsSpeaking)
+                            {
+                                observedLocalTtsPlaybackStart = true;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Health polling is best-effort here; fall back to duration-based completion below.
+                    }
+                    finally
+                    {
+                        localTtsProbeTask = null;
+                    }
+                }
+
+                if (_voiceAgentBridge == null)
+                {
+                    speechCompletionMessage = "Oz mode speech stopped because the TTS bridge is unavailable.";
+                    break;
+                }
+
+                VoiceAgentBridge.BridgeSnapshot snapshot = _voiceAgentBridge.GetSnapshot();
+                bool ttsQueueDrained = !snapshot.TtsInFlight && snapshot.QueuedTtsCount == 0;
+                if (snapshot.SuccessfulTtsCount > baselineSuccessfulTtsCount)
+                {
+                    ttsAccepted = true;
+                }
+
+                if (snapshot.FailedTtsCount > baselineFailedTtsCount && ttsQueueDrained)
+                {
+                    speechCompletionMessage = string.IsNullOrWhiteSpace(snapshot.LastTtsError)
+                        ? "Oz mode speech failed."
+                        : snapshot.LastTtsError;
+                    break;
+                }
+
+                if (shouldTrackLocalTtsPlayback && observedLocalTtsHealth)
+                {
+                    if (observedLocalTtsPlaybackStart && !latestLocalTtsSpeaking && ttsQueueDrained)
+                    {
+                        ttsSucceeded = true;
+                        speechCompletionMessage = "Oz mode speech completed.";
+                        break;
+                    }
+
+                    if (!observedLocalTtsPlaybackStart &&
+                        ttsAccepted &&
+                        ttsQueueDrained &&
+                        Time.unscaledTime >= fallbackSpeechCompletionAt)
+                    {
+                        ttsSucceeded = true;
+                        speechCompletionMessage = "Oz mode speech completed using estimated playback duration.";
+                        break;
+                    }
+                }
+                else if (ttsAccepted && ttsQueueDrained && Time.unscaledTime >= fallbackSpeechCompletionAt)
+                {
+                    ttsSucceeded = true;
+                    speechCompletionMessage = observedLocalTtsHealth
+                        ? "Oz mode speech completed."
+                        : "Oz mode speech completed using estimated playback duration.";
+                    break;
+                }
+
+                if (Time.unscaledTime >= speechDeadline)
+                {
+                    speechCompletionMessage =
+                        $"Timed out waiting for acted sequence '{sequenceName}' speech to finish.";
+                    break;
+                }
+
+                if (_client == null || !_client.IsConnected)
+                {
+                    speechCompletionMessage =
+                        $"Acted sequence '{sequenceName}' stopped because the robot is disconnected.";
+                    break;
+                }
+
+                yield return null;
+            }
+
+            yield return CompleteActedSequenceAfterSpeech(
+                sequenceName,
+                ttsSucceeded,
+                speechCompletionMessage,
+                shouldReturnToNeutral: true);
+            _ozModeStatus = ttsSucceeded
+                ? "Oz mode speech completed."
+                : (string.IsNullOrWhiteSpace(speechCompletionMessage)
+                    ? "Oz mode speech ended with an issue."
+                    : speechCompletionMessage);
         }
 
         private void DrawManualControlView(
