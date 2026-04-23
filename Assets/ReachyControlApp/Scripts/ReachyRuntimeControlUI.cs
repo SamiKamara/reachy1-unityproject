@@ -358,6 +358,10 @@ namespace Reachy.ControlApp
         private const string OzModeInputControlName = "oz_mode_input";
         private const string DefaultOzModeStatus =
             "Write what Reachy should say. Oz mode blocks Local AI and Online AI and uses only TTS plus the introduction speech animation.";
+        private const int OzModeSavedEntriesSchemaVersion = 2;
+        private const string DefaultOzModeSavedEntriesFileName = "reachy-oz-mode-saved-entries.json";
+        private const string DefaultOzModeSavedEntriesSeedFileName = "reachy oz mode saved entries.json";
+        private const string DefaultOzModeSavedEntriesLibraryName = "Oz Mode Saved Entries";
         private const int AnimationCreatorSavedFileSchemaVersion = 1;
         private const float AnimationCreatorDefaultKeyframeHoldSeconds = 0.32f;
         private const float AnimationCreatorDefaultKeyframeSpeedScale = 1f;
@@ -1220,6 +1224,7 @@ namespace Reachy.ControlApp
         [SerializeField]
         [TextArea(3, 8)]
         private string ozModeSpeechText = string.Empty;
+        [SerializeField] private string ozModeSavedEntryName = string.Empty;
         
         [Header("Camera Preview")]
         [SerializeField] private bool showCameraPreview = true;
@@ -1507,9 +1512,12 @@ namespace Reachy.ControlApp
         private VoiceAgentStatusPanel.State _voiceAgentStatusState;
         private readonly List<ChitChatHistoryEntry> _chitChatHistory = new List<ChitChatHistoryEntry>();
         private readonly List<ChitChatHistoryEntry> _ozModeHistory = new List<ChitChatHistoryEntry>();
+        private readonly List<OzModeSavedEntryDefinition> _ozModeSavedEntries =
+            new List<OzModeSavedEntryDefinition>();
         private string _chitChatInput = string.Empty;
         private string _chitChatStatus = DefaultChitChatStatus;
         private string _ozModeStatus = DefaultOzModeStatus;
+        private string _ozModeSavedEntriesFilePath = string.Empty;
         private bool _chitChatMicInputEnabled = true;
         private bool _chitChatAwaitingResponse;
         private string _chitChatPendingPrompt = string.Empty;
@@ -2257,6 +2265,36 @@ namespace Reachy.ControlApp
             public SavedOnlineAiCustomPersonalityFile Payload = new SavedOnlineAiCustomPersonalityFile();
         }
 
+        [Serializable]
+        private sealed class OzModeSavedEntryPayload
+        {
+            public string id = string.Empty;
+            public int number = 0;
+            public string name = string.Empty;
+            public string text = string.Empty;
+            public string saved_utc = string.Empty;
+        }
+
+        [Serializable]
+        private sealed class OzModeSavedEntriesFile
+        {
+            public int schema_version = OzModeSavedEntriesSchemaVersion;
+            public string library_name = DefaultOzModeSavedEntriesLibraryName;
+            public string source_path = string.Empty;
+            public string saved_utc = string.Empty;
+            public OzModeSavedEntryPayload[] entries = new OzModeSavedEntryPayload[0];
+            public OzModeSavedEntryPayload[] saved_entries = new OzModeSavedEntryPayload[0];
+        }
+
+        private sealed class OzModeSavedEntryDefinition
+        {
+            public string Id = string.Empty;
+            public int Number = 0;
+            public string Name = string.Empty;
+            public string Text = string.Empty;
+            public string SavedUtc = string.Empty;
+        }
+
         private void Awake()
         {
             _client = new ReachyGrpcClient();
@@ -2383,6 +2421,7 @@ namespace Reachy.ControlApp
             }
             ResetOnlineAiPersonaLiveApplyTracking();
             TryRefreshSavedOnlineAiCustomPersonalityLibrary(out _);
+            TryRefreshOzModeSavedEntriesLibrary(out _);
             _animationCreatorImportPath = string.Empty;
             _animationCreatorExportPath = GetAnimationCreatorLibraryDirectory();
             TryRefreshAnimationCreatorLocalLibrary(out string animationCreatorLibraryMessage);
@@ -9618,6 +9657,503 @@ namespace Reachy.ControlApp
                 candidates,
                 GetPersistentOnlineAiCustomPersonalityLibraryDirectory());
             return candidates;
+        }
+
+        private string GetProjectOzModeSavedEntriesDirectory()
+        {
+            string projectRoot = GetProjectRootPath();
+            if (!IsReachyProjectRootPath(projectRoot))
+            {
+                return string.Empty;
+            }
+
+            return Path.Combine(
+                projectRoot,
+                "UserSettings",
+                "ReachyControlApp",
+                "OzModeSavedEntries");
+        }
+
+        private static string GetPersistentOzModeSavedEntriesDirectory()
+        {
+            return Path.Combine(
+                Application.persistentDataPath,
+                "ReachyControlApp",
+                "OzModeSavedEntries");
+        }
+
+        private static string GetStandaloneBuildOzModeSavedEntriesDirectory()
+        {
+            string runtimeDirectory = GetRuntimeReachyControlAppDirectory();
+            if (string.IsNullOrWhiteSpace(runtimeDirectory))
+            {
+                return string.Empty;
+            }
+
+            return Path.Combine(runtimeDirectory, "OzModeSavedEntries");
+        }
+
+        private string GetPreferredOzModeSavedEntriesDirectory()
+        {
+            string projectDirectory = GetProjectOzModeSavedEntriesDirectory();
+            if (!string.IsNullOrWhiteSpace(projectDirectory))
+            {
+                return projectDirectory;
+            }
+
+            string standaloneDirectory = GetStandaloneBuildOzModeSavedEntriesDirectory();
+            if (!string.IsNullOrWhiteSpace(standaloneDirectory))
+            {
+                return standaloneDirectory;
+            }
+
+            return GetPersistentOzModeSavedEntriesDirectory();
+        }
+
+        private List<string> GetOzModeSavedEntriesCandidateDirectories()
+        {
+            var candidates = new List<string>();
+            AddRuntimeCandidate(candidates, GetPreferredOzModeSavedEntriesDirectory());
+            AddRuntimeCandidate(candidates, GetProjectOzModeSavedEntriesDirectory());
+            AddRuntimeCandidate(candidates, GetStandaloneBuildOzModeSavedEntriesDirectory());
+            AddRuntimeCandidate(candidates, GetPersistentOzModeSavedEntriesDirectory());
+            return candidates;
+        }
+
+        private List<string> GetOzModeSavedEntriesCandidateFilePaths()
+        {
+            var candidates = new List<string>();
+            List<string> directories = GetOzModeSavedEntriesCandidateDirectories();
+            for (int i = 0; i < directories.Count; i++)
+            {
+                string directory = directories[i];
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                AddRuntimeCandidate(candidates, Path.Combine(directory, DefaultOzModeSavedEntriesFileName));
+            }
+
+            return candidates;
+        }
+
+        private List<string> GetOzModeSavedEntriesSeedCandidatePaths()
+        {
+            var candidates = new List<string>();
+            string userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrWhiteSpace(userProfile))
+            {
+                AddRuntimeCandidate(
+                    candidates,
+                    Path.Combine(userProfile, "Downloads", DefaultOzModeSavedEntriesSeedFileName));
+                AddRuntimeCandidate(
+                    candidates,
+                    Path.Combine(userProfile, "Downloads", DefaultOzModeSavedEntriesFileName));
+            }
+
+            return candidates;
+        }
+
+        private static int CompareOzModeSavedEntryPayloads(
+            OzModeSavedEntryPayload left,
+            OzModeSavedEntryPayload right)
+        {
+            int leftNumber = left != null && left.number > 0 ? left.number : int.MaxValue;
+            int rightNumber = right != null && right.number > 0 ? right.number : int.MaxValue;
+            int numberComparison = leftNumber.CompareTo(rightNumber);
+            if (numberComparison != 0)
+            {
+                return numberComparison;
+            }
+
+            string leftName = left?.name ?? string.Empty;
+            string rightName = right?.name ?? string.Empty;
+            return string.Compare(leftName, rightName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int CompareOzModeSavedEntryDefinitions(
+            OzModeSavedEntryDefinition left,
+            OzModeSavedEntryDefinition right)
+        {
+            int leftNumber = left != null && left.Number > 0 ? left.Number : int.MaxValue;
+            int rightNumber = right != null && right.Number > 0 ? right.Number : int.MaxValue;
+            int numberComparison = leftNumber.CompareTo(rightNumber);
+            if (numberComparison != 0)
+            {
+                return numberComparison;
+            }
+
+            string leftName = left?.Name ?? string.Empty;
+            string rightName = right?.Name ?? string.Empty;
+            return string.Compare(leftName, rightName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void SortAndRenumberOzModeSavedEntries(List<OzModeSavedEntryDefinition> entries)
+        {
+            if (entries == null)
+            {
+                return;
+            }
+
+            entries.Sort(CompareOzModeSavedEntryDefinitions);
+            for (int i = 0; i < entries.Count; i++)
+            {
+                OzModeSavedEntryDefinition entry = entries[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+
+                entry.Number = i + 1;
+            }
+        }
+
+        private static string BuildOzModeSavedEntryDisplayName(string requestedName, string speechText)
+        {
+            string trimmedName = (requestedName ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(trimmedName))
+            {
+                return trimmedName;
+            }
+
+            string collapsedText = Regex.Replace((speechText ?? string.Empty).Trim(), "\\s+", " ").Trim();
+            if (string.IsNullOrWhiteSpace(collapsedText))
+            {
+                return "Saved Line";
+            }
+
+            const int maxLength = 44;
+            if (collapsedText.Length > maxLength)
+            {
+                collapsedText = collapsedText.Substring(0, maxLength - 3).TrimEnd() + "...";
+            }
+
+            return collapsedText;
+        }
+
+        private static OzModeSavedEntriesFile NormalizeOzModeSavedEntriesPayload(
+            OzModeSavedEntriesFile payload,
+            string sourcePath)
+        {
+            if (payload == null)
+            {
+                payload = new OzModeSavedEntriesFile();
+            }
+
+            payload.schema_version = Math.Max(1, payload.schema_version);
+            payload.library_name = string.IsNullOrWhiteSpace(payload.library_name)
+                ? DefaultOzModeSavedEntriesLibraryName
+                : payload.library_name.Trim();
+            payload.source_path = string.IsNullOrWhiteSpace(payload.source_path)
+                ? (sourcePath ?? string.Empty).Trim()
+                : payload.source_path.Trim();
+            payload.saved_utc = (payload.saved_utc ?? string.Empty).Trim();
+
+            OzModeSavedEntryPayload[] rawEntries = payload.entries;
+            if (rawEntries == null || rawEntries.Length == 0)
+            {
+                rawEntries = payload.saved_entries;
+            }
+
+            var normalizedEntries = new List<OzModeSavedEntryPayload>();
+            if (rawEntries != null)
+            {
+                for (int i = 0; i < rawEntries.Length; i++)
+                {
+                    OzModeSavedEntryPayload candidate = rawEntries[i];
+                    string trimmedText = string.IsNullOrWhiteSpace(candidate?.text)
+                        ? string.Empty
+                        : candidate.text.Trim();
+                    if (string.IsNullOrWhiteSpace(trimmedText))
+                    {
+                        continue;
+                    }
+
+                    normalizedEntries.Add(new OzModeSavedEntryPayload
+                    {
+                        id = string.IsNullOrWhiteSpace(candidate?.id)
+                            ? Guid.NewGuid().ToString("N")
+                            : candidate.id.Trim(),
+                        number = candidate != null && candidate.number > 0 ? candidate.number : (i + 1),
+                        name = BuildOzModeSavedEntryDisplayName(candidate?.name, trimmedText),
+                        text = trimmedText,
+                        saved_utc = candidate == null ? string.Empty : (candidate.saved_utc ?? string.Empty).Trim()
+                    });
+                }
+            }
+
+            normalizedEntries.Sort(CompareOzModeSavedEntryPayloads);
+            for (int i = 0; i < normalizedEntries.Count; i++)
+            {
+                normalizedEntries[i].number = i + 1;
+            }
+
+            payload.entries = normalizedEntries.ToArray();
+            payload.saved_entries = new OzModeSavedEntryPayload[0];
+            return payload;
+        }
+
+        private void ApplyOzModeSavedEntriesPayloadToState(
+            OzModeSavedEntriesFile payload,
+            string filePath)
+        {
+            OzModeSavedEntriesFile normalized = NormalizeOzModeSavedEntriesPayload(payload, filePath);
+            _ozModeSavedEntries.Clear();
+            for (int i = 0; i < normalized.entries.Length; i++)
+            {
+                OzModeSavedEntryPayload entry = normalized.entries[i];
+                if (entry == null || string.IsNullOrWhiteSpace(entry.text))
+                {
+                    continue;
+                }
+
+                _ozModeSavedEntries.Add(new OzModeSavedEntryDefinition
+                {
+                    Id = string.IsNullOrWhiteSpace(entry.id) ? Guid.NewGuid().ToString("N") : entry.id.Trim(),
+                    Number = Mathf.Max(1, entry.number),
+                    Name = BuildOzModeSavedEntryDisplayName(entry.name, entry.text),
+                    Text = entry.text.Trim(),
+                    SavedUtc = (entry.saved_utc ?? string.Empty).Trim()
+                });
+            }
+
+            SortAndRenumberOzModeSavedEntries(_ozModeSavedEntries);
+            _ozModeSavedEntriesFilePath = string.IsNullOrWhiteSpace(filePath) ? string.Empty : filePath.Trim();
+        }
+
+        private OzModeSavedEntriesFile BuildCurrentOzModeSavedEntriesPayload()
+        {
+            SortAndRenumberOzModeSavedEntries(_ozModeSavedEntries);
+
+            var entries = new OzModeSavedEntryPayload[_ozModeSavedEntries.Count];
+            for (int i = 0; i < _ozModeSavedEntries.Count; i++)
+            {
+                OzModeSavedEntryDefinition entry = _ozModeSavedEntries[i];
+                entries[i] = new OzModeSavedEntryPayload
+                {
+                    id = string.IsNullOrWhiteSpace(entry?.Id) ? Guid.NewGuid().ToString("N") : entry.Id.Trim(),
+                    number = entry == null ? (i + 1) : Mathf.Max(1, entry.Number),
+                    name = BuildOzModeSavedEntryDisplayName(entry?.Name, entry?.Text),
+                    text = string.IsNullOrWhiteSpace(entry?.Text) ? string.Empty : entry.Text.Trim(),
+                    saved_utc = entry == null ? string.Empty : (entry.SavedUtc ?? string.Empty).Trim()
+                };
+            }
+
+            return NormalizeOzModeSavedEntriesPayload(
+                new OzModeSavedEntriesFile
+                {
+                    schema_version = OzModeSavedEntriesSchemaVersion,
+                    library_name = DefaultOzModeSavedEntriesLibraryName,
+                    source_path = string.IsNullOrWhiteSpace(_ozModeSavedEntriesFilePath)
+                        ? string.Empty
+                        : _ozModeSavedEntriesFilePath.Trim(),
+                    saved_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                    entries = entries,
+                    saved_entries = new OzModeSavedEntryPayload[0]
+                },
+                _ozModeSavedEntriesFilePath);
+        }
+
+        private bool TryLoadOzModeSavedEntriesFile(
+            string filePath,
+            out OzModeSavedEntriesFile payload,
+            out string message)
+        {
+            payload = null;
+            message = string.Empty;
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                message = "Oz mode saved entry file path is empty.";
+                return false;
+            }
+
+            try
+            {
+                string json = File.ReadAllText(filePath, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    message = $"Oz mode saved entry file '{filePath}' is empty.";
+                    return false;
+                }
+
+                payload = NormalizeOzModeSavedEntriesPayload(
+                    JsonUtility.FromJson<OzModeSavedEntriesFile>(json),
+                    filePath);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                message = $"Failed to load Oz mode saved entry file '{filePath}': {ex.Message}";
+                return false;
+            }
+        }
+
+        private bool TryWriteOzModeSavedEntriesLibraryFile(
+            OzModeSavedEntriesFile payload,
+            string preferredFilePath,
+            out string writtenFilePath,
+            out string message)
+        {
+            writtenFilePath = string.Empty;
+            message = string.Empty;
+
+            OzModeSavedEntriesFile normalizedPayload =
+                NormalizeOzModeSavedEntriesPayload(payload, preferredFilePath);
+            string json = JsonUtility.ToJson(normalizedPayload, true);
+            var candidatePaths = new List<string>();
+            AddRuntimeCandidate(candidatePaths, preferredFilePath);
+
+            List<string> directories = GetOzModeSavedEntriesCandidateDirectories();
+            for (int i = 0; i < directories.Count; i++)
+            {
+                string directory = directories[i];
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    continue;
+                }
+
+                AddRuntimeCandidate(candidatePaths, Path.Combine(directory, DefaultOzModeSavedEntriesFileName));
+            }
+
+            string lastFailure = string.Empty;
+            for (int i = 0; i < candidatePaths.Count; i++)
+            {
+                string candidatePath = candidatePaths[i];
+                try
+                {
+                    string directory = Path.GetDirectoryName(candidatePath) ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+
+                    File.WriteAllText(candidatePath, json + Environment.NewLine, Encoding.UTF8);
+                    writtenFilePath = candidatePath;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = $"Failed to write Oz mode saved entry file '{candidatePath}': {ex.Message}";
+                }
+            }
+
+            message = string.IsNullOrWhiteSpace(lastFailure)
+                ? $"Oz mode saved entry library is unavailable. Probed: {SummarizeCandidatePaths(candidatePaths, 3)}"
+                : $"{lastFailure} Probed: {SummarizeCandidatePaths(candidatePaths, 3)}";
+            return false;
+        }
+
+        private bool TrySeedOzModeSavedEntriesLibrary(
+            out string writtenFilePath,
+            out OzModeSavedEntriesFile payload,
+            out string message)
+        {
+            writtenFilePath = string.Empty;
+            payload = null;
+            message = string.Empty;
+
+            List<string> seedPaths = GetOzModeSavedEntriesSeedCandidatePaths();
+            string preferredFilePath = Path.Combine(
+                GetPreferredOzModeSavedEntriesDirectory(),
+                DefaultOzModeSavedEntriesFileName);
+            string lastFailure = string.Empty;
+
+            for (int i = 0; i < seedPaths.Count; i++)
+            {
+                string seedPath = seedPaths[i];
+                if (!File.Exists(seedPath))
+                {
+                    continue;
+                }
+
+                if (!TryLoadOzModeSavedEntriesFile(seedPath, out OzModeSavedEntriesFile seedPayload, out string loadMessage))
+                {
+                    lastFailure = loadMessage;
+                    continue;
+                }
+
+                seedPayload.schema_version = OzModeSavedEntriesSchemaVersion;
+                seedPayload.library_name = DefaultOzModeSavedEntriesLibraryName;
+                seedPayload.source_path = seedPath;
+                seedPayload.saved_utc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+                if (!TryWriteOzModeSavedEntriesLibraryFile(
+                        seedPayload,
+                        preferredFilePath,
+                        out writtenFilePath,
+                        out string writeMessage))
+                {
+                    lastFailure = writeMessage;
+                    continue;
+                }
+
+                payload = seedPayload;
+                message =
+                    $"Imported {seedPayload.entries.Length} Oz mode saved line(s) from '{seedPath}'. JSON: {writtenFilePath}";
+                return true;
+            }
+
+            message = string.IsNullOrWhiteSpace(lastFailure)
+                ? $"Oz mode seed JSON not found. Probed: {SummarizeCandidatePaths(seedPaths, 3)}"
+                : $"{lastFailure} Probed: {SummarizeCandidatePaths(seedPaths, 3)}";
+            return false;
+        }
+
+        private bool TryRefreshOzModeSavedEntriesLibrary(out string message)
+        {
+            message = string.Empty;
+
+            List<string> candidateFilePaths = GetOzModeSavedEntriesCandidateFilePaths();
+            int invalidFileCount = 0;
+            string lastFailure = string.Empty;
+
+            for (int i = 0; i < candidateFilePaths.Count; i++)
+            {
+                string filePath = candidateFilePaths[i];
+                if (!File.Exists(filePath))
+                {
+                    continue;
+                }
+
+                if (TryLoadOzModeSavedEntriesFile(filePath, out OzModeSavedEntriesFile payload, out string loadMessage))
+                {
+                    ApplyOzModeSavedEntriesPayloadToState(payload, filePath);
+                    message = $"Loaded {_ozModeSavedEntries.Count} saved Oz mode line(s). JSON: {filePath}";
+                    return true;
+                }
+
+                invalidFileCount++;
+                lastFailure = loadMessage;
+            }
+
+            if (TrySeedOzModeSavedEntriesLibrary(
+                    out string seededFilePath,
+                    out OzModeSavedEntriesFile seededPayload,
+                    out string seedMessage))
+            {
+                ApplyOzModeSavedEntriesPayloadToState(seededPayload, seededFilePath);
+                message = seedMessage;
+                return true;
+            }
+
+            _ozModeSavedEntries.Clear();
+            _ozModeSavedEntriesFilePath = string.Empty;
+
+            string preferredDirectory = GetPreferredOzModeSavedEntriesDirectory();
+            string preferredFilePath = string.IsNullOrWhiteSpace(preferredDirectory)
+                ? DefaultOzModeSavedEntriesFileName
+                : Path.Combine(preferredDirectory, DefaultOzModeSavedEntriesFileName);
+            if (invalidFileCount > 0)
+            {
+                message = string.IsNullOrWhiteSpace(lastFailure)
+                    ? $"No valid Oz mode saved entry JSON loaded. Probed: {SummarizeCandidatePaths(candidateFilePaths, 3)}"
+                    : $"{lastFailure} Probed: {SummarizeCandidatePaths(candidateFilePaths, 3)}";
+                return false;
+            }
+
+            message = $"No saved Oz mode lines found yet. Save the current line to create '{preferredFilePath}'.";
+            return true;
         }
 
         private List<string> GetOnlineAiApiKeySecretStoreCandidatePaths()
@@ -17927,7 +18463,8 @@ namespace Reachy.ControlApp
         {
             GUILayout.BeginArea(area, GUI.skin.box);
             GUILayout.Label("Speak", _titleStyle);
-            GUILayout.Label("Choose the TTS backend, type a line, and Reachy will interrupt any previous Oz speech before starting the new one.");
+            GUILayout.Label(
+                "Choose the TTS backend, type a line, or use one of the saved JSON lines below. Reachy interrupts any previous Oz speech before starting the new one.");
 
             float bodyHeight = Mathf.Max(80f, area.height - 52f);
             _ozModeControlsScroll = GUILayout.BeginScrollView(
@@ -17958,6 +18495,10 @@ namespace Reachy.ControlApp
                 ozModeSpeechText ?? string.Empty,
                 GUILayout.MinHeight(Mathf.Max(120f, area.height * 0.24f)));
             HandleOzModeKeyboardSubmit();
+            GUILayout.Space(6f);
+            GUILayout.Label("Saved entry name");
+            ozModeSavedEntryName = GUILayout.TextField(ozModeSavedEntryName ?? string.Empty);
+            GUILayout.Label("Leave empty to auto-name the saved entry from the speech text.");
 
             bool previousEnabled = GUI.enabled;
             GUILayout.BeginHorizontal();
@@ -17980,6 +18521,24 @@ namespace Reachy.ControlApp
             {
                 StopOzModeSpeech();
             }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(4f);
+            GUILayout.BeginHorizontal();
+            GUI.enabled = previousEnabled;
+            if (GUILayout.Button("Save current line", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+            {
+                bool saved = TrySaveCurrentOzModeSpeechToLibrary(out string saveMessage);
+                _ozModeStatus = saveMessage;
+                SetStatus(saved ? "Oz mode saved line" : "Oz mode", saveMessage);
+            }
+
+            if (GUILayout.Button("Reload saved lines", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+            {
+                bool refreshed = TryRefreshOzModeSavedEntriesLibrary(out string refreshMessage);
+                _ozModeStatus = refreshMessage;
+                SetStatus(refreshed ? "Oz mode saved lines" : "Oz mode", refreshMessage);
+            }
 
             GUI.enabled = previousEnabled && _ozModeHistory.Count > 0;
             if (GUILayout.Button("Clear history", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
@@ -17989,6 +18548,60 @@ namespace Reachy.ControlApp
 
             GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();
+            GUILayout.EndVertical();
+
+            GUILayout.Space(8f);
+            GUILayout.BeginVertical(GUI.skin.box);
+            GUILayout.Label("Saved Lines");
+            GUILayout.Label($"JSON file: {GetOzModeSavedEntriesLibraryPathLabel()}");
+            if (_ozModeSavedEntries.Count <= 0)
+            {
+                GUILayout.Label("No saved lines loaded yet. Save the current line to create the JSON library.");
+            }
+            else
+            {
+                GUILayout.Label($"Loaded {_ozModeSavedEntries.Count} saved line(s).");
+                for (int i = 0; i < _ozModeSavedEntries.Count; i++)
+                {
+                    OzModeSavedEntryDefinition entry = _ozModeSavedEntries[i];
+                    if (entry == null)
+                    {
+                        continue;
+                    }
+
+                    GUILayout.BeginVertical(GUI.skin.box);
+                    GUILayout.Label($"{entry.Number}. {entry.Name}");
+                    GUILayout.Label(BuildOzModeSavedEntryPreviewText(entry.Text));
+                    GUILayout.BeginHorizontal();
+                    GUI.enabled = previousEnabled && !_isConnectAttemptInProgress;
+                    if (GUILayout.Button(
+                            $"Speak {entry.Number}",
+                            GUILayout.Height(28f),
+                            GUILayout.ExpandWidth(true)))
+                    {
+                        bool ok = TrySpeakOzModeSavedEntry(entry, out string speakMessage);
+                        if (!ok)
+                        {
+                            _ozModeStatus = speakMessage;
+                            SetStatus("Oz mode", speakMessage);
+                        }
+                    }
+
+                    GUI.enabled = previousEnabled;
+                    if (GUILayout.Button("Load to editor", GUILayout.Height(28f), GUILayout.ExpandWidth(true)))
+                    {
+                        LoadOzModeSavedEntryIntoEditor(entry);
+                        string loadMessage = $"Loaded saved line '{entry.Name}' into the editor.";
+                        _ozModeStatus = loadMessage;
+                        SetStatus("Oz mode", loadMessage);
+                    }
+
+                    GUI.enabled = previousEnabled;
+                    GUILayout.EndHorizontal();
+                    GUILayout.EndVertical();
+                }
+            }
+
             GUILayout.EndVertical();
 
             GUILayout.Space(8f);
@@ -18012,6 +18625,132 @@ namespace Reachy.ControlApp
         private string GetOzModeSpeakerLabel()
         {
             return localAiAgentTtsMode == TtsMode.Local ? "Reachy (Local TTS)" : "Reachy (Online TTS)";
+        }
+
+        private string GetOzModeSavedEntriesLibraryPathLabel()
+        {
+            if (!string.IsNullOrWhiteSpace(_ozModeSavedEntriesFilePath))
+            {
+                return _ozModeSavedEntriesFilePath;
+            }
+
+            string preferredDirectory = GetPreferredOzModeSavedEntriesDirectory();
+            return string.IsNullOrWhiteSpace(preferredDirectory)
+                ? DefaultOzModeSavedEntriesFileName
+                : Path.Combine(preferredDirectory, DefaultOzModeSavedEntriesFileName);
+        }
+
+        private static string BuildOzModeSavedEntryPreviewText(string speechText)
+        {
+            string collapsedText = Regex.Replace((speechText ?? string.Empty).Trim(), "\\s+", " ").Trim();
+            if (string.IsNullOrWhiteSpace(collapsedText))
+            {
+                return "(empty)";
+            }
+
+            const int maxLength = 120;
+            if (collapsedText.Length > maxLength)
+            {
+                collapsedText = collapsedText.Substring(0, maxLength - 3).TrimEnd() + "...";
+            }
+
+            return collapsedText;
+        }
+
+        private void LoadOzModeSavedEntryIntoEditor(OzModeSavedEntryDefinition entry)
+        {
+            if (entry == null)
+            {
+                return;
+            }
+
+            ozModeSavedEntryName = BuildOzModeSavedEntryDisplayName(entry.Name, entry.Text);
+            ozModeSpeechText = string.IsNullOrWhiteSpace(entry.Text) ? string.Empty : entry.Text.Trim();
+        }
+
+        private bool TrySaveCurrentOzModeSpeechToLibrary(out string message)
+        {
+            message = string.Empty;
+            string speechText = GetOzModeSpeechText();
+            if (string.IsNullOrWhiteSpace(speechText))
+            {
+                message = "Oz mode save blocked: speech text is empty.";
+                return false;
+            }
+
+            string entryName = BuildOzModeSavedEntryDisplayName(ozModeSavedEntryName, speechText);
+            string savedUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            OzModeSavedEntryDefinition existingEntry = null;
+            for (int i = 0; i < _ozModeSavedEntries.Count; i++)
+            {
+                OzModeSavedEntryDefinition candidate = _ozModeSavedEntries[i];
+                if (candidate != null &&
+                    string.Equals(candidate.Name, entryName, StringComparison.OrdinalIgnoreCase))
+                {
+                    existingEntry = candidate;
+                    break;
+                }
+            }
+
+            if (existingEntry == null)
+            {
+                _ozModeSavedEntries.Add(new OzModeSavedEntryDefinition
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    Number = _ozModeSavedEntries.Count + 1,
+                    Name = entryName,
+                    Text = speechText,
+                    SavedUtc = savedUtc
+                });
+            }
+            else
+            {
+                existingEntry.Name = entryName;
+                existingEntry.Text = speechText;
+                existingEntry.SavedUtc = savedUtc;
+            }
+
+            SortAndRenumberOzModeSavedEntries(_ozModeSavedEntries);
+            ozModeSavedEntryName = entryName;
+
+            string preferredWritePath = string.IsNullOrWhiteSpace(_ozModeSavedEntriesFilePath)
+                ? Path.Combine(GetPreferredOzModeSavedEntriesDirectory(), DefaultOzModeSavedEntriesFileName)
+                : _ozModeSavedEntriesFilePath;
+            OzModeSavedEntriesFile payload = BuildCurrentOzModeSavedEntriesPayload();
+            if (!TryWriteOzModeSavedEntriesLibraryFile(
+                    payload,
+                    preferredWritePath,
+                    out string writtenFilePath,
+                    out string writeMessage))
+            {
+                message = writeMessage;
+                return false;
+            }
+
+            _ozModeSavedEntriesFilePath = writtenFilePath;
+            bool reloaded = TryRefreshOzModeSavedEntriesLibrary(out string refreshMessage);
+            message = existingEntry == null
+                ? $"Saved Oz mode line '{entryName}'. JSON: {writtenFilePath}"
+                : $"Updated Oz mode line '{entryName}'. JSON: {writtenFilePath}";
+            if (!reloaded && !string.IsNullOrWhiteSpace(refreshMessage))
+            {
+                message += $" Reload failed: {refreshMessage}";
+            }
+
+            return true;
+        }
+
+        private bool TrySpeakOzModeSavedEntry(OzModeSavedEntryDefinition entry, out string message)
+        {
+            message = string.Empty;
+            if (entry == null)
+            {
+                message = "Oz mode saved line is missing.";
+                return false;
+            }
+
+            LoadOzModeSavedEntryIntoEditor(entry);
+            return TryStartOzModeSpeech(out message);
         }
 
         private bool TryStartOzModeSpeech(out string message)
