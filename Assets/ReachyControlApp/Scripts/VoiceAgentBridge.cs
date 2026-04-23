@@ -1458,8 +1458,8 @@ namespace Reachy.ControlApp
                 }
             }
 
-            double wordsPerSecond = Math.Max(0.75, 175.0 / 60.0);
-            double estimatedSeconds = (Math.Max(1, wordCount) / wordsPerSecond) + (punctuationCount * 0.25) + 8.0;
+            double wordsPerSecond = 2.0;
+            double estimatedSeconds = (Math.Max(1, wordCount) / wordsPerSecond) + (punctuationCount * 0.35) + 12.0;
             int estimatedTimeoutMs = (int)Math.Ceiling(Math.Min(600.0, estimatedSeconds) * 1000.0);
             return Math.Max(baseTimeoutMs, estimatedTimeoutMs);
         }

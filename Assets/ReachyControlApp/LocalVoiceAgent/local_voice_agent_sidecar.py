@@ -2946,7 +2946,9 @@ class TTS:
             if not wait_for_completion or completion_queue is None:
                 return True, "Speech queued."
 
-            wait_timeout = self._estimate_timeout_seconds(text) + 2.0
+            wait_timeout = self._estimate_timeout_seconds(text) + (
+                8.0 if resolved_tts_mode == "online" else 4.0
+            )
             try:
                 ok, message = completion_queue.get(timeout=wait_timeout)
                 return bool(ok), str(message or "").strip() or "Speech completed."
@@ -3092,10 +3094,26 @@ class TTS:
         words = re.findall(r"\S+", trimmed)
         word_count = max(1, len(words))
         rate_wpm = max(60, min(320, int(self.config.get("tts_rate", 175))))
-        words_per_second = max(0.75, rate_wpm / 60.0)
-        punctuation_pauses = sum(trimmed.count(mark) for mark in ".!?;:") * 0.25
-        estimated_timeout = (word_count / words_per_second) + punctuation_pauses + 6.0
+        words_per_second = max(0.5, min(2.0, rate_wpm / 60.0))
+        punctuation_pauses = sum(trimmed.count(mark) for mark in ".!?;:") * 0.35
+        estimated_timeout = (word_count / words_per_second) + punctuation_pauses + 10.0
         return max(configured_timeout, min(600.0, estimated_timeout))
+
+    @staticmethod
+    def _estimate_wav_duration_seconds(audio_bytes: bytes) -> float:
+        raw_bytes = bytes(audio_bytes or b"")
+        if not raw_bytes:
+            return 0.0
+
+        try:
+            with wave.open(io.BytesIO(raw_bytes), "rb") as src:
+                frame_rate = src.getframerate()
+                frame_count = src.getnframes()
+            if frame_rate <= 0:
+                return 0.0
+            return max(0.0, float(frame_count) / float(frame_rate))
+        except Exception:
+            return 0.0
 
     def _speak_with_subprocess(self, text: str) -> tuple[bool, str]:
         if not self._powershell_executable:
@@ -3313,7 +3331,10 @@ class TTS:
 
         self._set_active_temp_audio_path(temp_path)
         self._set_active_process(proc)
-        timeout_seconds = self._estimate_timeout_seconds(text)
+        timeout_seconds = max(
+            self._estimate_timeout_seconds(text),
+            min(600.0, self._estimate_wav_duration_seconds(audio_bytes) + 6.0),
+        )
         started = time.time()
         while True:
             if self.stop_event.is_set():
