@@ -2687,16 +2687,45 @@ class State:
                 return {"ok": True, "message": "Stored partial transcript.", "intent_name": ""}
 
         use_online_mode = str(self.config.get("ai_mode", "local")).strip().lower() == "online"
-        if use_online_mode and online_orchestrator is not None:
-            parsed, parse_message = online_orchestrator.handle_transcript(text, confidence)
-        else:
-            parsed, parse_message = parser.parse(text, confidence)
+        try:
+            if use_online_mode and online_orchestrator is not None:
+                parsed, parse_message = online_orchestrator.handle_transcript(text, confidence)
+            else:
+                parsed, parse_message = parser.parse(text, confidence)
+        except Exception as exc:
+            error_message = str(exc).strip() or "Unexpected transcript processing error."
+            failure_message = f"Transcript processing failed: {error_message}"
+            self.log("error", failure_message)
+            parsed = None
+            parse_message = failure_message
+            if use_online_mode and online_orchestrator is not None:
+                try:
+                    parsed = online_orchestrator.build_runtime_failure_intent(
+                        text,
+                        confidence,
+                        failure_message,
+                    )
+                    self.record_online_response(
+                        reply_text=str(parsed.get("reply_text", "") or "").strip(),
+                        validation_result=str(parsed.get("validation_status", "runtime_error") or "runtime_error"),
+                        validation_failure=failure_message,
+                        response_summary=failure_message,
+                        http_error="",
+                        latency_ms=-1.0,
+                        source_backend=str(parsed.get("source_backend", "openai_responses") or "openai_responses"),
+                    )
+                except Exception as recovery_exc:
+                    recovery_message = str(recovery_exc).strip() or "Unknown recovery error."
+                    self.log("error", f"Online AI recovery intent failed: {recovery_message}")
+        resolved_event_message = str(parse_message or "").strip()
+        if not resolved_event_message:
+            resolved_event_message = "Parsed transcript into intent." if parsed is not None else "Transcript produced no actionable intent."
         event = {
             "has_intent": parsed is not None,
             "transcript": text,
             "confidence": confidence,
             "transcript_is_final": True,
-            "message": "Parsed transcript into intent." if parsed is not None else parse_message,
+            "message": resolved_event_message,
         }
         if parsed is not None:
             event["intent"] = parsed
@@ -4502,6 +4531,7 @@ class HybridAudioInput:
             self.config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
         reachy_host = str(self.config.get("reachy_mic_ssh_host", "")).strip()
         reachy_connected = parse_bool(self.config.get("reachy_mic_robot_connected"), False) and bool(reachy_host)
+        reachy_capture_unavailable = reachy_connected and bool(str(self.remote_stream.last_error or "").strip())
         if not reachy_connected:
             effective_mode = "pc"
             local_enabled = True
@@ -4511,9 +4541,16 @@ class HybridAudioInput:
             local_enabled = True
             reachy_enabled = False
         elif requested_mode == "reachy":
-            effective_mode = "reachy"
-            local_enabled = False
-            reachy_enabled = True
+            if reachy_capture_unavailable:
+                # Keep the remote capture retry loop alive, but temporarily blend in the PC mic
+                # so a busy or wedged robot capture device does not silence the whole STT path.
+                effective_mode = "blend"
+                local_enabled = True
+                reachy_enabled = True
+            else:
+                effective_mode = "reachy"
+                local_enabled = False
+                reachy_enabled = True
         else:
             effective_mode = "blend"
             local_enabled = True
@@ -6143,36 +6180,60 @@ class OnlineAIOrchestrator:
 
         if reply_streamer is not None and reply_streamer.failure_message:
             self.state.log("warn", f"Online reply speech streaming degraded: {reply_streamer.failure_message}")
+        try:
+            normalized_intent, message = self._validate_and_normalize(transcript, resolved_confidence, payload)
+            semantic_override, semantic_message = self._try_build_semantic_motion_intent(
+                transcript,
+                resolved_confidence,
+            )
+            if semantic_override is not None and self._should_override_with_semantic_motion(normalized_intent):
+                normalized_intent = semantic_override
+                message = semantic_message
 
-        normalized_intent, message = self._validate_and_normalize(transcript, resolved_confidence, payload)
-        semantic_override, semantic_message = self._try_build_semantic_motion_intent(
-            transcript,
-            resolved_confidence,
-        )
-        if semantic_override is not None and self._should_override_with_semantic_motion(normalized_intent):
-            normalized_intent = semantic_override
-            message = semantic_message
-
-        normalized_intent["source_backend"] = (
-            str(normalized_intent.get("source_backend", "")).strip() or self.source_backend)
-        normalized_intent["source_mode"] = "online"
-        normalized_intent["reply_already_spoken"] = bool(
-            reply_streamer is not None and reply_streamer.reply_already_spoken)
-        self.state.record_online_response(
-            reply_text=normalized_intent.get("reply_text", ""),
-            validation_result=normalized_intent.get("validation_status", "validated"),
-            validation_failure=normalized_intent.get("validation_message", ""),
-            response_summary=message,
-            http_error="",
-            latency_ms=latency_ms,
-            source_backend=normalized_intent.get("source_backend", self.source_backend),
-        )
-        self._remember_local_conversation_turn(
-            transcript,
-            str(normalized_intent.get("reply_text", "")).strip(),
-        )
-        self._streaming_online_reply_ready = True
-        return normalized_intent, message
+            normalized_intent["source_backend"] = (
+                str(normalized_intent.get("source_backend", "")).strip() or self.source_backend)
+            normalized_intent["source_mode"] = "online"
+            normalized_intent["reply_already_spoken"] = bool(
+                reply_streamer is not None and reply_streamer.reply_already_spoken)
+            self.state.record_online_response(
+                reply_text=normalized_intent.get("reply_text", ""),
+                validation_result=normalized_intent.get("validation_status", "validated"),
+                validation_failure=normalized_intent.get("validation_message", ""),
+                response_summary=message,
+                http_error="",
+                latency_ms=latency_ms,
+                source_backend=normalized_intent.get("source_backend", self.source_backend),
+            )
+            self._remember_local_conversation_turn(
+                transcript,
+                str(normalized_intent.get("reply_text", "")).strip(),
+            )
+            self._streaming_online_reply_ready = True
+            return normalized_intent, message
+        except Exception as exc:
+            error_message = str(exc).strip() or "Unexpected online AI response processing error."
+            summary_message = f"Online AI response processing failed: {error_message}"
+            self.state.log("error", summary_message)
+            safe_reply = self.build_runtime_failure_intent(
+                transcript,
+                resolved_confidence,
+                error_message,
+                reply_already_spoken=bool(reply_streamer and reply_streamer.reply_already_spoken),
+            )
+            self.state.record_online_response(
+                reply_text=safe_reply.get("reply_text", ""),
+                validation_result=safe_reply.get("validation_status", "runtime_error"),
+                validation_failure=error_message,
+                response_summary=summary_message,
+                http_error="",
+                latency_ms=latency_ms,
+                source_backend=safe_reply.get("source_backend", self.source_backend),
+            )
+            self._remember_local_conversation_turn(
+                transcript,
+                str(safe_reply.get("reply_text", "")).strip(),
+            )
+            return safe_reply, f"online_runtime_error: {error_message}"
 
     def test_connection(self) -> dict:
         model = str(self.config.get("online_ai_model", DEFAULT_ONLINE_AI_MODEL)).strip() or DEFAULT_ONLINE_AI_MODEL
@@ -7621,6 +7682,19 @@ class OnlineAIOrchestrator:
         elif not reply_text:
             reply_text = "I am ready."
 
+        response_confidence, confidence_error_message = self._coerce_response_confidence(
+            payload.get("confidence", confidence),
+            confidence,
+        )
+        if response_confidence is None:
+            return self._build_safe_reply_intent(
+                transcript,
+                confidence,
+                "" if persona_mode == "emotion_reactions" else "I could not validate the online confidence value safely, so I did not move.",
+                validation_status="invalid_confidence",
+                validation_message=confidence_error_message,
+            ), f"Online AI response rejected: {confidence_error_message}"
+
         emotion_reaction, emotion_error_message = self._normalize_emotion_reaction(
             payload.get("emotion_reaction"),
             require_reaction=persona_mode == "emotion_reactions",
@@ -7644,7 +7718,7 @@ class OnlineAIOrchestrator:
                 "speed_scale": 0.0,
                 "joint_targets": [],
                 "motion_steps": [],
-                "confidence": max(0.0, min(1.0, float(payload.get("confidence", confidence) or confidence))),
+                "confidence": float(response_confidence),
                 "requires_confirmation": False,
                 "reply_text": "",
                 "spoken_text": str(transcript or "").strip(),
@@ -7693,7 +7767,7 @@ class OnlineAIOrchestrator:
             "speed_scale": 0.0,
             "joint_targets": [],
             "motion_steps": [],
-            "confidence": max(0.0, min(1.0, float(payload.get("confidence", confidence) or confidence))),
+            "confidence": float(response_confidence),
             "requires_confirmation": False,
             "reply_text": reply_text,
             "spoken_text": str(transcript or "").strip(),
@@ -7890,6 +7964,18 @@ class OnlineAIOrchestrator:
         return normalized, f"Online AI response validated for intent '{intent_name}'."
 
     @staticmethod
+    def _coerce_response_confidence(value, fallback: float) -> tuple[float | None, str]:
+        resolved_fallback = max(0.0, min(1.0, fallback if fallback > 0.0 else 0.85))
+        if value is None:
+            return resolved_fallback, ""
+        if isinstance(value, str) and not value.strip():
+            return resolved_fallback, ""
+        try:
+            return max(0.0, min(1.0, float(value))), ""
+        except Exception:
+            return None, "confidence was not numeric."
+
+    @staticmethod
     def _coerce_optional_text(value) -> str:
         return "" if value is None else str(value).strip()
 
@@ -7914,6 +8000,31 @@ class OnlineAIOrchestrator:
                 return candidate_text
 
         return ""
+
+    def build_runtime_failure_intent(
+        self,
+        transcript: str,
+        confidence: float,
+        error_message: str,
+        *,
+        reply_already_spoken: bool = False,
+    ) -> dict:
+        persona_mode = normalize_online_ai_persona_mode(
+            self.config.get("online_ai_persona_mode", DEFAULT_ONLINE_AI_PERSONA_MODE)
+        )
+        reply_text = (
+            ""
+            if persona_mode == "emotion_reactions"
+            else "I hit a temporary online AI processing error, so I did not move."
+        )
+        return self._build_safe_reply_intent(
+            transcript,
+            confidence,
+            reply_text,
+            validation_status="runtime_error",
+            validation_message=str(error_message or "").strip() or "Unexpected online AI runtime error.",
+            reply_already_spoken=reply_already_spoken,
+        )
 
     def _build_safe_reply_intent(
         self,
