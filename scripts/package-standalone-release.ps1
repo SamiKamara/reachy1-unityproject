@@ -77,7 +77,14 @@ New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 
 try {
     foreach ($item in $releaseItems) {
-        Copy-Item -LiteralPath (Join-Path $buildRoot $item) -Destination $stagingRoot -Recurse -Force
+        $sourceItem = Get-Item -LiteralPath (Join-Path $buildRoot $item)
+        if ($sourceItem.PSIsContainer -and $env:OS -eq 'Windows_NT') {
+            # Native parallel copying keeps the bundled Python dependency tree fast to stage.
+            $null = & robocopy $sourceItem.FullName (Join-Path $stagingRoot $item) /E /COPY:DAT /R:1 /W:1 /MT:8 /NFL /NDL /NJH /NJS /NP
+            if ($LASTEXITCODE -ge 8) { throw "Could not stage '$item' (robocopy exit $LASTEXITCODE)." }
+        } else {
+            Copy-Item -LiteralPath $sourceItem.FullName -Destination $stagingRoot -Recurse -Force
+        }
     }
 
     if ($TrackedDefaults) {
@@ -85,7 +92,7 @@ try {
             $sourcePath = 'Assets/ReachyControlApp/' + $relativeConfig
             $sourceJson = & git -C $ProjectRoot show ($SourceCommit + ':' + $sourcePath)
             if ($LASTEXITCODE -ne 0) { throw "Could not load tracked configuration '$sourcePath'." }
-            $configuration = ($sourceJson -join "`n") | ConvertFrom-Json
+            $configuration = ($sourceJson -join "`n").TrimStart([char]0xFEFF) | ConvertFrom-Json
             if ($relativeConfig -eq 'voice_agent_config.json') {
                 $configuration.sidecar_python_command = 'PythonRuntime\python.exe'
                 $voiceDefaults = $configuration
