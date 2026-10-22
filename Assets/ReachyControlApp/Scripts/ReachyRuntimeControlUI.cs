@@ -15,7 +15,7 @@ using UnityEngine.Networking;
 
 namespace Reachy.ControlApp
 {
-    public class ReachyRuntimeControlUI : MonoBehaviour
+    public partial class ReachyRuntimeControlUI : MonoBehaviour
     {
         private enum RuntimeMenuView
         {
@@ -2453,6 +2453,7 @@ namespace Reachy.ControlApp
 
         private void OnDestroy()
         {
+            StopEthernetDiscovery();
             if (_connectAttemptCoroutine != null)
             {
                 StopCoroutine(_connectAttemptCoroutine);
@@ -2492,6 +2493,7 @@ namespace Reachy.ControlApp
 
         private void OnApplicationQuit()
         {
+            StopEthernetDiscovery();
             StopActedSequence(updateStatus: false, reason: "Application quit", stopLoopingAnimation: false);
             StopLoopingAnimation(updateStatus: false, reason: "Application quit");
             StopVoiceMotionSequence(updateStatus: false, reason: "Application quit");
@@ -2502,6 +2504,7 @@ namespace Reachy.ControlApp
 
         private void Update()
         {
+            UpdateEthernetDiscovery();
             UpdateCameraPreview();
             UpdateRobotSpeakerMirrorDiagnostics();
             UpdateLocalAiAgent();
@@ -2522,6 +2525,11 @@ namespace Reachy.ControlApp
 
             if (!_initialAutoConnectAttempted && autoConnectOnPlay)
             {
+                if (IsInitialEthernetDiscoveryPending())
+                {
+                    return;
+                }
+
                 _initialAutoConnectAttempted = true;
                 TryStartConnectAttempt("Auto-connect on Play", mode, 0.5f, ensureOneUiFrameBeforeConnect: false);
                 return;
@@ -27389,6 +27397,8 @@ namespace Reachy.ControlApp
 
             string[] modeOptions = { "Simulation", "Real Robot" };
             mode = (ReachyControlMode)GUILayout.Toolbar((int)mode, modeOptions);
+
+            DrawEthernetDiscoveryControls();
 
             string host = mode == ReachyControlMode.Simulation ? simulationHost : robotHost;
             int port = mode == ReachyControlMode.Simulation ? simulationPort : robotPort;

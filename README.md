@@ -29,10 +29,18 @@ This project was developed as part of the HTI.460 course, Social Robots: Design,
 6. Go to `AI` view to enable Local or Online AI (OpenAI API key with at least €5 is required for Online AI). If enabled successfully, Reachy should start saying something.
 7. You are ready to go! It's recommended to start with these features if you are a beginner: `AI Modes`, `Animations & Poses`, `Chit Chat`.
 
+Automatic Ethernet discovery is enabled by default. When a verified Reachy is reachable
+through a wired IPv4 interface, the app selects Real Robot, fills the endpoint and connects.
+Direct PC-to-robot cables are supported when the Ethernet IP configuration is compatible;
+the app also checks the optional robot fallback address `169.254.42.1:50055`.
+See [Ethernet setup and discovery](Assets/ReachyControlApp/README.md#automatic-ethernet-connection)
+for the one-time robot configuration requirements and discovery controls.
+
 ## Default Endpoints
 
 - Simulation joint service: `localhost:50055`
 - Real robot joint service: `192.168.1.109:50055`
+- Optional direct Ethernet fallback: `169.254.42.1:50055`
 - Real robot fallback ports: `3972`
 - Real robot restart-signal port: `50059`
 - Camera service: `50057`
