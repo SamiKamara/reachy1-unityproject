@@ -2,7 +2,13 @@
 
 ⬇️ [Download](https://github.com/SamiKamara/reachy1-unityproject/releases) | 🖼️ [Gallery](#gallery) | ⭐ [Current Main Features](#current-main-features) | 🔮 [Future Features](#future-features)
 
-<img width="700" height="400" alt="Reachy_and_UnitySim" src="https://github.com/user-attachments/assets/fe73c780-3d58-4d21-9f9d-991b2f57dcb6" />
+
+Video
+
+<a href="https://www.youtube.com/watch?v=8uu_qbVj-Lk" target="_blank">
+<img width="800" height="400" alt="reachy-demo" src="https://github.com/user-attachments/assets/a6d17a6d-5f0c-484c-be77-643ab3b523f2"/>
+</a>
+
 
 ## About
 
@@ -78,19 +84,21 @@ require running any separate `Install GRPC` step before the project compiles.
 
 More to come!
 
-https://github.com/user-attachments/assets/da6c0bbd-f640-4b07-bc56-381bb12034a9
-
 *Chit Chat*
-<img width="700" height="400" alt="chit_chat_example" src="https://github.com/user-attachments/assets/32481418-37d2-4001-98e3-5dde95458d6b" />
+
+<img width="800" height="400" alt="chit_chat_example" src="https://github.com/user-attachments/assets/32481418-37d2-4001-98e3-5dde95458d6b" />
 
 *OZ Mode*
-<img width="700" height="400" alt="oz_mode_example" src="https://github.com/user-attachments/assets/9c053166-5db7-4090-b358-bac653aacdb4" />
+
+<img width="800" height="400" alt="oz_mode_example" src="https://github.com/user-attachments/assets/9c053166-5db7-4090-b358-bac653aacdb4" />
 
 *Animation Creator*
-<img width="700" height="400" alt="animation_creator_example" src="https://github.com/user-attachments/assets/3bb8ce72-a6da-4125-b92d-e17ae1e8f930" />
+
+<img width="800" height="400" alt="animation_creator_example" src="https://github.com/user-attachments/assets/3bb8ce72-a6da-4125-b92d-e17ae1e8f930" />
 
 *Animations & Poses*
-<img width="700" height="400" alt="animations_poses_example" src="https://github.com/user-attachments/assets/4838be80-3f42-4885-85da-f447a33c163b" />
+
+<img width="800" height="400" alt="animations_poses_example" src="https://github.com/user-attachments/assets/4838be80-3f42-4885-85da-f447a33c163b" />
 
 ## Future Features
 
