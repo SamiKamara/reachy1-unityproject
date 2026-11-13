@@ -49,15 +49,33 @@ running SDK service if it started before Ethernet IPv4 was ready and port `50055
 absent. Original network settings and a rollback script are backed up on the robot at
 `/var/backups/reachy-direct-ethernet-20261022/`.
 
-Only a reachable Reachy 1 joint service with recognizable joint names is accepted;
+Only a reachable Reachy 1 joint service with recognizable joint names and valid
+position readings for those joints is accepted;
 an Ethernet link or an open SSH port is not enough. The OS route must use Ethernet.
 When exactly one robot is found, the app selects `Real Robot`, fills `Host` and `Port`,
 and connects automatically. Camera, microphone SSH, speaker and mobile-base routing use
 that robot host through the existing connection logic. Existing service ports and SSH
-credentials remain configurable. Discovery does not send motion or restart commands.
+credentials remain configurable. The Ethernet startup flow sends no motion commands.
 
-The first discovery completes before the usual simulation auto-connect. While using the
-simulator, discovery continues every 15 seconds so plugging in a robot switches to it.
+An active Ethernet link gets priority at startup. The app gives the robot up to two
+minutes to boot before starting the simulator, and keeps looking after that. A newly
+connected cable starts a check right away. Reconnection to an automatically selected
+robot goes through the same checks.
+
+For a trusted Reachy 2023, the app also verifies fresh `/joint_states` data over SSH.
+If the SDK unit is installed but its hardware controller is missing, the app waits
+for boot and clock synchronization, then makes one automatic SDK restart attempt.
+It waits for verified joint data before connecting and checks joint health periodically.
+Recovery does not change network settings, restart the robot, or start motion.
+
+SSH recovery uses the configured robot SSH account and the bundled Python helper with
+Paramiko. Enroll the robot by putting its independently verified OpenSSH host key for
+the Ethernet IP in `ReachyControlApp/ethernet_known_hosts` under Unity's persistent
+data directory (on Windows, `%USERPROFILE%/AppData/LocalLow/Pollen Robotics/Reachy controller _ simulator`).
+This is a local file and is not shipped with releases. With no trusted key, the app
+can still check SDK positions and connect, but cannot verify fresh ROS data or restart
+the SDK. A changed key blocks automatic connection until it has been checked.
+
 Manual Disconnect prevents automatic reconnection until Connect, Find Reachy on Ethernet,
 or re-enabling automatic Ethernet discovery. Disable the toggle to keep using simulation
 with a robot attached. Multiple Reachy endpoints require manual selection.

@@ -33,6 +33,7 @@ namespace Reachy.ControlApp
             internal int Port;
             internal string InterfaceName;
             internal string Message;
+            internal bool Ambiguous;
             internal bool Found => !string.IsNullOrEmpty(Host);
         }
 
@@ -103,7 +104,7 @@ namespace Reachy.ControlApp
                 if (robots.Count == 1) return robots[0];
                 if (robots.Count > 1)
                 {
-                    return new Result { Message = "Multiple Reachy endpoints found on Ethernet: " +
+                    return new Result { Ambiguous = true, Message = "Multiple Reachy endpoints found on Ethernet: " +
                         string.Join(", ", robots.Select(robot => robot.Host)) + ". Select the intended robot manually." };
                 }
             }
@@ -128,15 +129,23 @@ namespace Reachy.ControlApp
             };
         }
 
-        internal static List<WiredAddress> GetWiredAddresses()
+        internal static IEnumerable<NetworkInterface> GetActiveWiredAdapters()
         {
-            var result = new List<WiredAddress>();
             foreach (NetworkInterface adapter in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (adapter.OperationalStatus != OperationalStatus.Up || !IsWired(adapter.NetworkInterfaceType)) continue;
                 string description = (adapter.Name + " " + adapter.Description).ToLowerInvariant();
                 if (new[] { "virtual", "vpn", "wintun", "hyper-v", "vmware", "loopback", "tap-windows" }
                     .Any(description.Contains)) continue;
+                yield return adapter;
+            }
+        }
+
+        internal static List<WiredAddress> GetWiredAddresses()
+        {
+            var result = new List<WiredAddress>();
+            foreach (NetworkInterface adapter in GetActiveWiredAdapters())
+            {
                 try
                 {
                     IPInterfaceProperties properties = adapter.GetIPProperties();
@@ -152,6 +161,12 @@ namespace Reachy.ControlApp
                 catch (NetworkInformationException) { /* Adapter changed while enumerating. */ }
             }
             return result;
+        }
+
+        internal static WiredAddress FindWiredSource(string host)
+        {
+            if (!IPAddress.TryParse(host, out IPAddress address)) return null;
+            return GetWiredAddresses().FirstOrDefault(local => IsPeerInSubnet(local, address) && UsesWiredRoute(local, address));
         }
 
         internal static bool IsWired(NetworkInterfaceType type)
@@ -255,14 +270,30 @@ namespace Reachy.ControlApp
             try
             {
                 var client = new JointService.JointServiceClient(channel);
-                using (AsyncUnaryCall<JointsId> call = client.GetAllJointsIdAsync(new Empty(),
+                using (var names = client.GetAllJointsIdAsync(new Empty(),
                     deadline: DateTime.UtcNow.AddSeconds(1.2), cancellationToken: cancellation))
                 {
-                    JointsId joints = await call.ResponseAsync;
+                    JointsId joints = await names.ResponseAsync;
                     if (!HasReachyJoints(joints)) return null;
-                    return new Result { Host = host, Port = port, InterfaceName = interfaceName,
-                        Message = "Reachy detected via " + interfaceName + " at " + host + ":" + port +
-                            " (" + joints.Names.Count + " joints)." };
+                    var request = new JointsStateRequest();
+                    request.RequestedFields.Add(JointField.PresentPosition);
+                    foreach (string name in joints.Names.Distinct()) request.Ids.Add(new JointId { Name = name });
+                    using (var positions = client.GetJointsStateAsync(request,
+                        deadline: DateTime.UtcNow.AddSeconds(1.2), cancellationToken: cancellation))
+                    {
+                        JointsState sample = await positions.ResponseAsync;
+                        var observed = new HashSet<string>();
+                        for (int i = 0; i < Math.Min(sample.Ids.Count, sample.States.Count); i++)
+                        {
+                            float? value = sample.States[i].PresentPosition;
+                            if (value.HasValue && !float.IsNaN(value.Value) && !float.IsInfinity(value.Value))
+                                observed.Add(sample.Ids[i].Name);
+                        }
+                        if (request.Ids.Any(id => !observed.Contains(id.Name))) return null;
+                        return new Result { Host = host, Port = port, InterfaceName = interfaceName,
+                            Message = "Reachy detected via " + interfaceName + " at " + host + ":" + port +
+                                " (" + request.Ids.Count + " joint positions verified)." };
+                    }
                 }
             }
             catch (RpcException) { cancellation.ThrowIfCancellationRequested(); return null; }

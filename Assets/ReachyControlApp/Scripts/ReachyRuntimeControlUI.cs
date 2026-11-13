@@ -2575,7 +2575,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            if (!_autoReconnectScheduled || _manualDisconnect)
+            if (!_autoReconnectScheduled || _manualDisconnect || ShouldUseEthernetReconnect())
             {
                 return;
             }
@@ -28652,7 +28652,7 @@ namespace Reachy.ControlApp
             SetStatus("Window mode", $"Set fullscreen to desktop resolution {width}x{height}.");
         }
 
-        private bool TryConnectWithAutomation(ReachyControlMode targetMode, string statusHeader)
+        private bool TryConnectWithAutomation(ReachyControlMode targetMode, string statusHeader, Endpoint? ethernetEndpoint)
         {
             if (_client == null)
             {
@@ -28660,13 +28660,14 @@ namespace Reachy.ControlApp
                 return false;
             }
 
-            List<Endpoint> endpoints = BuildConnectionCandidates(targetMode);
+            List<Endpoint> endpoints = ethernetEndpoint.HasValue
+                ? new List<Endpoint> { ethernetEndpoint.Value } : BuildConnectionCandidates(targetMode);
             LogConnectionEvent(
                 targetMode,
                 "connect-with-automation",
                 $"{statusHeader}: evaluating {endpoints.Count} endpoint candidate(s).");
-            bool allowRestart = targetMode == ReachyControlMode.RealRobot && allowRestartSignalRecovery;
-            int attempts = Math.Max(1, connectAttemptsPerHost);
+            bool allowRestart = !ethernetEndpoint.HasValue && targetMode == ReachyControlMode.RealRobot && allowRestartSignalRecovery;
+            int attempts = ethernetEndpoint.HasValue ? 1 : Math.Max(1, connectAttemptsPerHost);
             double retryDelay = Math.Max(0f, retryDelaySeconds);
             double connectTimeout = Math.Max(0.2f, grpcConnectTimeoutSeconds);
             double postRestartWait = Math.Max(0f, postRestartWaitSeconds);
@@ -28675,6 +28676,7 @@ namespace Reachy.ControlApp
             var aggregate = new StringBuilder();
             foreach (Endpoint endpoint in endpoints)
             {
+                if (ethernetEndpoint.HasValue && ReachyEthernetDiscovery.FindWiredSource(endpoint.Host) == null) continue;
                 if (!TryPrepareEndpointForConnect(targetMode, endpoint, out Endpoint preparedEndpoint, out string prepMessage))
                 {
                     aggregate.AppendLine($"{endpoint.Host}:{endpoint.Port}");
@@ -28779,7 +28781,8 @@ namespace Reachy.ControlApp
             string statusHeader,
             ReachyControlMode targetMode,
             float reconnectDelayOnFailure,
-            bool ensureOneUiFrameBeforeConnect)
+            bool ensureOneUiFrameBeforeConnect,
+            Endpoint? ethernetEndpoint = null)
         {
             if (_client == null)
             {
@@ -28808,14 +28811,15 @@ namespace Reachy.ControlApp
                 $"{statusHeader}: ensureOneUiFrameBeforeConnect={ensureOneUiFrameBeforeConnect}, reconnectDelayOnFailure={_connectAttemptReconnectDelaySeconds:F2}s.");
             SetStatus(statusHeader, $"Attempting connection to {GetModeLabel(targetMode)}...");
             _connectAttemptCoroutine = StartCoroutine(
-                ConnectAttemptCoroutine(statusHeader, targetMode, ensureOneUiFrameBeforeConnect));
+                ConnectAttemptCoroutine(statusHeader, targetMode, ensureOneUiFrameBeforeConnect, ethernetEndpoint));
             return true;
         }
 
         private IEnumerator ConnectAttemptCoroutine(
             string statusHeader,
             ReachyControlMode targetMode,
-            bool ensureOneUiFrameBeforeConnect)
+            bool ensureOneUiFrameBeforeConnect,
+            Endpoint? ethernetEndpoint)
         {
             if (ensureOneUiFrameBeforeConnect)
             {
@@ -28826,7 +28830,8 @@ namespace Reachy.ControlApp
             bool connected = false;
             try
             {
-                connected = TryConnectWithAutomation(targetMode, statusHeader);
+                if (!ethernetEndpoint.HasValue || autoDetectEthernetRobot && !_manualDisconnect)
+                    connected = TryConnectWithAutomation(targetMode, statusHeader, ethernetEndpoint);
             }
             finally
             {

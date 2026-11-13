@@ -26,13 +26,27 @@ internal static class EthernetDiscoveryTests
     {
         internal string[] Names = { "neck_yaw", "r_shoulder_pitch" };
         internal int ReadCalls;
+        internal int PositionCalls;
         internal int MotionCalls;
+        internal float? Position = 0.25f;
 
         public override Task<JointsId> GetAllJointsId(Empty request, ServerCallContext context)
         {
             ReadCalls++;
             var result = new JointsId();
             result.Names.Add(Names);
+            return Task.FromResult(result);
+        }
+
+        public override Task<JointsState> GetJointsState(JointsStateRequest request, ServerCallContext context)
+        {
+            PositionCalls++;
+            var result = new JointsState();
+            foreach (JointId id in request.Ids)
+            {
+                result.Ids.Add(id);
+                result.States.Add(new JointState { PresentPosition = Position });
+            }
             return Task.FromResult(result);
         }
 
@@ -80,7 +94,14 @@ internal static class EthernetDiscoveryTests
             var result = await ReachyEthernetDiscovery.VerifyServiceAsync("127.0.0.1", boundPort, "Fixture Ethernet", CancellationToken.None);
             Check(result != null && result.Found && result.Port == boundPort && result.InterfaceName == "Fixture Ethernet",
                 "Reachy joint service is verified and discovered settings are returned");
-            Check(service.ReadCalls == 1 && service.MotionCalls == 0, "discovery reads joint names without sending motion commands");
+            Check(service.ReadCalls == 1 && service.PositionCalls == 1 && service.MotionCalls == 0,
+                "discovery reads joint positions without sending motion commands");
+            service.Position = null;
+            Check(await ReachyEthernetDiscovery.VerifyServiceAsync("127.0.0.1", boundPort, "Fixture", CancellationToken.None) == null,
+                "SDK with joint names but missing positions is rejected");
+            service.Position = float.NaN;
+            Check(await ReachyEthernetDiscovery.VerifyServiceAsync("127.0.0.1", boundPort, "Fixture", CancellationToken.None) == null,
+                "SDK with invalid joint positions is rejected");
             service.Names = new string[0];
             Check(await ReachyEthernetDiscovery.VerifyServiceAsync("127.0.0.1", boundPort, "Fixture", CancellationToken.None) == null,
                 "empty joint service is rejected");
