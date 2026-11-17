@@ -169,6 +169,122 @@ namespace Reachy.ControlApp
             return GetWiredAddresses().FirstOrDefault(local => IsPeerInSubnet(local, address) && UsesWiredRoute(local, address));
         }
 
+        [Serializable]
+        internal sealed class SshRoute
+        {
+            public string host;
+            public string source;
+            public bool directFallback;
+        }
+
+        internal static async Task<SshRoute[]> FindManagementRoutesAsync(IEnumerable<string> hints,
+            string cachedLinkLocal, CancellationToken cancellation)
+        {
+            var ipv4 = GetWiredAddresses();
+            var linkLocal = new List<IPAddress>();
+            foreach (NetworkInterface adapter in GetActiveWiredAdapters())
+            {
+                try
+                {
+                    var properties = adapter.GetIPProperties();
+                    var index = properties.GetIPv6Properties()?.Index ?? 0;
+                    if (index == 0) continue;
+                    foreach (var address in properties.UnicastAddresses.Select(item => item.Address).Where(ip => ip.IsIPv6LinkLocal))
+                        linkLocal.Add(new IPAddress(address.GetAddressBytes(), index));
+                }
+                catch (NetworkInformationException) { }
+            }
+
+            var routes = new List<SshRoute>();
+            var seen = new HashSet<string>();
+            void Add(IPAddress address)
+            {
+                if (address.IsIPv6LinkLocal)
+                {
+                    foreach (IPAddress source in linkLocal)
+                    {
+                        if (address.ScopeId != 0 && address.ScopeId != source.ScopeId ||
+                            address.GetAddressBytes().SequenceEqual(source.GetAddressBytes())) continue;
+                        string host = new IPAddress(address.GetAddressBytes(), source.ScopeId).ToString();
+                        if (seen.Add(host)) routes.Add(new SshRoute { host = host, source = source.ToString(),
+                            directFallback = ipv4.Any(local => local.InterfaceIndex == source.ScopeId && IsLinkLocal(local.Address) &&
+                                IsPeerInSubnet(local, IPAddress.Parse(DirectEthernetFallbackHost))) });
+                    }
+                    return;
+                }
+                WiredAddress local = ipv4.FirstOrDefault(item => IsPeerInSubnet(item, address) && UsesWiredRoute(item, address));
+                if (local != null && seen.Add(address.ToString()))
+                    routes.Add(new SshRoute { host = address.ToString(), source = local.Address.ToString() });
+            }
+
+            if (IPAddress.TryParse(cachedLinkLocal, out IPAddress cached) && cached.IsIPv6LinkLocal)
+                Add(new IPAddress(cached.GetAddressBytes())); // The Windows interface number can change between boots.
+            var lookups = new List<Task<IPAddress[]>>();
+            foreach (string hint in hints.Concat(new[] { DirectEthernetFallbackHost, "reachy.local" }).Distinct())
+            {
+                if (IPAddress.TryParse(hint, out var literal)) Add(literal);
+                else if (!string.IsNullOrWhiteSpace(hint)) lookups.Add(ResolveAsync(hint));
+            }
+            var resolved = Task.WhenAll(lookups);
+            if (await Task.WhenAny(resolved, Task.Delay(900, cancellation)) == resolved)
+                foreach (var address in (await resolved).SelectMany(x => x)) Add(address);
+            cancellation.ThrowIfCancellationRequested();
+            foreach (var address in ReadWindowsLinkLocalNeighbours(linkLocal)) Add(address);
+            foreach (var address in ReadWindowsNeighbours(ipv4)) Add(address);
+            return routes.Take(12).ToArray();
+        }
+
+        // MIB_IPNET_ROW2 contains a 28-byte SOCKADDR_INET union and is aligned
+        // by its 64-bit NET_LUID. Use the marshaller for the row/table stride.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NeighbourRow
+        {
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 28)] public byte[] Address;
+            public uint InterfaceIndex;
+            public ulong InterfaceLuid;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public byte[] PhysicalAddress;
+            public uint PhysicalAddressLength;
+            public int State;
+            public byte Flags;
+            public uint ReachabilityTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NeighbourTableStart { public uint Count; public NeighbourRow First; }
+
+        [DllImport("iphlpapi.dll")]
+        private static extern uint GetIpNetTable2(ushort family, out IntPtr table);
+
+        [DllImport("iphlpapi.dll")]
+        private static extern void FreeMibTable(IntPtr table);
+
+        private static List<IPAddress> ReadWindowsLinkLocalNeighbours(List<IPAddress> wired)
+        {
+            var addresses = new List<IPAddress>();
+            if (wired.Count == 0 || Environment.OSVersion.Platform != PlatformID.Win32NT) return addresses;
+            IntPtr table = IntPtr.Zero;
+            try
+            {
+                const ushort Inet6 = 23;
+                if (GetIpNetTable2(Inet6, out table) != 0 || table == IntPtr.Zero) return addresses;
+                int size = Marshal.SizeOf(typeof(NeighbourRow));
+                int start = Marshal.OffsetOf(typeof(NeighbourTableStart), nameof(NeighbourTableStart.First)).ToInt32();
+                int count = Math.Min(Marshal.ReadInt32(table), 4096);
+                for (int i = 0; i < count; i++)
+                {
+                    var row = (NeighbourRow)Marshal.PtrToStructure(IntPtr.Add(table, start + i * size), typeof(NeighbourRow));
+                    if (row.PhysicalAddressLength != 6 || (row.PhysicalAddress[0] & 1) != 0 ||
+                        !wired.Any(source => source.ScopeId == row.InterfaceIndex) || BitConverter.ToUInt16(row.Address, 0) != Inet6) continue;
+                    var peer = new IPAddress(row.Address.Skip(8).Take(16).ToArray(), row.InterfaceIndex);
+                    if (peer.IsIPv6LinkLocal) addresses.Add(peer);
+                }
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+            finally { if (table != IntPtr.Zero) FreeMibTable(table); }
+            return addresses;
+        }
+
         internal static bool IsWired(NetworkInterfaceType type)
         {
             return type == NetworkInterfaceType.Ethernet || type == NetworkInterfaceType.GigabitEthernet ||

@@ -135,6 +135,12 @@ internal static class EthernetDiscoveryTests
             {
                 var result = await ReachyEthernetDiscovery.DiscoverAsync(new[] { "192.168.1.109" }, new[] { 50055, 3972 }, cancellation.Token);
                 Console.WriteLine("LIVE: " + result.Message);
+                var routes = await ReachyEthernetDiscovery.FindManagementRoutesAsync(Array.Empty<string>(), null, cancellation.Token);
+                Console.WriteLine("LIVE SSH routes: " + string.Join(", ", routes.Select(route => route.host + " via " + route.source)));
+                Check(routes.Where(route => route.host.Contains(":")).All(route =>
+                    IPAddress.TryParse(route.host, out var peer) && IPAddress.TryParse(route.source, out var source) &&
+                    peer.IsIPv6LinkLocal && source.IsIPv6LinkLocal && peer.ScopeId != 0 && peer.ScopeId == source.ScopeId),
+                    "IPv6 management probes are scoped to their wired interface");
             }
         }
         Console.WriteLine("All " + _checks + " checks passed.");

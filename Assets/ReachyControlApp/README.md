@@ -72,9 +72,22 @@ SSH recovery uses the configured robot SSH account and the bundled Python helper
 Paramiko. Enroll the robot by putting its independently verified OpenSSH host key for
 the Ethernet IP in `ReachyControlApp/ethernet_known_hosts` under Unity's persistent
 data directory (on Windows, `%USERPROFILE%/AppData/LocalLow/Pollen Robotics/Reachy controller _ simulator`).
-This is a local file and is not shipped with releases. With no trusted key, the app
-can still check SDK positions and connect, but cannot verify fresh ROS data or restart
-the SDK. A changed key blocks automatic connection until it has been checked.
+This is a local file and is not shipped with releases. The app uses the enrolled key
+to recognize the same robot after its IP changes. It remembers verified address and
+hostname hints locally and uses the current Windows Ethernet interface for IPv6
+link-local addresses. It then reads the robot's current wired IPv4 over SSH.
+
+If SSH works over IPv6 but the robot has no wired IPv4, the app can request its
+existing `Reachy direct Ethernet` profile once after boot, provided the PC has
+a compatible automatic IPv4 on that link. The SSH user needs permission to
+activate that profile; a robot may authorize the exact `nmcli` command (profile
+UUID and wired interface) through non-interactive sudo when required. The app cannot recover a computer
+that stops answering SSH and SDK on all known addresses; the connection status
+reports that case and suggests checking the robot's computer.
+
+With no trusted key, the app can still check SDK positions and connect, but cannot
+verify fresh ROS data or restart the SDK. A changed key at a previously known
+address blocks automatic connection unless the original trusted robot is found.
 
 Manual Disconnect prevents automatic reconnection until Connect, Find Reachy on Ethernet,
 or re-enabling automatic Ethernet discovery. Disable the toggle to keep using simulation

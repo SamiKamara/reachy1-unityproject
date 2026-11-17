@@ -19,7 +19,6 @@ namespace Reachy.ControlApp
         private sealed class EthernetCheck
         {
             internal ReachyEthernetDiscovery.Result Discovery;
-            internal string Host;
             internal EthernetSshCheck Ssh;
         }
 
@@ -28,17 +27,21 @@ namespace Reachy.ControlApp
         {
             public string status;
             public int jointCount;
+            public string identity;
+            public string hostname;
+            public string linkLocal;
+            public string[] addresses;
         }
 
         [Serializable]
         private sealed class EthernetSshRequest
         {
-            public string host;
-            public string source;
+            public ReachyEthernetDiscovery.SshRoute[] routes;
             public string user;
             public string password;
             public string knownHostsPath;
-            public bool recover;
+            public string identity;
+            public string action;
         }
 
         private Task<EthernetCheck> _ethernetDiscoveryTask;
@@ -49,10 +52,13 @@ namespace Reachy.ControlApp
         private float _nextEthernetRestartAt;
         private bool _ethernetLinkUp;
         private bool _ethernetRestartUsed;
-        private string _pendingEthernetRecoveryHost;
+        private bool _ethernetNetworkRepairUsed;
+        private string _pendingEthernetRecovery;
+        private EthernetSshCheck _ethernetRobotHint;
         private bool _initialEthernetDiscoveryCompleted;
         private bool _ethernetDiscoveryStopped;
         private string _ethernetDiscoveryStatus = "Ethernet discovery starts automatically in Play mode.";
+        private string _lastEthernetDiagnostic;
         private string _ethernetSelectedHost = string.Empty;
         private int _ethernetSelectedPort;
 
@@ -66,7 +72,8 @@ namespace Reachy.ControlApp
         private bool ShouldUseEthernetReconnect()
         {
             return autoDetectEthernetRobot && !_manualDisconnect &&
-                _autoReconnectMode == ReachyControlMode.RealRobot && !string.IsNullOrEmpty(_ethernetSelectedHost);
+                _autoReconnectMode == ReachyControlMode.RealRobot &&
+                (_ethernetLinkUp || !string.IsNullOrEmpty(_ethernetSelectedHost));
         }
 
         private void UpdateEthernetDiscovery()
@@ -84,6 +91,8 @@ namespace Reachy.ControlApp
                     _nextEthernetDiscoveryAt = 0f;
                     if (!linkUp)
                     {
+                        _pendingEthernetRecovery = null;
+                        _ethernetNetworkRepairUsed = false;
                         _ethernetDiscoveryCancellation?.Cancel();
                         _ethernetDiscoveryStatus = "Ethernet disconnected. Waiting for the cable.";
                     }
@@ -111,7 +120,15 @@ namespace Reachy.ControlApp
                 try
                 {
                     EthernetCheck result = completed.GetAwaiter().GetResult();
-                    if (autoDetectEthernetRobot && !_manualDisconnect && _ethernetLinkUp) ConsumeEthernetCheck(result);
+                    if (autoDetectEthernetRobot && !_manualDisconnect && _ethernetLinkUp)
+                    {
+                        ConsumeEthernetCheck(result);
+                        if (_lastEthernetDiagnostic != _ethernetDiscoveryStatus)
+                        {
+                            _lastEthernetDiagnostic = _ethernetDiscoveryStatus;
+                            Debug.Log("[Reachy Ethernet] " + _ethernetDiscoveryStatus);
+                        }
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -124,8 +141,17 @@ namespace Reachy.ControlApp
             if (!autoDetectEthernetRobot || _manualDisconnect || !_ethernetLinkUp || _isConnectAttemptInProgress ||
                 _ethernetDiscoveryTask != null || now < _nextEthernetDiscoveryAt) return;
 
+            string knownHosts = Path.Combine(Application.persistentDataPath, "ReachyControlApp", "ethernet_known_hosts");
+            string hintPath = knownHosts + ".hint.json";
+            if (_ethernetRobotHint == null && File.Exists(hintPath))
+            {
+                try { _ethernetRobotHint = JsonUtility.FromJson<EthernetSshCheck>(File.ReadAllText(hintPath)); }
+                catch (Exception) { /* A cache is optional; discovery still runs. */ }
+            }
+            var hint = _ethernetRobotHint;
             var endpoints = BuildConnectionCandidates(ReachyControlMode.RealRobot);
-            string[] hosts = endpoints.Select(endpoint => endpoint.Host).Distinct().ToArray();
+            string[] hosts = endpoints.Select(endpoint => endpoint.Host).Concat(hint?.addresses ?? Array.Empty<string>())
+                .Concat(new[] { hint?.hostname }).Where(host => !string.IsNullOrWhiteSpace(host)).Distinct().ToArray();
             int[] ports = endpoints.Select(endpoint => endpoint.Port).Concat(new[] { 50055, 3972 }).Distinct().ToArray();
             string selected = _ethernetSelectedHost;
             int selectedPort = _ethernetSelectedPort;
@@ -134,21 +160,21 @@ namespace Reachy.ControlApp
             string script = ResolveLocalAssetRelativePath("ReachyControlApp/LocalVoiceAgent/verify_reachy_ethernet.py");
             string directory = Path.GetDirectoryName(script) ?? Application.dataPath;
             string[] interpreters = BuildPythonCommandCandidates(directory, localAiAgentSidecarPythonCommand, true, new[] { script }).ToArray();
-            string knownHosts = Path.Combine(Application.persistentDataPath, "ReachyControlApp", "ethernet_known_hosts");
             string user = string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim();
             string password = robotSshPassword ?? string.Empty;
-            string recoveryHost = _pendingEthernetRecoveryHost;
-            _pendingEthernetRecoveryHost = null;
-            bool allowRecovery = !realConnected && recoveryHost != null && !_ethernetRestartUsed && now >= _nextEthernetRestartAt;
-            if (allowRecovery)
+            string action = _pendingEthernetRecovery;
+            _pendingEthernetRecovery = null;
+            if (realConnected) action = null;
+            if (action == "sdk")
             {
                 // Reserve the attempt before the helper runs, including if its reply is lost.
                 _ethernetRestartUsed = true;
                 _nextEthernetRestartAt = now + EthernetRestartCooldownSeconds;
             }
+            if (action == "network") _ethernetNetworkRepairUsed = true;
             if (!monitorSelected && string.IsNullOrEmpty(selected) && !_initialEthernetDiscoveryCompleted)
                 _ethernetDiscoveryStatus = "Ethernet connected. Waiting for Reachy to boot...";
-            _ethernetDiscoveryCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(32));
+            _ethernetDiscoveryCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(45));
             CancellationToken cancellation = _ethernetDiscoveryCancellation.Token;
             _ethernetDiscoveryTask = Task.Run(async () =>
             {
@@ -160,17 +186,32 @@ namespace Reachy.ControlApp
                     discovery = await ReachyEthernetDiscovery.DiscoverAsync(hosts, ports, cancellation);
 
                 var check = new EthernetCheck { Discovery = discovery };
-                if (discovery?.Ambiguous == true) return check;
-                check.Host = discovery?.Host ?? recoveryHost ?? (string.IsNullOrEmpty(selected)
-                    ? ReachyEthernetDiscovery.DirectEthernetFallbackHost : selected);
-                source = ReachyEthernetDiscovery.FindWiredSource(check.Host);
-                if (source != null && !string.IsNullOrEmpty(password))
+                if (discovery?.Ambiguous == true && hint == null) return check;
+                if (File.Exists(knownHosts) && !string.IsNullOrEmpty(password))
                 {
+                    var routes = await ReachyEthernetDiscovery.FindManagementRoutesAsync(
+                        new[] { discovery?.Host, selected }.Concat(hosts), hint?.linkLocal, cancellation);
                     check.Ssh = RunEthernetSshCheck(script, interpreters, new EthernetSshRequest
                     {
-                        host = check.Host, source = source.Address.ToString(), user = user, password = password,
-                        knownHostsPath = knownHosts, recover = allowRecovery && check.Host == recoveryHost
+                        routes = routes, user = user, password = password, knownHostsPath = knownHosts,
+                        identity = hint?.identity, action = action
                     }, cancellation);
+
+                    // Use the verified robot's current wired address instead of
+                    // assuming the previous IPv4 or the first SDK reply is its own.
+                    if (check.Ssh?.addresses != null && !string.IsNullOrEmpty(check.Ssh.identity) &&
+                        (discovery?.Found != true || !check.Ssh.addresses.Contains(discovery.Host)))
+                    {
+                        foreach (string address in check.Ssh.addresses.Take(4))
+                        {
+                            source = ReachyEthernetDiscovery.FindWiredSource(address);
+                            if (source == null) continue;
+                            check.Discovery = await ReachyEthernetDiscovery.VerifyServiceAsync(address, 50055, source.Name, cancellation);
+                            if (check.Discovery != null) break;
+                        }
+                        if (check.Discovery?.Found != true || !check.Ssh.addresses.Contains(check.Discovery.Host))
+                            check.Discovery = new ReachyEthernetDiscovery.Result { Message = "Verified Reachy over SSH. Waiting for its wired SDK endpoint." };
+                    }
                 }
                 return check;
             });
@@ -186,6 +227,7 @@ namespace Reachy.ControlApp
         private void ConsumeEthernetCheck(EthernetCheck check)
         {
             string status = check.Ssh?.status;
+            RememberEthernetRobot(check.Ssh);
             bool sdkReady = check.Discovery?.Found == true;
             if (IsConnectedToSelectedEthernet() && (!sdkReady || status == "controller_missing" ||
                 status == "no_sample" || status == "key_mismatch"))
@@ -201,10 +243,27 @@ namespace Reachy.ControlApp
             {
                 case "ready":
                     _ethernetRestartUsed = false;
+                    if (sdkReady) _ethernetNetworkRepairUsed = false;
                     _ethernetDiscoveryStatus = sdkReady
                         ? check.Discovery.Message + " Live ROS data verified for " + check.Ssh.jointCount + " joints."
                         : "Reachy publishes live joints, but its SDK is not ready. Retrying.";
                     break;
+                case "network_missing":
+                case "network_starting":
+                case "network_requested":
+                case "network_denied":
+                    if (status == "network_missing" && !_ethernetNetworkRepairUsed)
+                    {
+                        _pendingEthernetRecovery = "network";
+                        _nextEthernetDiscoveryAt = 0f;
+                    }
+                    if (status == "network_requested") _nextEthernetDiscoveryAt = Time.unscaledTime + 4f;
+                    _ethernetDiscoveryStatus = status == "network_requested" ? "Requested Reachy's direct Ethernet profile. Waiting for IPv4..."
+                        : status == "network_denied" ? "Reachy answered over IPv6, but IPv4 recovery was not confirmed."
+                        : status == "network_starting" ? "Reachy answered over IPv6. Waiting for its Ethernet IPv4 address..."
+                        : _ethernetNetworkRepairUsed ? "Reachy answered over IPv6, but IPv4 is still unavailable after a repair attempt."
+                        : "Reachy answered over IPv6. Checking its direct Ethernet profile...";
+                    return;
                 case "restarted":
                 case "restart_failed":
                     _ethernetRestartUsed = true;
@@ -225,12 +284,17 @@ namespace Reachy.ControlApp
                         Time.unscaledTime >= _nextEthernetRestartAt &&
                         !(_client != null && _client.IsConnected && _connectedMode == ReachyControlMode.RealRobot))
                     {
-                        _pendingEthernetRecoveryHost = check.Host;
+                        _pendingEthernetRecovery = "sdk";
                         _nextEthernetDiscoveryAt = 0f;
                     }
                     return;
                 case "key_mismatch":
                     _ethernetDiscoveryStatus = "Reachy's SSH host key changed. Verify the robot's identity before updating the trusted key.";
+                    return;
+                case "ambiguous":
+                case "trusted_robot_unavailable":
+                    _ethernetDiscoveryStatus = status == "ambiguous" ? "Multiple trusted Reachys are reachable. Select the intended robot manually."
+                        : "The previously verified Reachy is not answering over this Ethernet link.";
                     return;
             }
 
@@ -243,6 +307,32 @@ namespace Reachy.ControlApp
                 _ethernetDiscoveryStatus += " " + detail + " Automatic SDK recovery unavailable.";
             }
             if (sdkReady) ApplyEthernetRobot(check.Discovery);
+            else if (status == "ssh_unavailable" && !sdkReady)
+                _ethernetDiscoveryStatus = "Ethernet link is up, but Reachy's operating system is not answering over SSH or SDK. " +
+                    "If this persists after boot, check Reachy's computer or restart it with its power button.";
+        }
+
+        private void RememberEthernetRobot(EthernetSshCheck robot)
+        {
+            if (robot == null || string.IsNullOrEmpty(robot.identity)) return;
+            var previous = _ethernetRobotHint;
+            var hint = new EthernetSshCheck
+            {
+                identity = robot.identity,
+                hostname = string.IsNullOrEmpty(robot.hostname) ? previous?.hostname : robot.hostname,
+                linkLocal = string.IsNullOrEmpty(robot.linkLocal) ? previous?.linkLocal : robot.linkLocal,
+                addresses = robot.addresses?.Length > 0 ? robot.addresses : previous?.addresses
+            };
+            string json = JsonUtility.ToJson(hint);
+            if (previous != null && json == JsonUtility.ToJson(previous)) return;
+            _ethernetRobotHint = hint;
+            try
+            {
+                string directory = Path.Combine(Application.persistentDataPath, "ReachyControlApp");
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, "ethernet_known_hosts.hint.json"), json);
+            }
+            catch (Exception) { /* The current session can still use the cache. */ }
         }
 
         private static EthernetSshCheck RunEthernetSshCheck(string script, string[] interpreters,
