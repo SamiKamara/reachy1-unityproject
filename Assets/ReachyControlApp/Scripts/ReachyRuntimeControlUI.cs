@@ -231,8 +231,8 @@ namespace Reachy.ControlApp
             FortuneTellerPersonaSelected = 3,
             CustomPersonaSelected = 4,
             EmotionPersonaSelected = 5,
-            OnlineAiEnabled = 6,
-            OnlineAiDisabled = 7
+            AiEnabled = 6,
+            AiDisabled = 7
         }
 
         private const float DesignMarginPixels = 10f;
@@ -368,8 +368,14 @@ namespace Reachy.ControlApp
         private const float AnimationCreatorDefaultTransitionSeconds = 0.42f;
         private const float AnimationCreatorDefaultNeutralReturnSeconds = 0.38f;
         private const float AnimationCreatorDefaultNeutralHoldSeconds = 0.35f;
-        private const string LocalAiAgentActivationAnnouncement =
-            "Local AI agent is now active. Use voice commands to control Reachy or ask for help.";
+        private static readonly string[] AiActivationGreetings =
+        {
+            "Hey! What's up?",
+            "Oh, hi there! How's it going?",
+            "Hey, good to see you!",
+            "Hi! What's on your mind?",
+            "Hey there! How are you doing?"
+        };
         private const string DefaultAssistantOnlineAiSystemPrompt =
             "You are Reachy. Identify yourself as Reachy, explain who you are when asked, " +
             "tell users about yourself and the robot, and assist with whatever they want help with using clear practical answers.";
@@ -1236,8 +1242,7 @@ namespace Reachy.ControlApp
 
         [Header("Local AI Agent")]
         [SerializeField] private AiMode aiMode = AiMode.Local;
-        [SerializeField] private bool enableLocalAiAgent = false;
-        [SerializeField] private bool enableOnlineAiAgent = false;
+        [SerializeField] private bool enableAiAgent = false;
         [SerializeField] private bool localAiAgentPanelExpanded = false;
         [SerializeField] private string localAiAgentEndpoint = VoiceAgentBridge.DefaultEndpoint;
         [SerializeField] private float localAiAgentPollIntervalSeconds = 0.5f;
@@ -1280,7 +1285,7 @@ namespace Reachy.ControlApp
         [SerializeField] private string localAiAgentPreferredMicrophoneDeviceName = string.Empty;
         [SerializeField] private bool localAiAgentIgnoreVirtualMicrophones = true;
         [SerializeField] private ConnectionMicrophoneSourceMode localAiAgentConnectionMicrophoneSourceMode =
-            ConnectionMicrophoneSourceMode.Blend;
+            ConnectionMicrophoneSourceMode.ReachyOnly;
         [SerializeField] private bool localAiAgentAutoStartSidecar = true;
         [SerializeField] private bool localAiAgentAutoStopAutoStartedSidecarOnDisable = true;
         [SerializeField] private bool localAiAgentSyncSidecarConfigOnStart = true;
@@ -1403,11 +1408,9 @@ namespace Reachy.ControlApp
         private Vector2 _savedOnlineAiCustomPersonalityDropdownScroll;
         private bool _savedOnlineAiCustomPersonalityDropdownOpen;
         private string _selectedSavedOnlineAiCustomPersonalityPath = string.Empty;
-        private string _onlineAiPersonaPendingApplyFingerprint = string.Empty;
         private string _onlineAiPersonaLastAppliedFingerprint = string.Empty;
         private float _onlineAiPersonaPendingApplyAt = -1f;
         private bool _onlineAiPersonaApplyPending;
-        private bool _onlineAiPersonaPendingApplyAnnounceSuccess;
         private GUIStyle _titleStyle;
         private GUIStyle _manualVectorCardLabelStyle;
         private float _nextHealthCheckAt;
@@ -1540,6 +1543,7 @@ namespace Reachy.ControlApp
         private string _voiceLastHelpAnswer = string.Empty;
         private float _voiceNextAllowedTtsAt;
         private bool? _voiceLastRequestedListeningEnabled;
+        private float _voiceListeningRetryAt;
         private string _voiceLastCommandFingerprint = string.Empty;
         private float _voiceLastCommandAt;
         private bool _voiceWarnedSttInactive;
@@ -1575,8 +1579,19 @@ namespace Reachy.ControlApp
         private bool _localAiAgentSidecarStartedByUi;
         private bool _localAiAgentSidecarInitialProbeCompleted;
         private string _localAiAgentSidecarLastStartError = string.Empty;
-        private bool _localAiAgentActivationAnnouncementPending;
-        private bool _localAiAgentWasEnabledLastFrame;
+        private bool _aiActivationGreetingPending;
+        private bool _aiWasEnabledLastFrame;
+        private int _lastAiActivationGreetingIndex = -1;
+        private bool _aiSessionReady;
+        private bool _sidecarAiMayBeActive;
+        private int _sidecarAiModeRevision;
+        private string _sidecarAiModeAppliedKey;
+        private string _sidecarAiModeRequestKey;
+        private bool _sidecarAiModeRequestActive;
+        private Task<OnlineAiModeUpdateResult> _sidecarAiModeTask;
+        private float _sidecarAiModeRetryAt;
+        private string _sidecarAiModeStatus = string.Empty;
+        private string _pendingSpokenPersonaConfirmation = string.Empty;
         private float _localAiAgentSidecarStartupStartedAt;
         private float _localAiAgentSidecarNextStartAttemptAt;
         private float _localAiAgentSidecarNextProbeAt;
@@ -1747,9 +1762,7 @@ namespace Reachy.ControlApp
         private struct OnlineAiModeUpdateResult
         {
             public bool Success;
-            public string RequestedMode;
-            public string EffectiveMode;
-            public string Message;
+            public bool Reachable;
             public string Error;
         }
 
@@ -1879,7 +1892,8 @@ namespace Reachy.ControlApp
         [Serializable]
         private sealed class MicrophoneRoutingPayload
         {
-            public string audio_source_mode = "blend";
+            public bool prefer_reachy_speaker;
+            public string audio_source_mode = "reachy";
             public string audio_input_device_name = string.Empty;
             public bool prefer_non_virtual_input_device = true;
             public bool reachy_mic_robot_connected;
@@ -1914,6 +1928,9 @@ namespace Reachy.ControlApp
         [Serializable]
         private sealed class OnlineAiModeUpdatePayload
         {
+            public bool ai_active;
+            public bool listening_enabled;
+            public MicrophoneRoutingPayload audio_routing;
             public string ai_mode = "local";
             public bool online_ai_enabled;
             public string online_ai_persona_mode = "assistant";
@@ -1928,6 +1945,7 @@ namespace Reachy.ControlApp
         private sealed class ChitChatTranscriptPayload
         {
             public string text = string.Empty;
+            public bool typed = true;
             public bool final = true;
             public float confidence = 0.98f;
         }
@@ -1954,9 +1972,9 @@ namespace Reachy.ControlApp
         private sealed class OnlineAiModeUpdateResponseEnvelope
         {
             public bool ok;
-            public string requested_mode = string.Empty;
+            public bool ai_active;
+            public string effective_ai_mode = string.Empty;
             public string effective_mode = string.Empty;
-            public string message = string.Empty;
         }
 
         [Serializable]
@@ -2155,7 +2173,8 @@ namespace Reachy.ControlApp
             public int help_max_answer_chars = 360;
             public string audio_input_device_name = string.Empty;
             public bool prefer_non_virtual_input_device = true;
-            public string audio_source_mode = "blend";
+            public string audio_source_mode = "reachy";
+            public bool prefer_reachy_speaker = true;
             public bool reachy_mic_robot_connected = false;
             public string reachy_mic_ssh_host = string.Empty;
             public int reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort;
@@ -2401,25 +2420,17 @@ namespace Reachy.ControlApp
             bool loadedVoiceConfig = TryLoadVoiceAgentConfigFromDisk(out string startupVoiceConfigMessage);
             if (loadedVoiceConfig)
             {
-                ApplyStartupOnlineAiSessionDefaults();
-                bool startupConsistencyOk = TryConfirmSelectedOnlineAiModeConsistency(
-                    "Startup AI mode verification",
-                    updateRunningSidecar: false,
-                    out string startupConsistencyMessage);
-                _voiceLastActionResult = string.IsNullOrWhiteSpace(startupConsistencyMessage)
-                    ? startupVoiceConfigMessage
-                    : $"{startupVoiceConfigMessage} Startup defaults applied: online AI disabled, Assistant mode selected. {startupConsistencyMessage}";
-                if (!startupConsistencyOk)
-                {
-                    _voiceLastParserMessage = startupConsistencyMessage;
-                }
+                _voiceLastActionResult = startupVoiceConfigMessage;
             }
             else if (!string.IsNullOrWhiteSpace(startupVoiceConfigMessage) &&
                 startupVoiceConfigMessage.IndexOf("not found", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 _voiceLastParserMessage = startupVoiceConfigMessage;
             }
-            ResetOnlineAiPersonaLiveApplyTracking();
+            if (!loadedVoiceConfig)
+            {
+                ResetOnlineAiPersonaLiveApplyTracking();
+            }
             TryRefreshSavedOnlineAiCustomPersonalityLibrary(out _);
             TryRefreshOzModeSavedEntriesLibrary(out _);
             _animationCreatorImportPath = string.Empty;
@@ -4473,7 +4484,12 @@ namespace Reachy.ControlApp
         {
             if (!IsCurrentAiModeEnabled())
             {
-                return "Enable Local AI or Online AI in the AI tab to start a text conversation.";
+                return "Enable AI in the AI tab to start a text conversation.";
+            }
+
+            if (!_aiSessionReady)
+            {
+                return $"Preparing {GetCurrentAiModeLabel()}.";
             }
 
             if (IsOnlineAiModeSelected())
@@ -4577,7 +4593,13 @@ namespace Reachy.ControlApp
 
             if (!IsCurrentAiModeEnabled())
             {
-                _chitChatStatus = "Enable Local AI or Online AI in the AI tab before using Chit Chat.";
+                _chitChatStatus = "Enable AI in the AI tab before using Chit Chat.";
+                return;
+            }
+
+            if (!_aiSessionReady)
+            {
+                _chitChatStatus = $"Waiting for {GetCurrentAiModeLabel()} to become ready.";
                 return;
             }
 
@@ -4657,6 +4679,10 @@ namespace Reachy.ControlApp
             try
             {
                 ChitChatTranscriptRequestResult result = _chitChatInjectionTask.Result;
+                if (!_chitChatAwaitingResponse)
+                {
+                    return;
+                }
                 if (result.Success)
                 {
                     KeepWaitingForChitChatResponse(
@@ -4698,19 +4724,19 @@ namespace Reachy.ControlApp
             }
 
             bool aiEnabledNow = IsCurrentAiModeEnabled();
-            if (aiEnabledNow && !_localAiAgentWasEnabledLastFrame)
+            if (enableAiAgent && !_aiWasEnabledLastFrame)
             {
-                _localAiAgentActivationAnnouncementPending = true;
+                _aiActivationGreetingPending = true;
                 if (IsOnlineAiModeSelected() && onlineAiShowApiKeyHelpOnFirstOpen)
                 {
                     onlineAiShowApiKeyHelpPanel = true;
                 }
             }
-            else if (!aiEnabledNow)
+            else if (!enableAiAgent)
             {
-                _localAiAgentActivationAnnouncementPending = false;
+                _aiActivationGreetingPending = false;
             }
-            _localAiAgentWasEnabledLastFrame = aiEnabledNow;
+            _aiWasEnabledLastFrame = enableAiAgent;
 
             localAiAgentPollIntervalSeconds = Mathf.Max(0.1f, localAiAgentPollIntervalSeconds);
             localAiAgentConfidenceThreshold = Mathf.Clamp01(localAiAgentConfidenceThreshold);
@@ -4792,22 +4818,23 @@ namespace Reachy.ControlApp
             _voiceTranscriptParser.MinTranscriptChars = localAiAgentMinTranscriptChars;
             _voiceTranscriptParser.MinTranscriptWords = localAiAgentMinTranscriptWords;
 
-            bool sidecarShouldBePrepared = aiEnabledNow || _actedSequenceRequestingTtsSidecar || IsOzModeViewSelected();
-            bool bridgeShouldBeEnabled = aiEnabledNow;
-            if (localAiAgentAutoStartSidecar)
+            bool sidecarNeedsDeactivation = _localAiAgentSidecarReady && _sidecarAiMayBeActive &&
+                !(localAiAgentAutoStopAutoStartedSidecarOnDisable && _localAiAgentSidecarStartedByUi);
+            UpdateLocalAiAgentSidecarStartup(
+                aiEnabledNow || _actedSequenceRequestingTtsSidecar || IsOzModeViewSelected() || sidecarNeedsDeactivation);
+            bool modeApplied = UpdateSidecarAiMode(aiEnabledNow);
+            bool bridgeShouldBeEnabled = aiEnabledNow && modeApplied;
+            if (_aiSessionReady && !bridgeShouldBeEnabled && _chitChatAwaitingResponse)
             {
-                UpdateLocalAiAgentSidecarStartup(sidecarShouldBePrepared);
-                bridgeShouldBeEnabled = aiEnabledNow && _localAiAgentSidecarReady;
+                _chitChatAwaitingResponse = false;
+                _chitChatPendingPrompt = string.Empty;
+                _chitChatStatus = "Chit Chat paused while the AI session changes.";
             }
-            else if (!sidecarShouldBePrepared)
+            if (!bridgeShouldBeEnabled)
             {
-                _localAiAgentSidecarReady = false;
-                _localAiAgentSidecarStartupActive = false;
-                if (localAiAgentAutoStopAutoStartedSidecarOnDisable)
-                {
-                    StopAutoStartedSidecarIfRunning("AI disabled");
-                }
+                _chitChatSuppressNextResponse = false;
             }
+            _aiSessionReady = bridgeShouldBeEnabled;
 
             int bridgeTimeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 700, 10000);
             if (localAiAgentEnableLocalHelpModel)
@@ -4844,36 +4871,41 @@ namespace Reachy.ControlApp
             ConsumeOnlineAiTestTaskIfReady();
             ConsumeChitChatInjectionTaskIfReady();
 
-            if (_localAiAgentActivationAnnouncementPending && bridgeShouldBeEnabled)
+            if (_aiActivationGreetingPending && bridgeShouldBeEnabled)
             {
-                if (IsOnlineAiModeSelected())
+                if (localAiAgentEnableTtsFeedback && !ShouldSuppressSpeechForCurrentAiContext())
                 {
-                    RequestOnlineAiStatusRefresh();
+                    int greetingIndex = UnityEngine.Random.Range(
+                        0, AiActivationGreetings.Length - (_lastAiActivationGreetingIndex < 0 ? 0 : 1));
+                    if (_lastAiActivationGreetingIndex >= 0 && greetingIndex >= _lastAiActivationGreetingIndex)
+                    {
+                        greetingIndex++;
+                    }
+                    _lastAiActivationGreetingIndex = greetingIndex;
+                    QueueVoiceFeedback(AiActivationGreetings[greetingIndex], bypassRateLimit: true);
                 }
 
-                if (localAiAgentEnableTtsFeedback)
-                {
-                    QueueVoiceFeedback(
-                        IsOnlineAiModeSelected()
-                            ? "Online AI agent is now active. OpenAI Transcribe will be used automatically when your OpenAI API key is available."
-                            : LocalAiAgentActivationAnnouncement,
-                        interrupt: false,
-                        bypassRateLimit: true);
-                }
-
-                _localAiAgentActivationAnnouncementPending = false;
+                _aiActivationGreetingPending = false;
             }
 
             if (bridgeShouldBeEnabled)
             {
-                bool desiredListeningEnabled = localAiAgentListeningEnabled;
-                if (localAiAgentEnablePushToTalk)
+                if (!string.IsNullOrWhiteSpace(_pendingSpokenPersonaConfirmation))
                 {
-                    KeyCode resolvedKey = ResolvePushToTalkKey();
-                    desiredListeningEnabled = Input.GetKey(resolvedKey);
+                    QueueVoiceFeedback(_pendingSpokenPersonaConfirmation, bypassRateLimit: true);
+                    _pendingSpokenPersonaConfirmation = string.Empty;
                 }
 
-                RequestRemoteListeningState(desiredListeningEnabled);
+                RequestRemoteListeningState(GetDesiredAiListeningState());
+            }
+            else
+            {
+                _voiceLastRequestedListeningEnabled = null;
+                _voiceListeningRetryAt = 0f;
+                if (!aiEnabledNow)
+                {
+                    _pendingSpokenPersonaConfirmation = string.Empty;
+                }
             }
 
             _voiceAgentBridge.Update(Time.unscaledTime);
@@ -4907,15 +4939,22 @@ namespace Reachy.ControlApp
                 ClearSpeechDrivenVoiceTracking(clearLastSpokenFeedback: true);
                 _voiceLastCommandFingerprint = string.Empty;
                 _voiceWarnedSttInactive = false;
-                _voiceLastActionResult = _localAiAgentSidecarStatus;
+                _voiceLastActionResult = _localAiAgentSidecarReady
+                    ? _sidecarAiModeStatus
+                    : _localAiAgentSidecarStatus;
                 RefreshVoiceAgentStatusState();
                 return;
             }
 
             VoiceAgentBridge.BridgeSnapshot bridgeSnapshot = _voiceAgentBridge.GetSnapshot();
+            if (bridgeSnapshot.DegradedMode)
+            {
+                _localAiAgentSidecarReady = false;
+                _localAiAgentSidecarStartupActive = false;
+            }
             string sttBackend = (bridgeSnapshot.SttBackend ?? string.Empty).Trim().ToLowerInvariant();
             bool sttInactive = string.IsNullOrWhiteSpace(sttBackend) || sttBackend == "none";
-            if (sttInactive)
+            if (bridgeSnapshot.BridgeReachable && sttInactive)
             {
                 if (!_voiceWarnedSttInactive)
                 {
@@ -4945,6 +4984,8 @@ namespace Reachy.ControlApp
             if (bridgeSnapshot.FailedListeningToggleCount > _voiceLastHandledListeningFailureCount)
             {
                 _voiceLastHandledListeningFailureCount = bridgeSnapshot.FailedListeningToggleCount;
+                _voiceLastRequestedListeningEnabled = null;
+                _voiceListeningRetryAt = Time.unscaledTime + localAiAgentSidecarRetryIntervalSeconds;
                 if (!string.IsNullOrWhiteSpace(bridgeSnapshot.LastListeningToggleMessage))
                 {
                     _voiceLastActionResult = bridgeSnapshot.LastListeningToggleMessage;
@@ -5000,11 +5041,12 @@ namespace Reachy.ControlApp
             }
 
             int processedThisFrame = 0;
+            int activeModeRevision = _sidecarAiModeRevision;
             while (_voiceAgentBridge.TryDequeueIntent(out VoiceAgentIntent incomingIntent))
             {
                 HandleIncomingVoiceIntent(incomingIntent);
                 processedThisFrame++;
-                if (processedThisFrame >= 6)
+                if (processedThisFrame >= 6 || _sidecarAiModeRevision != activeModeRevision)
                 {
                     break;
                 }
@@ -5540,6 +5582,15 @@ namespace Reachy.ControlApp
             float trackedDurationSeconds = _voicePendingSpokenFeedbackDurations.Count > 0
                 ? _voicePendingSpokenFeedbackDurations.Dequeue()
                 : 0f;
+            bool feedbackDrained = !snapshot.TtsInFlight &&
+                                   snapshot.QueuedTtsCount <= 0 &&
+                                   _voicePendingSpokenFeedbackDurations.Count <= 0;
+            bool tracksPlayback = ShouldActedSequenceTrackLocalTtsPlayback();
+            if (feedbackDrained && (!success || tracksPlayback))
+            {
+                _speechDrivenEstimatedVoiceOutputUntil = 0f;
+            }
+
             if (success)
             {
                 if (!string.IsNullOrWhiteSpace(trackedMessage))
@@ -5547,10 +5598,10 @@ namespace Reachy.ControlApp
                     _voiceLastSpokenFeedback = trackedMessage;
                 }
 
-                if (trackedDurationSeconds > 0f &&
-                    !_speechDrivenTtsSpeaking &&
-                    !snapshot.TtsInFlight &&
-                    snapshot.QueuedTtsCount <= 0)
+                if (feedbackDrained &&
+                    !tracksPlayback &&
+                    trackedDurationSeconds > 0f &&
+                    !_speechDrivenTtsSpeaking)
                 {
                     _speechDrivenEstimatedVoiceOutputUntil = Mathf.Max(
                         _speechDrivenEstimatedVoiceOutputUntil,
@@ -5558,14 +5609,6 @@ namespace Reachy.ControlApp
                 }
 
                 return;
-            }
-
-            if (!snapshot.TtsInFlight &&
-                snapshot.QueuedTtsCount <= 0 &&
-                !_speechDrivenTtsSpeaking &&
-                _voicePendingSpokenFeedbackDurations.Count <= 0)
-            {
-                _speechDrivenEstimatedVoiceOutputUntil = 0f;
             }
 
             if (!string.IsNullOrWhiteSpace(snapshot.LastTtsError))
@@ -5976,7 +6019,7 @@ namespace Reachy.ControlApp
         private bool ShouldRunOnlineAiEmotionBackupEmotions()
         {
             return onlineAiEmotionFakeBackupEmotions &&
-                   IsCurrentAiModeEnabled() &&
+                   _aiSessionReady &&
                    IsOnlineAiModeSelected() &&
                    IsEmotionReactionPersonaModeSelected() &&
                    !_isConnectAttemptInProgress &&
@@ -6245,7 +6288,7 @@ namespace Reachy.ControlApp
             bool interrupt = false,
             bool bypassRateLimit = false)
         {
-            if (!IsCurrentAiModeEnabled() || !localAiAgentEnableTtsFeedback || _voiceAgentBridge == null)
+            if (!_aiSessionReady || !IsCurrentAiModeEnabled() || !localAiAgentEnableTtsFeedback || _voiceAgentBridge == null)
             {
                 return;
             }
@@ -6285,9 +6328,21 @@ namespace Reachy.ControlApp
             return KeyCode.V;
         }
 
+        private bool GetDesiredAiListeningState()
+        {
+            return localAiAgentEnablePushToTalk
+                ? Input.GetKey(ResolvePushToTalkKey())
+                : localAiAgentListeningEnabled;
+        }
+
         private void RequestRemoteListeningState(bool enabled, bool force = false)
         {
-            if (_voiceAgentBridge == null || !IsCurrentAiModeEnabled())
+            if (_voiceAgentBridge == null || !_aiSessionReady)
+            {
+                return;
+            }
+
+            if (!force && Time.unscaledTime < _voiceListeningRetryAt)
             {
                 return;
             }
@@ -6306,6 +6361,7 @@ namespace Reachy.ControlApp
         {
             return new MicrophoneRoutingPayload
             {
+                prefer_reachy_speaker = ShouldUseSidecarReachySpeaker(),
                 audio_source_mode = GetConnectionMicrophoneSourceModeConfigValue(),
                 audio_input_device_name = localAiAgentPreferredMicrophoneDeviceName ?? string.Empty,
                 prefer_non_virtual_input_device = localAiAgentIgnoreVirtualMicrophones,
@@ -6331,6 +6387,7 @@ namespace Reachy.ControlApp
                 payload.audio_source_mode ?? string.Empty,
                 payload.audio_input_device_name ?? string.Empty,
                 payload.prefer_non_virtual_input_device ? "phys" : "all",
+                payload.prefer_reachy_speaker ? "reachy-speaker" : "pc-speaker",
                 payload.reachy_mic_robot_connected ? "robot-on" : "robot-off",
                 payload.reachy_mic_ssh_host ?? string.Empty,
                 payload.reachy_mic_ssh_user ?? string.Empty,
@@ -6431,7 +6488,7 @@ namespace Reachy.ControlApp
                     _microphoneRoutingStatus = "Waiting for the local sidecar before Reachy mic routing can be applied.";
                     LogMicrophoneRoutingRuntimeEvent(
                         "update-deferred",
-                        $"reason=sidecar-not-ready; sidecarStatus={NormalizeLogText(_localAiAgentSidecarStatus)}; " +
+                        "reason=sidecar-not-ready; " +
                         $"requested={GetConnectionMicrophoneSourceModeConfigValue()}; targetHost={GetReachyMicrophoneTargetHost()}; " +
                         $"sessionActive={IsRealRobotSessionActive()}",
                         "WARN");
@@ -7083,14 +7140,14 @@ namespace Reachy.ControlApp
                         string.IsNullOrWhiteSpace(responseText)
                             ? null
                             : JsonUtility.FromJson<OnlineAiModeUpdateResponseEnvelope>(responseText);
-                    bool ok = parsed == null || parsed.ok;
+                    bool ok = parsed != null && parsed.ok && parsed.ai_active == payload.ai_active &&
+                              string.Equals(parsed.effective_ai_mode, payload.ai_mode, StringComparison.Ordinal) &&
+                              string.Equals(parsed.effective_mode, payload.online_ai_persona_mode, StringComparison.Ordinal);
                     return new OnlineAiModeUpdateResult
                     {
                         Success = ok,
-                        RequestedMode = parsed?.requested_mode ?? (payload?.online_ai_persona_mode ?? string.Empty),
-                        EffectiveMode = parsed?.effective_mode ?? (payload?.online_ai_persona_mode ?? string.Empty),
-                        Message = parsed?.message ?? "Online AI mode update accepted.",
-                        Error = ok ? string.Empty : (parsed?.message ?? "Online AI mode update was rejected.")
+                        Reachable = true,
+                        Error = ok ? string.Empty : "The sidecar did not confirm the requested AI session."
                     };
                 }
             }
@@ -7113,9 +7170,7 @@ namespace Reachy.ControlApp
                 return new OnlineAiModeUpdateResult
                 {
                     Success = false,
-                    RequestedMode = payload?.online_ai_persona_mode ?? string.Empty,
-                    EffectiveMode = payload?.online_ai_persona_mode ?? string.Empty,
-                    Message = "Online AI mode update failed.",
+                    Reachable = webEx.Response != null,
                     Error = detail
                 };
             }
@@ -7124,9 +7179,6 @@ namespace Reachy.ControlApp
                 return new OnlineAiModeUpdateResult
                 {
                     Success = false,
-                    RequestedMode = payload?.online_ai_persona_mode ?? string.Empty,
-                    EffectiveMode = payload?.online_ai_persona_mode ?? string.Empty,
-                    Message = "Online AI mode update failed.",
                     Error = ex.Message
                 };
             }
@@ -7261,6 +7313,15 @@ namespace Reachy.ControlApp
 
             ConsumeSidecarProbeResultIfReady();
 
+            if (_localAiAgentSidecarProcess != null && _localAiAgentSidecarProcess.HasExited)
+            {
+                _localAiAgentSidecarProcess.Dispose();
+                _localAiAgentSidecarProcess = null;
+                _localAiAgentSidecarStartedByUi = false;
+                _localAiAgentSidecarReady = false;
+                _sidecarAiModeAppliedKey = null;
+            }
+
             if (_localAiAgentSidecarReady)
             {
                 _localAiAgentSidecarStartupActive = false;
@@ -7279,17 +7340,13 @@ namespace Reachy.ControlApp
                 _localAiAgentSidecarStartupStartedAt = Time.unscaledTime;
                 _localAiAgentSidecarNextStartAttemptAt = Time.unscaledTime;
                 _localAiAgentSidecarNextProbeAt = Time.unscaledTime;
-                _localAiAgentSidecarStatus = "Starting local sidecar before enabling AI bridge...";
+                _localAiAgentSidecarStatus = localAiAgentAutoStartSidecar
+                    ? "Starting local sidecar before enabling AI bridge..."
+                    : "Waiting for the configured voice sidecar...";
                 _localAiAgentSidecarLastStartError = string.Empty;
             }
 
-            if (_localAiAgentSidecarProcess != null && _localAiAgentSidecarProcess.HasExited)
-            {
-                _localAiAgentSidecarProcess.Dispose();
-                _localAiAgentSidecarProcess = null;
-            }
-
-            if (_localAiAgentSidecarInitialProbeCompleted &&
+            if (localAiAgentAutoStartSidecar && _localAiAgentSidecarInitialProbeCompleted &&
                 _localAiAgentSidecarProbeTask == null &&
                 (_localAiAgentSidecarProcess == null || _localAiAgentSidecarProcess.HasExited) &&
                 Time.unscaledTime >= _localAiAgentSidecarNextStartAttemptAt)
@@ -7323,6 +7380,13 @@ namespace Reachy.ControlApp
             float elapsed = Time.unscaledTime - _localAiAgentSidecarStartupStartedAt;
             if (elapsed > localAiAgentSidecarStartupTimeoutSeconds && !_localAiAgentSidecarReady)
             {
+                if (localAiAgentAutoStartSidecar && _localAiAgentSidecarStartedByUi &&
+                    _localAiAgentSidecarInitialProbeCompleted && Time.unscaledTime >= _localAiAgentSidecarNextStartAttemptAt)
+                {
+                    StopAutoStartedSidecarIfRunning("sidecar health timeout");
+                    _localAiAgentSidecarStartupStartedAt = Time.unscaledTime;
+                    _localAiAgentSidecarNextStartAttemptAt = Time.unscaledTime + localAiAgentSidecarRetryIntervalSeconds;
+                }
                 if (!string.IsNullOrWhiteSpace(_localAiAgentSidecarLastStartError))
                 {
                     _localAiAgentSidecarStatus =
@@ -7463,11 +7527,11 @@ namespace Reachy.ControlApp
             if (!string.IsNullOrWhiteSpace(configPath) && File.Exists(configPath))
             {
                 arguments =
-                    $"\"{scriptPath}\" --config \"{configPath}\" --log-level {logLevel} --log-file \"{sidecarLogPath}\"";
+                    $"\"{scriptPath}\" --start-inactive --config \"{configPath}\" --log-level {logLevel} --log-file \"{sidecarLogPath}\"";
             }
             else
             {
-                arguments = $"\"{scriptPath}\" --log-level {logLevel} --log-file \"{sidecarLogPath}\"";
+                arguments = $"\"{scriptPath}\" --start-inactive --log-level {logLevel} --log-file \"{sidecarLogPath}\"";
             }
 
             string lastError = string.Empty;
@@ -7551,6 +7615,15 @@ namespace Reachy.ControlApp
             string configured = string.IsNullOrWhiteSpace(configuredPythonCommand)
                 ? "python"
                 : configuredPythonCommand.Trim();
+            if (!Path.IsPathRooted(configured) &&
+                (configured.Contains("/") || configured.Contains("\\")))
+            {
+                string relativeToScript = Path.GetFullPath(Path.Combine(workingDirectory, configured));
+                if (File.Exists(relativeToScript))
+                {
+                    configured = relativeToScript;
+                }
+            }
             bool configuredLooksDefault =
                 string.Equals(configured, "python", StringComparison.OrdinalIgnoreCase);
 
@@ -7666,12 +7739,18 @@ namespace Reachy.ControlApp
             }
 
             string venvRoot = Path.Combine(workingDirectory ?? string.Empty, ".venv");
-            string sitePackages = Path.Combine(venvRoot, "Lib", "site-packages");
+            string bundledSitePackages = Path.Combine(runtimeHome, "Lib", "site-packages");
+            bool hasBundledVoiceDependencies =
+                File.Exists(Path.Combine(bundledSitePackages, "sounddevice.py")) &&
+                File.Exists(Path.Combine(bundledSitePackages, "paramiko", "__init__.py"));
+            string sitePackages = hasBundledVoiceDependencies
+                ? bundledSitePackages
+                : Path.Combine(venvRoot, "Lib", "site-packages");
             startInfo.EnvironmentVariables["PYTHONHOME"] = runtimeHome;
             startInfo.EnvironmentVariables["PYTHONUTF8"] = "1";
             startInfo.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
 
-            if (Directory.Exists(venvRoot))
+            if (!hasBundledVoiceDependencies && Directory.Exists(venvRoot))
             {
                 startInfo.EnvironmentVariables["VIRTUAL_ENV"] = venvRoot;
             }
@@ -7929,6 +8008,11 @@ namespace Reachy.ControlApp
             if (existingScriptCandidates == null || existingScriptCandidates.Count == 0)
             {
                 return string.Empty;
+            }
+
+            if (!Application.isEditor)
+            {
+                return existingScriptCandidates[0];
             }
 
             string configFileName = Path.GetFileName(
@@ -8384,16 +8468,16 @@ namespace Reachy.ControlApp
                         new ToneStep(659.25f, 0.13f, 0.01f, 0.9f));
                     break;
 
-                case UiModeAudioCue.OnlineAiEnabled:
+                case UiModeAudioCue.AiEnabled:
                     createdClip = CreateUiModeAudioCueClip(
-                        "ui_online_ai_enabled",
+                        "ui_ai_enabled",
                         new ToneStep(659.25f, 0.07f, 0.015f, 0.75f),
                         new ToneStep(987.77f, 0.11f, 0.01f, 0.92f));
                     break;
 
-                case UiModeAudioCue.OnlineAiDisabled:
+                case UiModeAudioCue.AiDisabled:
                     createdClip = CreateUiModeAudioCueClip(
-                        "ui_online_ai_disabled",
+                        "ui_ai_disabled",
                         new ToneStep(659.25f, 0.07f, 0.015f, 0.72f),
                         new ToneStep(440f, 0.11f, 0.01f, 0.85f));
                     break;
@@ -8462,20 +8546,6 @@ namespace Reachy.ControlApp
             return clip;
         }
 
-        private void TryQueueUiModeVoiceAnnouncement(string announcement)
-        {
-            if (string.IsNullOrWhiteSpace(announcement) ||
-                _voiceAgentBridge == null ||
-                !localAiAgentEnableTtsFeedback ||
-                !IsCurrentAiModeEnabled() ||
-                (localAiAgentAutoStartSidecar && !_localAiAgentSidecarReady))
-            {
-                return;
-            }
-
-            QueueVoiceFeedback(announcement, interrupt: false, bypassRateLimit: true);
-        }
-
         private void SetAiInputMode(AiMode targetMode, string sourceLabel)
         {
             if (aiMode == targetMode)
@@ -8492,6 +8562,7 @@ namespace Reachy.ControlApp
             }
 
             aiMode = targetMode;
+            _pendingSpokenPersonaConfirmation = string.Empty;
             PlayUiModeAudioCue(targetMode == AiMode.Online
                 ? UiModeAudioCue.OnlineAiSelected
                 : UiModeAudioCue.LocalAiSelected);
@@ -8501,22 +8572,15 @@ namespace Reachy.ControlApp
                 onlineAiShowApiKeyHelpPanel = true;
             }
 
-            HandleAiInputModeChanged(sourceLabel);
+            SaveAiModeSelection($"{sourceLabel}: AI input mode switched to {GetCurrentAiModeLabel()}.");
         }
 
-        private void HandleAiInputModeChanged(string sourceLabel)
+        private void SaveAiModeSelection(string resultMessage)
         {
             bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
             bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
-            bool shouldUpdateRunningSidecar = _localAiAgentSidecarReady;
-            bool updatedRunningSidecar = false;
-            string runtimeUpdateMessage = string.Empty;
-            if (syncedSidecarConfig && shouldUpdateRunningSidecar)
-            {
-                updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out runtimeUpdateMessage);
-            }
+            ResetOnlineAiPersonaLiveApplyTracking();
 
-            string resultMessage = $"{sourceLabel}: AI input mode switched to {GetCurrentAiModeLabel()}.";
             if (!savedVoiceConfig)
             {
                 resultMessage += $" Voice config save failed: {saveMessage}";
@@ -8526,25 +8590,11 @@ namespace Reachy.ControlApp
             {
                 resultMessage += $" Sidecar config sync failed: {syncMessage}";
             }
-            else if (shouldUpdateRunningSidecar && !updatedRunningSidecar)
-            {
-                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
-            }
-
-            if (savedVoiceConfig && syncedSidecarConfig && (!shouldUpdateRunningSidecar || updatedRunningSidecar))
-            {
-                TryQueueUiModeVoiceAnnouncement(IsOnlineAiModeSelected()
-                    ? $"Online AI selected. {GetOnlineAiPersonaModeLabel()} mode is ready."
-                    : "Local AI selected.");
-            }
-
             _voiceLastActionResult = resultMessage;
-            if (!savedVoiceConfig || !syncedSidecarConfig || (shouldUpdateRunningSidecar && !updatedRunningSidecar))
+            if (!savedVoiceConfig || !syncedSidecarConfig)
             {
                 _voiceLastParserMessage = resultMessage;
             }
-
-            RequestOnlineAiStatusRefresh();
         }
 
         private struct ToneStep
@@ -11356,29 +11406,21 @@ namespace Reachy.ControlApp
 
         private void ResetOnlineAiPersonaLiveApplyTracking()
         {
+            _sidecarAiModeRevision++;
             string fingerprint = BuildOnlineAiPersonaSettingsFingerprint();
-            _onlineAiPersonaPendingApplyFingerprint = fingerprint;
             _onlineAiPersonaLastAppliedFingerprint = fingerprint;
             _onlineAiPersonaPendingApplyAt = -1f;
             _onlineAiPersonaApplyPending = false;
-            _onlineAiPersonaPendingApplyAnnounceSuccess = false;
         }
 
-        private void ScheduleOnlineAiPersonaLiveApply(bool immediate = false, bool announceSuccess = false)
+        private void ScheduleOnlineAiPersonaLiveApply(bool immediate = false)
         {
             string fingerprint = BuildOnlineAiPersonaSettingsFingerprint();
-            _onlineAiPersonaPendingApplyFingerprint = fingerprint;
-            _onlineAiPersonaPendingApplyAnnounceSuccess |= announceSuccess;
 
             if (string.Equals(fingerprint, _onlineAiPersonaLastAppliedFingerprint, StringComparison.Ordinal))
             {
                 _onlineAiPersonaApplyPending = false;
                 _onlineAiPersonaPendingApplyAt = -1f;
-                if (!announceSuccess)
-                {
-                    _onlineAiPersonaPendingApplyAnnounceSuccess = false;
-                }
-
                 return;
             }
 
@@ -11395,61 +11437,7 @@ namespace Reachy.ControlApp
                 return;
             }
 
-            _onlineAiPersonaApplyPending = false;
-            _onlineAiPersonaPendingApplyAt = -1f;
-
-            bool saved = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
-            if (!saved)
-            {
-                string failure = $"AI Modes live apply failed while saving voice config: {saveMessage}";
-                _voiceLastActionResult = failure;
-                _voiceLastParserMessage = failure;
-                _onlineAiPersonaPendingApplyAnnounceSuccess = false;
-                return;
-            }
-
-            bool synced = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
-            if (!synced)
-            {
-                string failure = $"AI Modes live apply failed while syncing sidecar config: {syncMessage}";
-                _voiceLastActionResult = failure;
-                _voiceLastParserMessage = failure;
-                _onlineAiPersonaPendingApplyAnnounceSuccess = false;
-                return;
-            }
-
-            _onlineAiPersonaLastAppliedFingerprint = _onlineAiPersonaPendingApplyFingerprint;
-
-            bool shouldUpdateRunningSidecar =
-                IsCurrentAiModeEnabled() &&
-                IsOnlineAiModeSelected() &&
-                (!localAiAgentAutoStartSidecar || _localAiAgentSidecarReady);
-            if (shouldUpdateRunningSidecar)
-            {
-                bool updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out string runtimeUpdateMessage);
-                if (!updatedRunningSidecar)
-                {
-                    string failure =
-                        "AI Modes saved and sidecar config synced, but running sidecar update failed: " +
-                        runtimeUpdateMessage;
-                    _voiceLastActionResult = failure;
-                    _voiceLastParserMessage = failure;
-                    _onlineAiPersonaPendingApplyAnnounceSuccess = false;
-                    return;
-                }
-
-                RequestOnlineAiStatusRefresh();
-            }
-
-            if (_onlineAiPersonaPendingApplyAnnounceSuccess)
-            {
-                _voiceLastActionResult = shouldUpdateRunningSidecar
-                    ? $"AI Modes applied live: {GetOnlineAiPersonaModeLabel()}."
-                    : "AI Modes saved and sidecar config updated.";
-                TryQueueUiModeVoiceAnnouncement($"{GetOnlineAiPersonaModeLabel()} mode selected.");
-            }
-
-            _onlineAiPersonaPendingApplyAnnounceSuccess = false;
+            SaveAiModeSelection($"AI Modes updated: {GetOnlineAiPersonaModeLabel()}.");
         }
 
         private string BuildEffectiveOnlineAiSystemPrompt()
@@ -12033,13 +12021,16 @@ namespace Reachy.ControlApp
             return trimmed;
         }
 
-        private OnlineAiModeUpdatePayload BuildOnlineAiModeUpdatePayload()
+        private OnlineAiModeUpdatePayload BuildOnlineAiModeUpdatePayload(bool active)
         {
             RefreshEffectiveOnlineAiSystemPrompt();
             return new OnlineAiModeUpdatePayload
             {
+                ai_active = active,
+                listening_enabled = active && GetDesiredAiListeningState(),
+                audio_routing = BuildMicrophoneRoutingPayload(),
                 ai_mode = GetCurrentAiModeConfigValue(),
-                online_ai_enabled = enableOnlineAiAgent,
+                online_ai_enabled = active && IsOnlineAiModeSelected(),
                 online_ai_persona_mode = GetOnlineAiPersonaModeConfigValue(),
                 online_ai_system_prompt = string.IsNullOrWhiteSpace(onlineAiSystemPrompt)
                     ? DefaultAssistantOnlineAiSystemPrompt
@@ -12083,141 +12074,105 @@ namespace Reachy.ControlApp
             RefreshEffectiveOnlineAiSystemPrompt();
         }
 
-        private bool TryApplyOnlineAiModeToRunningSidecar(out string message)
+        private bool UpdateSidecarAiMode(bool active)
         {
-            message = string.Empty;
-            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
-                ? VoiceAgentBridge.DefaultEndpoint
-                : localAiAgentEndpoint.Trim();
-            if (string.IsNullOrWhiteSpace(intentEndpoint))
+            bool appliedThisFrame = false;
+            if (_sidecarAiModeTask != null && _sidecarAiModeTask.IsCompleted)
             {
-                message = "Online AI mode updated locally, but the sidecar endpoint is empty.";
+                OnlineAiModeUpdateResult result = _sidecarAiModeTask.Status == TaskStatus.RanToCompletion
+                    ? _sidecarAiModeTask.Result
+                    : new OnlineAiModeUpdateResult { Error = _sidecarAiModeTask.Exception?.GetBaseException().Message };
+                _sidecarAiModeTask = null;
+                if (result.Success)
+                {
+                    _sidecarAiModeAppliedKey = _sidecarAiModeRequestKey;
+                    _sidecarAiMayBeActive = _sidecarAiModeRequestActive;
+                    appliedThisFrame = true;
+                }
+                else
+                {
+                    _sidecarAiModeAppliedKey = null;
+                    _sidecarAiModeStatus = $"Could not apply AI mode yet. {result.Error}";
+                    _sidecarAiModeRetryAt = Time.unscaledTime + localAiAgentSidecarRetryIntervalSeconds;
+                    if (active && !result.Reachable)
+                    {
+                        _localAiAgentSidecarReady = false;
+                        _localAiAgentSidecarStartupActive = false;
+                    }
+                }
+            }
+
+            if (!_localAiAgentSidecarReady)
+            {
+                _sidecarAiModeAppliedKey = null;
+                if (_sidecarAiModeTask == null && localAiAgentAutoStopAutoStartedSidecarOnDisable && !active)
+                {
+                    _sidecarAiMayBeActive = false;
+                }
                 return false;
             }
 
-            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 300, 2500);
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            string key = $"{intentEndpoint}|{active}|{aiMode}|{_sidecarAiModeRevision}";
+            if (_sidecarAiModeTask != null)
+            {
+                return false;
+            }
+
+            if (string.Equals(key, _sidecarAiModeAppliedKey, StringComparison.Ordinal))
+            {
+                if (appliedThisFrame)
+                {
+                    _sidecarAiModeStatus = active ? $"{GetCurrentAiModeLabel()} is ready." : "AI paused.";
+                    _voiceLastActionResult = _sidecarAiModeStatus;
+                    if (active && IsOnlineAiModeSelected())
+                    {
+                        RequestOnlineAiStatusRefresh(updateActionStatus: false);
+                    }
+                }
+                return true;
+            }
+
+            if (Time.unscaledTime < _sidecarAiModeRetryAt)
+            {
+                return false;
+            }
+
             string endpoint = BuildOnlineAiModeUpdateEndpoint(intentEndpoint);
-            OnlineAiModeUpdateResult result = SendOnlineAiModeUpdate(
-                endpoint,
-                timeoutMs,
-                BuildOnlineAiModeUpdatePayload());
-            message = result.Success
-                ? (string.IsNullOrWhiteSpace(result.Message)
-                    ? $"Running sidecar updated for {GetCurrentAiModeLabel()}."
-                    : result.Message)
-                : (string.IsNullOrWhiteSpace(result.Error)
-                    ? "Running sidecar did not accept the AI mode update."
-                    : result.Error);
-            return result.Success;
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                _sidecarAiModeStatus = "Could not build the sidecar AI mode endpoint.";
+                return false;
+            }
+
+            _sidecarAiModeStatus = active ? $"Applying {GetCurrentAiModeLabel()}..." : "Pausing AI...";
+            _sidecarAiModeRequestKey = key;
+            _sidecarAiModeRequestActive = active;
+            _sidecarAiMayBeActive |= active;
+            OnlineAiModeUpdatePayload payload = BuildOnlineAiModeUpdatePayload(active);
+            int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 2000, 10000);
+            _sidecarAiModeTask = Task.Run(() => SendOnlineAiModeUpdate(endpoint, timeoutMs, payload));
+            return false;
         }
 
-        private bool TryConfirmSelectedOnlineAiModeConsistency(
-            string sourceLabel,
-            bool updateRunningSidecar,
-            out string message)
+        private void DrawAiEnabledToggle()
         {
-            RefreshEffectiveOnlineAiSystemPrompt();
-
-            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
-            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
-            bool updatedRunningSidecar = false;
-            string runtimeUpdateMessage = string.Empty;
-            if (syncedSidecarConfig && updateRunningSidecar)
+            bool nextEnabled = GUILayout.Toggle(enableAiAgent, "Enable AI");
+            if (nextEnabled == enableAiAgent)
             {
-                updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out runtimeUpdateMessage);
+                return;
             }
 
-            if (savedVoiceConfig && syncedSidecarConfig)
+            enableAiAgent = nextEnabled;
+            if (!enableAiAgent)
             {
-                ResetOnlineAiPersonaLiveApplyTracking();
+                RejectPendingVoiceAction(queueFeedback: false);
             }
 
-            bool success =
-                savedVoiceConfig &&
-                syncedSidecarConfig &&
-                (!updateRunningSidecar || updatedRunningSidecar);
-
-            var builder = new StringBuilder(192);
-            builder.Append(sourceLabel).Append(": confirmed ")
-                .Append(GetOnlineAiPersonaModeLabel())
-                .Append(" mode.");
-
-            if (!savedVoiceConfig)
-            {
-                builder.Append(" Voice config save failed: ").Append(saveMessage);
-            }
-
-            if (!syncedSidecarConfig)
-            {
-                builder.Append(" Sidecar config sync failed: ").Append(syncMessage);
-            }
-            else if (updateRunningSidecar)
-            {
-                builder.Append(updatedRunningSidecar
-                    ? " Running sidecar updated."
-                    : $" Running sidecar update failed: {runtimeUpdateMessage}");
-            }
-            else if (savedVoiceConfig)
-            {
-                builder.Append(" Configs resynced.");
-            }
-
-            message = builder.ToString();
-            return success;
-        }
-
-        private void ApplyStartupOnlineAiSessionDefaults()
-        {
-            enableOnlineAiAgent = false;
-            onlineAiPersonaMode = OnlineAiPersonaMode.Assistant;
-            RefreshEffectiveOnlineAiSystemPrompt();
-        }
-
-        private void HandleOnlineAiEnabledToggleChanged()
-        {
-            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
-            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
-            bool shouldUpdateRunningSidecar = _localAiAgentSidecarReady;
-            bool updatedRunningSidecar = false;
-            string runtimeUpdateMessage = string.Empty;
-            if (syncedSidecarConfig && shouldUpdateRunningSidecar)
-            {
-                updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out runtimeUpdateMessage);
-            }
-
-            string resultMessage = enableOnlineAiAgent
-                ? "Online AI enabled."
-                : "Online AI disabled.";
-            if (!savedVoiceConfig)
-            {
-                resultMessage += $" Voice config save failed: {saveMessage}";
-            }
-            if (!syncedSidecarConfig)
-            {
-                resultMessage += $" Sidecar config sync failed: {syncMessage}";
-            }
-            else if (shouldUpdateRunningSidecar && !updatedRunningSidecar)
-            {
-                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
-            }
-            else
-            {
-                resultMessage += shouldUpdateRunningSidecar
-                    ? " Running sidecar updated."
-                    : " Config updated and will apply when the sidecar is ready.";
-            }
-
-            if (savedVoiceConfig && syncedSidecarConfig && (!shouldUpdateRunningSidecar || updatedRunningSidecar))
-            {
-                TryQueueUiModeVoiceAnnouncement(enableOnlineAiAgent ? "Online AI enabled." : "Online AI disabled.");
-            }
-
-            _voiceLastActionResult = resultMessage;
-            if (!savedVoiceConfig || !syncedSidecarConfig || (shouldUpdateRunningSidecar && !updatedRunningSidecar))
-            {
-                _voiceLastParserMessage = resultMessage;
-            }
-            RequestOnlineAiStatusRefresh();
+            PlayUiModeAudioCue(enableAiAgent ? UiModeAudioCue.AiEnabled : UiModeAudioCue.AiDisabled);
+            SaveAiModeSelection(enableAiAgent ? $"Enabling {GetCurrentAiModeLabel()}." : "AI disabled.");
         }
 
         private bool TryHandleOnlineAiPersonaVoiceSwitch(VoiceAgentIntent incomingIntent, bool isOnlineIntent)
@@ -12318,14 +12273,6 @@ namespace Reachy.ControlApp
             onlineAiPersonaMode = requestedMode;
             RefreshEffectiveOnlineAiSystemPrompt();
 
-            bool savedVoiceConfig = TrySaveVoiceAgentConfigToDisk(out string saveMessage);
-            bool syncedSidecarConfig = TrySyncLocalSidecarConfigFromUi(out string syncMessage);
-            bool updatedRunningSidecar = TryApplyOnlineAiModeToRunningSidecar(out string runtimeUpdateMessage);
-            if (savedVoiceConfig && syncedSidecarConfig)
-            {
-                ResetOnlineAiPersonaLiveApplyTracking();
-            }
-
             string resultMessage;
             if (!string.IsNullOrWhiteSpace(confirmationMessageOverride))
             {
@@ -12340,24 +12287,10 @@ namespace Reachy.ControlApp
                 resultMessage = $"Switched to {GetOnlineAiPersonaModeLabel()} mode.";
             }
 
-            if (!savedVoiceConfig)
-            {
-                resultMessage += $" Voice config save failed: {saveMessage}";
-            }
-            else if (!syncedSidecarConfig)
-            {
-                resultMessage += $" Sidecar config sync failed: {syncMessage}";
-            }
-            else if (!updatedRunningSidecar)
-            {
-                resultMessage += $" Running sidecar update failed: {runtimeUpdateMessage}";
-            }
-
             _voiceLastParserMessage = parserMessage;
             _voiceLastIntentSummary = resultMessage;
-            _voiceLastActionResult = resultMessage;
-            QueueVoiceFeedback(resultMessage, interrupt: false, bypassRateLimit: true);
-            RequestOnlineAiStatusRefresh();
+            _pendingSpokenPersonaConfirmation = resultMessage;
+            SaveAiModeSelection(resultMessage);
             return true;
         }
 
@@ -12473,7 +12406,7 @@ namespace Reachy.ControlApp
                 return false;
             }
 
-            return IsOnlineAiModeSelected() ? enableOnlineAiAgent : enableLocalAiAgent;
+            return enableAiAgent;
         }
 
         private string GetCurrentAiModeLabel()
@@ -12542,11 +12475,14 @@ namespace Reachy.ControlApp
             _voiceLastActionResult = "Voice bridge state reset requested.";
         }
 
-        private void RequestOnlineAiStatusRefresh()
+        private void RequestOnlineAiStatusRefresh(bool updateActionStatus = true)
         {
             if (_onlineAiStatusTask != null && !_onlineAiStatusTask.IsCompleted)
             {
-                _voiceLastActionResult = "Online AI status refresh is already in progress.";
+                if (updateActionStatus)
+                {
+                    _voiceLastActionResult = "Online AI status refresh is already in progress.";
+                }
                 return;
             }
 
@@ -12555,7 +12491,10 @@ namespace Reachy.ControlApp
                 : localAiAgentEndpoint.Trim();
             int timeoutMs = Mathf.Clamp(localAiAgentSidecarHealthTimeoutMs, 400, 12000);
             _onlineAiStatusTask = Task.Run(() => ProbeSidecar(intentEndpoint, timeoutMs));
-            _voiceLastActionResult = "Refreshing online AI status from sidecar health.";
+            if (updateActionStatus)
+            {
+                _voiceLastActionResult = "Refreshing online AI status from sidecar health.";
+            }
         }
 
         private void SaveOnlineApiKeyFromRuntimeInput()
@@ -14091,7 +14030,7 @@ namespace Reachy.ControlApp
                 PendingActionSummary = _voiceHasPendingAction ? _voicePendingAction.Summary : string.Empty,
                 LastBridgeLogLine = snapshot.LastLogLine,
                 AiModeLabel = GetCurrentAiModeLabel(),
-                OnlineAiEnabled = enableOnlineAiAgent,
+                OnlineAiEnabled = IsCurrentAiModeEnabled() && IsOnlineAiModeSelected(),
                 OnlineModel = string.IsNullOrWhiteSpace(_onlineAiCurrentModel)
                     ? onlineAiModel
                     : _onlineAiCurrentModel,
@@ -14960,7 +14899,7 @@ namespace Reachy.ControlApp
         private string BuildRobotSpeakerTtsMirrorEndpoint()
         {
             ReachyControlMode activeMode = _connectedMode ?? mode;
-            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot)
+            if (!localAiAgentMirrorTtsToRobotSpeaker || activeMode != ReachyControlMode.RealRobot || ShouldUseSidecarReachySpeaker())
             {
                 return string.Empty;
             }
@@ -14979,6 +14918,23 @@ namespace Reachy.ControlApp
             }
 
             return BuildRobotSpeakerTtsMirrorEndpointPreview();
+        }
+
+        private bool ShouldUseSidecarReachySpeaker()
+        {
+            if (!localAiAgentMirrorTtsToRobotSpeaker || !IsRealRobotSessionActive())
+            {
+                return false;
+            }
+
+            string ttsEndpoint = string.IsNullOrWhiteSpace(localAiAgentTtsEndpoint)
+                ? VoiceAgentBridge.DefaultTtsEndpoint
+                : localAiAgentTtsEndpoint.Trim();
+            string intentEndpoint = string.IsNullOrWhiteSpace(localAiAgentEndpoint)
+                ? VoiceAgentBridge.DefaultEndpoint
+                : localAiAgentEndpoint.Trim();
+            return TryBuildSiblingEndpoint(intentEndpoint, "/speak", out string sidecarSpeakEndpoint) &&
+                   string.Equals(ttsEndpoint, sidecarSpeakEndpoint, StringComparison.OrdinalIgnoreCase);
         }
 
         private string BuildRobotSpeakerAudioMirrorEndpoint()
@@ -15660,9 +15616,6 @@ namespace Reachy.ControlApp
                 bool hasAiModeField = json.IndexOf(
                     "\"ai_mode\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
-                bool hasOnlineEnabledField = json.IndexOf(
-                    "\"online_ai_enabled\"",
-                    StringComparison.OrdinalIgnoreCase) >= 0;
                 bool hasOnlineAllowDirectJointCommandsField = json.IndexOf(
                     "\"online_ai_allow_direct_joint_commands\"",
                     StringComparison.OrdinalIgnoreCase) >= 0;
@@ -15841,7 +15794,7 @@ namespace Reachy.ControlApp
                     : string.Empty;
                 localAiAgentConnectionMicrophoneSourceMode = hasMicrophoneSourceModeField
                     ? ParseConnectionMicrophoneSourceMode(config.microphone_source_mode)
-                    : ConnectionMicrophoneSourceMode.Blend;
+                    : ConnectionMicrophoneSourceMode.ReachyOnly;
                 EnsurePreferredMicrophoneDevice();
                 localAiAgentAutoStartSidecar = config.auto_start_sidecar;
                 localAiAgentAutoStopAutoStartedSidecarOnDisable =
@@ -15894,7 +15847,6 @@ namespace Reachy.ControlApp
                 localAiAgentHelpModelMaxTokens = Mathf.Clamp(config.help_model_max_tokens, 16, 512);
                 localAiAgentHelpModelTemperature = Mathf.Clamp(config.help_model_temperature, 0f, 1.5f);
                 localAiAgentHelpMaxAnswerChars = Mathf.Clamp(config.help_max_answer_chars, 80, 1200);
-                enableOnlineAiAgent = hasOnlineEnabledField && config.online_ai_enabled;
                 onlineAiModel = string.IsNullOrWhiteSpace(config.online_ai_model)
                     ? DefaultOnlineAiModel
                     : config.online_ai_model.Trim();
@@ -16165,7 +16117,7 @@ namespace Reachy.ControlApp
                 config.help_model_max_tokens = Mathf.Clamp(localAiAgentHelpModelMaxTokens, 16, 512);
                 config.help_model_temperature = Mathf.Clamp(localAiAgentHelpModelTemperature, 0f, 1.5f);
                 config.help_max_answer_chars = Mathf.Clamp(localAiAgentHelpMaxAnswerChars, 80, 1200);
-                config.online_ai_enabled = enableOnlineAiAgent;
+                config.online_ai_enabled = enableAiAgent && IsOnlineAiModeSelected();
                 config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
                     ? DefaultOnlineAiModel
                     : onlineAiModel.Trim();
@@ -16388,12 +16340,13 @@ namespace Reachy.ControlApp
                 config.audio_input_device_name = localAiAgentPreferredMicrophoneDeviceName ?? string.Empty;
                 config.prefer_non_virtual_input_device = localAiAgentIgnoreVirtualMicrophones;
                 config.audio_source_mode = GetConnectionMicrophoneSourceModeConfigValue();
+                config.prefer_reachy_speaker = ShouldUseSidecarReachySpeaker();
                 config.reachy_mic_robot_connected = IsRealRobotSessionActive();
                 config.reachy_mic_ssh_host = GetReachyMicrophoneTargetHost();
                 config.reachy_mic_ssh_port = DefaultReachyMicrophoneSshPort;
                 config.reachy_mic_ssh_user = string.IsNullOrWhiteSpace(robotSshUser) ? "reachy" : robotSshUser.Trim();
                 config.reachy_mic_ssh_password = string.IsNullOrWhiteSpace(robotSshPassword) ? "reachy" : robotSshPassword;
-                config.online_ai_enabled = enableOnlineAiAgent;
+                config.online_ai_enabled = enableAiAgent && IsOnlineAiModeSelected();
                 config.online_ai_model = string.IsNullOrWhiteSpace(onlineAiModel)
                     ? DefaultOnlineAiModel
                     : onlineAiModel.Trim();
@@ -16646,8 +16599,7 @@ namespace Reachy.ControlApp
                 localAiAgentTtsMode = ParseTtsMode(config.tts_mode);
                 localAiAgentConnectionMicrophoneSourceMode = hasAudioSourceModeField
                     ? ParseConnectionMicrophoneSourceMode(config.audio_source_mode)
-                    : ConnectionMicrophoneSourceMode.Blend;
-                enableOnlineAiAgent = config.online_ai_enabled;
+                    : ConnectionMicrophoneSourceMode.ReachyOnly;
                 onlineAiModel = string.IsNullOrWhiteSpace(config.online_ai_model)
                     ? DefaultOnlineAiModel
                     : config.online_ai_model.Trim();
@@ -18306,6 +18258,12 @@ namespace Reachy.ControlApp
             return _activeMenuView == RuntimeMenuView.OzMode;
         }
 
+        private bool IsSidecarReadyForOzSpeech()
+        {
+            return _localAiAgentSidecarReady && !_sidecarAiMayBeActive &&
+                   _sidecarAiModeAppliedKey != null && _sidecarAiModeTask == null;
+        }
+
         private void AppendOzModeHistory(string speaker, string text)
         {
             string trimmedText = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
@@ -18838,10 +18796,10 @@ namespace Reachy.ControlApp
             string sequenceName = OzModeActedSequenceName;
             speechText = string.IsNullOrWhiteSpace(speechText) ? string.Empty : speechText.Trim();
 
-            if (ShouldActedSequencePrepareLocalTtsSidecar())
+            if (ShouldActedSequenceTrackLocalTtsPlayback())
             {
                 _actedSequenceRequestingTtsSidecar = true;
-                if (!_localAiAgentSidecarReady)
+                if (!IsSidecarReadyForOzSpeech())
                 {
                     string preparingMessage =
                         $"Waiting for local TTS service before running '{sequenceName}'.";
@@ -18851,18 +18809,16 @@ namespace Reachy.ControlApp
                 }
 
                 float ttsReadyDeadline = Time.unscaledTime + localAiAgentSidecarStartupTimeoutSeconds;
-                while (!_localAiAgentSidecarReady && Time.unscaledTime < ttsReadyDeadline)
+                while (!IsSidecarReadyForOzSpeech() && Time.unscaledTime < ttsReadyDeadline)
                 {
-                    UpdateLocalAiAgentSidecarStartup(enableRequested: true);
                     yield return null;
                 }
 
-                UpdateLocalAiAgentSidecarStartup(enableRequested: true);
-                if (!_localAiAgentSidecarReady)
+                if (!IsSidecarReadyForOzSpeech())
                 {
-                    string sidecarDetail = string.IsNullOrWhiteSpace(_localAiAgentSidecarStatus)
-                        ? $"Timed out waiting for local TTS after {localAiAgentSidecarStartupTimeoutSeconds:F1}s."
-                        : _localAiAgentSidecarStatus.Trim();
+                    string sidecarDetail = _localAiAgentSidecarReady
+                        ? _sidecarAiModeStatus
+                        : _localAiAgentSidecarStatus;
                     string blockedMessage =
                         $"Acted sequence '{sequenceName}' could not start speech because local TTS is unavailable. {sidecarDetail}";
                     LogRuntimeEvent("acted-sequence", "blocked", blockedMessage, "WARN");
@@ -22740,15 +22696,14 @@ namespace Reachy.ControlApp
             RefreshEffectiveOnlineAiSystemPrompt();
             string initialFingerprint = BuildOnlineAiPersonaSettingsFingerprint();
             bool applyImmediately = false;
-            bool announceSuccess = false;
             bool confirmedModeSelection = false;
 
             GUILayout.BeginArea(area, GUI.skin.box);
             GUILayout.Label("AI Modes", _titleStyle);
             GUILayout.Label("Choose which online AI personality Reachy uses when the AI view is set to Online AI.");
-            GUILayout.Label(IsOnlineAiModeSelected()
+            GUILayout.Label(_aiSessionReady && IsOnlineAiModeSelected()
                 ? $"Live now: {GetOnlineAiPersonaModeLabel()}."
-                : "Currently inactive because AI Input & Parsing is using Local AI.");
+                : $"Selected for Online AI: {GetOnlineAiPersonaModeLabel()}.");
 
             float bodyHeight = Mathf.Max(60f, area.height - 82f);
             _aiModesPrimaryScroll = GUILayout.BeginScrollView(
@@ -22774,25 +22729,7 @@ namespace Reachy.ControlApp
                         : (onlineAiPersonaMode == OnlineAiPersonaMode.EmotionReactions
                             ? UiModeAudioCue.EmotionPersonaSelected
                             : UiModeAudioCue.AssistantPersonaSelected)));
-                applyImmediately = true;
-                announceSuccess = true;
-
-                bool selectionConfirmed = TryConfirmSelectedOnlineAiModeConsistency(
-                    "AI mode button selection",
-                    updateRunningSidecar: IsCurrentAiModeEnabled() &&
-                                             IsOnlineAiModeSelected() &&
-                                             _localAiAgentSidecarReady,
-                    out string modeSelectionMessage);
-                _voiceLastActionResult = modeSelectionMessage;
-                if (!selectionConfirmed)
-                {
-                    _voiceLastParserMessage = modeSelectionMessage;
-                }
-                else if (announceSuccess)
-                {
-                    TryQueueUiModeVoiceAnnouncement($"{GetOnlineAiPersonaModeLabel()} mode selected.");
-                }
-
+                SaveAiModeSelection($"AI mode selected: {GetOnlineAiPersonaModeLabel()}.");
                 confirmedModeSelection = true;
             }
 
@@ -22882,7 +22819,7 @@ namespace Reachy.ControlApp
                 GUILayout.BeginVertical(GUI.skin.box);
                 GUILayout.Label("Custom tuning");
                 GUILayout.Label("This single slot can be edited here or overwritten live by a spoken persona request.");
-                DrawSavedOnlineAiCustomPersonalityLibrarySection(ref applyImmediately, ref announceSuccess);
+                DrawSavedOnlineAiCustomPersonalityLibrarySection(ref applyImmediately);
                 GUILayout.Space(8f);
 
                 GUILayout.BeginHorizontal();
@@ -22993,7 +22930,7 @@ namespace Reachy.ControlApp
             if (!confirmedModeSelection &&
                 !string.Equals(initialFingerprint, updatedFingerprint, StringComparison.Ordinal))
             {
-                ScheduleOnlineAiPersonaLiveApply(immediate: applyImmediately, announceSuccess: announceSuccess);
+                ScheduleOnlineAiPersonaLiveApply(immediate: applyImmediately);
             }
 
             GUILayout.EndScrollView();
@@ -23086,9 +23023,7 @@ namespace Reachy.ControlApp
             return updatedValue;
         }
 
-        private void DrawSavedOnlineAiCustomPersonalityLibrarySection(
-            ref bool applyImmediately,
-            ref bool announceSuccess)
+        private void DrawSavedOnlineAiCustomPersonalityLibrarySection(ref bool applyImmediately)
         {
             GUILayout.BeginVertical(GUI.skin.box);
             GUILayout.Label("Saved personalities");
@@ -23230,7 +23165,6 @@ namespace Reachy.ControlApp
                 {
                     _savedOnlineAiCustomPersonalityDropdownOpen = false;
                     applyImmediately = true;
-                    announceSuccess = true;
                 }
             }
 
@@ -23281,7 +23215,7 @@ namespace Reachy.ControlApp
             GUILayout.Label(IsOnlineAiModeSelected()
                 ? "AI Input & Parsing is already using Online AI."
                 : "AI Input & Parsing is currently using Local AI.");
-            GUILayout.Label($"Online AI enabled: {(enableOnlineAiAgent ? "yes" : "no")} | Model: {onlineAiModel}");
+            GUILayout.Label($"Online AI active: {(_aiSessionReady && IsOnlineAiModeSelected() ? "yes" : "no")} | Model: {onlineAiModel}");
             GUILayout.Label(IsEmotionReactionPersonaModeSelected()
                 ? "Current speech output: disabled in emotion-reaction mode."
                 : $"Current TTS voice: {GetOnlineAiTtsVoiceDisplayLabel(GetSelectedOnlineAiTtsVoice())}");
@@ -23375,7 +23309,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("AI Input & Parsing", _titleStyle);
             float aiWidthScale = Mathf.Clamp((area.width - 24f) / 700f, 0.62f, 0.92f);
             bool aiCompact = area.width < 620f;
-            GUILayout.Label("Choose which AI backend handles transcripts and motion intents.");
+            DrawAiEnabledToggle();
             int nextAiMode = GUILayout.SelectionGrid((int)aiMode, AiModeLabels, aiCompact ? 1 : 2);
             if (nextAiMode != (int)aiMode)
             {
@@ -23403,13 +23337,6 @@ namespace Reachy.ControlApp
                 GUILayout.EndScrollView();
                 GUILayout.EndArea();
                 return;
-            }
-
-            bool previousEnabled = enableLocalAiAgent;
-            enableLocalAiAgent = GUILayout.Toggle(enableLocalAiAgent, "Enable local AI agent");
-            if (previousEnabled && !enableLocalAiAgent)
-            {
-                RejectPendingVoiceAction();
             }
 
             GUILayout.BeginHorizontal();
@@ -23657,7 +23584,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("TTS url", GUILayout.Width(AiW(62f, aiWidthScale)));
             localAiAgentTtsEndpoint = GUILayout.TextField(localAiAgentTtsEndpoint);
             bool previousSpeakButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent && localAiAgentEnableTtsFeedback;
+            GUI.enabled = _aiSessionReady && localAiAgentEnableTtsFeedback;
             if (GUILayout.Button("Speak test", GUILayout.Width(AiW(88f, aiWidthScale)), GUILayout.Height(22f)))
             {
                 QueueVoiceFeedback("Local TTS feedback test message.", interrupt: false);
@@ -23668,7 +23595,7 @@ namespace Reachy.ControlApp
             GUILayout.BeginHorizontal();
             localAiAgentMirrorTtsToRobotSpeaker = GUILayout.Toggle(
                 localAiAgentMirrorTtsToRobotSpeaker,
-                "Mirror to robot speaker",
+                "Prefer Reachy's speaker",
                 GUILayout.Width(AiW(170f, aiWidthScale)));
             GUILayout.Label("Spk port", GUILayout.Width(AiW(56f, aiWidthScale)));
             string robotSpeakerPortText = GUILayout.TextField(
@@ -23686,7 +23613,9 @@ namespace Reachy.ControlApp
             bool previousRobotSpeakerPreviewEnabled = GUI.enabled;
             GUI.enabled = false;
             GUILayout.TextField(
-                string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
+                ShouldUseSidecarReachySpeaker()
+                    ? $"Reachy speech output over SSH ({GetReachyMicrophoneTargetHost()})"
+                    : string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
                     ? "Real Robot mirror uses current robot host."
                     : BuildRobotSpeakerTtsMirrorEndpointPreview());
             GUI.enabled = previousRobotSpeakerPreviewEnabled;
@@ -23749,7 +23678,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("Listen url", GUILayout.Width(AiW(62f, aiWidthScale)));
             localAiAgentListeningEndpoint = GUILayout.TextField(localAiAgentListeningEndpoint);
             bool previousListenButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = _aiSessionReady;
             if (GUILayout.Button("Listen ON", GUILayout.Width(AiW(78f, aiWidthScale)), GUILayout.Height(22f)))
             {
                 localAiAgentListeningEnabled = true;
@@ -24068,7 +23997,7 @@ namespace Reachy.ControlApp
                     "Enable help model",
                     GUILayout.Width(halfWidth));
                 bool previousHelpBtnEnabled = GUI.enabled;
-                GUI.enabled = enableLocalAiAgent && localAiAgentEnableLocalHelpModel;
+                GUI.enabled = _aiSessionReady && localAiAgentEnableLocalHelpModel;
                 if (GUILayout.Button("Ask help", GUILayout.Height(22f), GUILayout.ExpandWidth(true)))
                 {
                     QueueLocalHelpRequest(out string helpMsg);
@@ -24231,21 +24160,6 @@ namespace Reachy.ControlApp
 
         private void DrawOnlineAiPrimaryContent(float aiWidthScale, bool aiCompact)
         {
-            bool previousEnabled = enableOnlineAiAgent;
-            enableOnlineAiAgent = GUILayout.Toggle(enableOnlineAiAgent, "Enable online AI");
-            if (previousEnabled != enableOnlineAiAgent)
-            {
-                if (!enableOnlineAiAgent)
-                {
-                    RejectPendingVoiceAction();
-                }
-
-                PlayUiModeAudioCue(enableOnlineAiAgent
-                    ? UiModeAudioCue.OnlineAiEnabled
-                    : UiModeAudioCue.OnlineAiDisabled);
-                HandleOnlineAiEnabledToggleChanged();
-            }
-
             GUILayout.BeginHorizontal();
             GUILayout.Label("Endpoint", GUILayout.Width(AiW(62f, aiWidthScale)));
             localAiAgentEndpoint = GUILayout.TextField(localAiAgentEndpoint);
@@ -26705,12 +26619,7 @@ namespace Reachy.ControlApp
             }
             GUILayout.EndHorizontal();
 
-            bool previousEnabled = enableLocalAiAgent;
-            enableLocalAiAgent = GUILayout.Toggle(enableLocalAiAgent, "Enable local AI agent");
-            if (previousEnabled && !enableLocalAiAgent)
-            {
-                RejectPendingVoiceAction();
-            }
+            DrawAiEnabledToggle();
 
             if (!panelExpanded)
             {
@@ -26922,7 +26831,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("TTS url", GUILayout.Width(62f));
             localAiAgentTtsEndpoint = GUILayout.TextField(localAiAgentTtsEndpoint);
             bool previousSpeakButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent && localAiAgentEnableTtsFeedback;
+            GUI.enabled = _aiSessionReady && localAiAgentEnableTtsFeedback;
             if (GUILayout.Button("Speak test", GUILayout.Width(88f), GUILayout.Height(22f)))
             {
                 QueueVoiceFeedback("Local TTS feedback test message.", interrupt: false);
@@ -26933,7 +26842,7 @@ namespace Reachy.ControlApp
             GUILayout.BeginHorizontal();
             localAiAgentMirrorTtsToRobotSpeaker = GUILayout.Toggle(
                 localAiAgentMirrorTtsToRobotSpeaker,
-                "Mirror to robot speaker",
+                "Prefer Reachy's speaker",
                 GUILayout.Width(170f));
             GUILayout.Label("Spk port", GUILayout.Width(56f));
             string robotSpeakerPortText = GUILayout.TextField(
@@ -26951,7 +26860,9 @@ namespace Reachy.ControlApp
             bool previousRobotSpeakerPreviewEnabled = GUI.enabled;
             GUI.enabled = false;
             GUILayout.TextField(
-                string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
+                ShouldUseSidecarReachySpeaker()
+                    ? $"Reachy speech output over SSH ({GetReachyMicrophoneTargetHost()})"
+                    : string.IsNullOrWhiteSpace(BuildRobotSpeakerTtsMirrorEndpointPreview())
                     ? "Real Robot mirror uses current robot host."
                     : BuildRobotSpeakerTtsMirrorEndpointPreview());
             GUI.enabled = previousRobotSpeakerPreviewEnabled;
@@ -27014,7 +26925,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("Listen url", GUILayout.Width(62f));
             localAiAgentListeningEndpoint = GUILayout.TextField(localAiAgentListeningEndpoint);
             bool previousListenButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = _aiSessionReady;
             if (GUILayout.Button("Listen ON", GUILayout.Width(78f), GUILayout.Height(22f)))
             {
                 localAiAgentListeningEnabled = true;
@@ -27245,7 +27156,7 @@ namespace Reachy.ControlApp
             GUILayout.Label("Help url", GUILayout.Width(52f));
             localAiAgentHelpEndpoint = GUILayout.TextField(localAiAgentHelpEndpoint);
             bool previousHelpBtnEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent && localAiAgentEnableLocalHelpModel;
+            GUI.enabled = _aiSessionReady && localAiAgentEnableLocalHelpModel;
             if (GUILayout.Button("Ask help", GUILayout.Width(78f), GUILayout.Height(22f)))
             {
                 QueueLocalHelpRequest(out string helpMsg);
@@ -27296,7 +27207,7 @@ namespace Reachy.ControlApp
 
             GUILayout.BeginHorizontal();
             bool previousBridgeControlEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = _aiSessionReady;
             if (GUILayout.Button("Force poll", GUILayout.Height(22f)))
             {
                 ForceVoiceBridgePoll();
@@ -27329,7 +27240,7 @@ namespace Reachy.ControlApp
                 "Final",
                 GUILayout.Width(60f));
             bool previousButtonEnabled = GUI.enabled;
-            GUI.enabled = enableLocalAiAgent;
+            GUI.enabled = _aiSessionReady;
             if (GUILayout.Button("Mock STT", GUILayout.Width(88f), GUILayout.Height(22f)))
             {
                 EnqueueMockTranscriptIntent(
@@ -27340,7 +27251,7 @@ namespace Reachy.ControlApp
             GUI.enabled = previousButtonEnabled;
             GUILayout.EndHorizontal();
 
-            if (enableLocalAiAgent)
+            if (_aiSessionReady)
             {
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Mock Pose", GUILayout.Height(22f)))

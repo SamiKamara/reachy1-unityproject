@@ -112,15 +112,16 @@ Test local speak endpoint:
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8099/speak -ContentType 'application/json' -Body '{"text":"Voice sidecar online","interrupt":false}'
 ```
 
-## Reachy robot speaker mirror
-Reachy 2021 documentation lists torso speakers and a ReSpeaker audio path, and the official `hello-world`
-application plays sound directly on the robot computer. This project uses the same general model for mirrored
-robot audio: keep local desktop TTS as-is, and optionally send the same text to a small HTTP speaker service
-running on the Reachy computer.
+## Reachy microphone and speaker
 
-Important: stock Reachy 2021 software does not expose an HTTP speaker mirror endpoint by default. The `8101`
-port used by this Unity project is the default port for the custom helper server in this repository, not a
-built-in Reachy service.
+With a real robot connected, the default voice route captures from Reachy's ReSpeaker microphone and plays
+generated speech on Reachy over SSH. If a robot audio device is unavailable, the sidecar can fall back to PC audio.
+In simulation the sidecar uses PC audio. Standalone Windows builds include the Python audio and SSH dependencies.
+
+With Reachy's microphone and speaker active together, say `Reachy, stop` or `Reachy, lopeta` to interrupt
+an ongoing reply. The application's Stop control also stops speech.
+
+The optional HTTP speaker helper receives mirrored sound effects and supports legacy TTS endpoints.
 
 Run this on the robot computer:
 ```bash
@@ -144,8 +145,7 @@ If `auto` cannot find a backend on the robot:
 - install `espeak`, or
 - install `pyttsx3` in the robot Python environment
 
-Unity now has a `Mirror to robot speaker` toggle in the Local AI panel. When enabled in `Real Robot` mode,
-Unity now probes the robot and logs what it finds:
+The `Prefer Reachy's speaker` toggle also enables discovery of optional audio relay endpoints in `Real Robot` mode:
 - `http://<robotHost>:8101/health` for the bundled `reachy_robot_speaker_server.py`
 - `http://<robotHost>:8099/health` as a fallback if a full voice sidecar is running on the robot
 
@@ -194,7 +194,7 @@ In Unity Local AI Agent panel keep these defaults (or set explicitly):
   - `Blend Both` is the default and falls back to PC mic only until a real robot session is active
   - Reachy 2021 mic audio is captured over SSH from the robot computer with default credentials `reachy / reachy`
 
-If `Auto-start sidecar` is enabled in Unity, pressing `Enable local AI agent` starts the sidecar first and only enables bridge polling after the sidecar is reachable.
+Turn on `Enable AI` in Unity to use the selected Local or Online backend. With `Auto-start sidecar` enabled, Unity starts the sidecar when needed. A running sidecar applies the selected backend and persona before Unity starts polling it.
 
 Build/runtime path note:
 - In Editor, sidecar files are resolved from `Assets/ReachyControlApp/LocalVoiceAgent/...`.

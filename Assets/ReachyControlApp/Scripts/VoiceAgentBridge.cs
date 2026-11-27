@@ -434,6 +434,7 @@ namespace Reachy.ControlApp
         {
             lock (_gate)
             {
+                _listeningToggleQueue.Clear();
                 _listeningToggleQueue.Enqueue(new ListeningToggleRequest
                 {
                     Enabled = enabled
@@ -543,6 +544,9 @@ namespace Reachy.ControlApp
                 _nextPollAt = nowUnscaledTime;
                 if (!enabled)
                 {
+                    _intentQueue.Clear();
+                    _pollTask = null;
+                    _helpTask = null;
                     _lastMessage = "Voice bridge disabled.";
                     _bridgeReachable = false;
                     _micActive = false;
@@ -1414,7 +1418,9 @@ namespace Reachy.ControlApp
                     MirrorAttempted = false,
                     MirrorSuccess = false,
                     RequestedText = requestPayload.Text ?? string.Empty,
-                    Message = "TTS endpoint is not reachable.",
+                    Message = webEx.Status == WebExceptionStatus.ProtocolError
+                        ? "TTS endpoint returned a playback error."
+                        : "TTS endpoint is not reachable.",
                     Error = detail
                 };
             }

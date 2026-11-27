@@ -32,7 +32,7 @@ This project was developed as part of the HTI.460 course, Social Robots: Design,
 3. Open `Assets/Scenes/SampleScene.unity` or `Assets/Scenes/OfficeScene.unity`.
 4. Press Play. The runtime UI appears automatically.
 5. Go to `Connections` view to connect to Simulation or Real Robot mode and check mic input settings.
-6. Go to `AI` view to enable Local or Online AI (OpenAI API key with at least €5 is required for Online AI). If enabled successfully, Reachy should start saying something.
+6. In the `AI` view, select Local or Online AI and turn on `Enable AI`. Online AI requires an OpenAI API key with available credit. Reachy greets you when speech feedback is enabled. The Emotion Reactions persona stays silent.
 7. You are ready to go! It's recommended to start with these features if you are a beginner: `AI Modes`, `Animations & Poses`, `Chit Chat`.
 
 Automatic Ethernet discovery is enabled by default and takes priority at startup.
@@ -72,7 +72,7 @@ require running any separate `Install GRPC` step before the project compiles.
 | ------------- | ------------- |
 | General | Main dashboard for connecting to simulation or real robot mode, running automation, adjusting presets and joints, and viewing status plus the optional camera preview. |
 | AI | AI input and parsing controls for selecting local or online AI, tuning transcript and motion-safety settings, managing microphone and TTS options, and checking bridge diagnostics. |
-| AI Modes | AI persona and behavior mode configuration for Assistant, Fortune Teller, Emotion Reactions and Custom modes. It works for local or online AI. |
+| AI Modes | Persona settings for Online AI, including Assistant, Fortune Teller, Emotion Reactions, and Custom. |
 | Animation & Poses | Controls for pose speed, looping animations, preset poses, and acted sequences. |
 | Animation Creator | Keyframe editor for custom animations, including live scene posing, draft and saved JSON animations, import or export, and optional mirroring to a connected real robot. |
 | Chit Chat | Text chat view backed by the current AI pipeline, with topic prompts, conversation history, transcript save, and stop or clear controls. |

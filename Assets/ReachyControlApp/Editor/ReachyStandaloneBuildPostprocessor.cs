@@ -277,6 +277,20 @@ internal sealed class ReachyStandaloneBuildPostprocessor : IPostprocessBuildWith
                 Path.Combine(runtimeDestination, directoryName),
                 ref copiedFileCount);
         }
+
+        string voiceDependencies = Path.Combine(
+            projectRoot, "Assets", "ReachyControlApp", "LocalVoiceAgent", ".venv", "Lib", "site-packages");
+        if (Directory.Exists(voiceDependencies))
+        {
+            CopyDirectoryIfPresent(
+                voiceDependencies,
+                Path.Combine(runtimeDestination, "Lib", "site-packages"),
+                ref copiedFileCount);
+        }
+        else
+        {
+            Debug.LogWarning("[Reachy Build] Voice dependencies are missing from .venv/Lib/site-packages.");
+        }
     }
 
     private static string ResolvePortablePythonRuntimeSource(string projectRoot)

@@ -39,6 +39,7 @@ import time
 import tempfile
 import unicodedata
 import wave
+from array import array
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -353,6 +354,14 @@ DEFAULT_TTS_BARGE_IN_PHRASES = [
     "not that",
     "interrupt that",
 ]
+REACHY_SHARED_AUDIO_STOP_COMMANDS = frozenset({
+    "reachy stop",
+    "reachy stop talking",
+    "reachy lopeta",
+    "reachy lopeta puhuminen",
+    "reachy seis",
+    "reachy keskeyta",
+})
 DEFAULT_TTS_BARGE_IN_LOUDNESS_WINDOW_SECONDS = 60.0
 DEFAULT_TTS_BARGE_IN_LOUDNESS_MIN_HISTORY_SECONDS = 10.0
 DEFAULT_TTS_BARGE_IN_LOUDNESS_MIN_REFERENCE_RMS = 340.0
@@ -367,7 +376,15 @@ DEFAULT_TTS_BARGE_IN_TRANSCRIBE_SILENCE_SECONDS = 0.22
 DEFAULT_TTS_BARGE_IN_TRANSCRIBE_PRE_ROLL_SECONDS = 0.12
 DEFAULT_TTS_BARGE_IN_TRANSCRIBE_RMS_THRESHOLD = 400.0
 DEFAULT_TTS_BARGE_IN_TRANSCRIBE_TIMEOUT_SECONDS = 4.0
-DEFAULT_AUDIO_SOURCE_MODE = "blend"
+DEFAULT_AUDIO_SOURCE_MODE = "reachy"
+REACHY_SPEAKER_PLAYBACK_COMMAND = (
+    "if command -v paplay >/dev/null && pactl info >/dev/null 2>&1; then "
+    "sink=$(pactl list short sinks | awk 'tolower($2) ~ /respeaker/ {print $2; exit}'); "
+    'if [ -n "$sink" ]; then exec paplay --latency-msec=100 --device="$sink"; fi; '
+    "exec paplay --latency-msec=100; fi; "
+    "if aplay -l 2>/dev/null | grep -qi ArrayUAC10; then "
+    "exec aplay -q -D plughw:CARD=ArrayUAC10,DEV=0 -; fi; exec aplay -q -"
+)
 DEFAULT_REACHY_MIC_SSH_PORT = 22
 DEFAULT_REACHY_MIC_SSH_USER = "reachy"
 DEFAULT_REACHY_MIC_SSH_PASSWORD = "reachy"
@@ -1070,6 +1087,7 @@ def load_config(path: Path) -> dict:
         "audio_input_device_name": "",
         "prefer_non_virtual_input_device": True,
         "audio_source_mode": DEFAULT_AUDIO_SOURCE_MODE,
+        "prefer_reachy_speaker": True,
         "reachy_mic_robot_connected": False,
         "reachy_mic_ssh_host": "",
         "reachy_mic_ssh_port": DEFAULT_REACHY_MIC_SSH_PORT,
@@ -1784,7 +1802,26 @@ def pcm16_rms(chunk: bytes) -> float:
     return (total / float(count)) ** 0.5
 
 
+def reachy_speech_threshold(configured_rms: float, idle_levels: deque[float]) -> float:
+    if len(idle_levels) < 3:
+        return configured_rms
+    levels = sorted(idle_levels)
+    room_floor = levels[len(levels) // 4]
+    return min(configured_rms, max(55.0, room_floor * 1.9 + 14.0))
+
+
+def normalize_reachy_speech_level(pcm: bytes) -> bytes:
+    samples = memoryview(pcm).cast("h")
+    peak = max((abs(sample) for sample in samples), default=0)
+    if not 0 < peak < 22000:
+        return pcm
+    gain = min(8.0, 22000.0 / peak)
+    return array("h", (round(sample * gain) for sample in samples)).tobytes()
+
+
 def apply_microphone_routing_payload(config: dict, payload: dict) -> dict:
+    config["prefer_reachy_speaker"] = parse_bool(
+        payload.get("prefer_reachy_speaker", config.get("prefer_reachy_speaker")), True)
     config["audio_source_mode"] = normalize_audio_source_mode(
         payload.get("audio_source_mode", config.get("audio_source_mode", DEFAULT_AUDIO_SOURCE_MODE))
     )
@@ -1885,7 +1922,7 @@ def apply_online_reply_audio_payload(config: dict, payload: dict) -> dict:
     }
 
 
-def apply_online_ai_mode_payload(config: dict, payload: dict) -> dict:
+def normalize_online_ai_mode_payload(config: dict, payload: dict) -> dict:
     requested_ai_mode = str(payload.get("ai_mode", config.get("ai_mode", "local"))).strip().lower()
     if requested_ai_mode not in ("local", "online"):
         requested_ai_mode = "local"
@@ -1918,24 +1955,14 @@ def apply_online_ai_mode_payload(config: dict, payload: dict) -> dict:
         )
     )
 
-    config["ai_mode"] = requested_ai_mode
-    config["online_ai_enabled"] = online_enabled
-    config["online_ai_persona_mode"] = requested_mode
-    config["online_ai_system_prompt"] = system_prompt
-    config["online_tts_voice"] = tts_voice
-    config["online_ai_emotion_reactions"] = emotion_reactions
-    config["online_ai_allow_voice_persona_switch"] = allow_voice_switch
-
     return {
-        "ok": True,
-        "message": (
-            f"Online AI mode updated: ai_mode={requested_ai_mode}, enabled={online_enabled}, "
-            f"requested={requested_mode}, effective={requested_mode}, voice={tts_voice}."
-        ),
-        "requested_ai_mode": requested_ai_mode,
-        "effective_ai_mode": requested_ai_mode,
-        "requested_mode": requested_mode,
-        "effective_mode": requested_mode,
+        "ai_mode": requested_ai_mode,
+        "online_ai_enabled": online_enabled,
+        "online_ai_persona_mode": requested_mode,
+        "online_ai_system_prompt": system_prompt,
+        "online_tts_voice": tts_voice,
+        "online_ai_emotion_reactions": emotion_reactions,
+        "online_ai_allow_voice_persona_switch": allow_voice_switch,
     }
 
 
@@ -2328,6 +2355,8 @@ class State:
         self.mic_active = False
         self.listening = False
         self.accept_listening = parse_bool(config.get("start_listening_enabled"), True)
+        self.ai_active = True
+        self.ai_session = 0
         self.stt_backend = str(config["stt_backend"])
         self.last_transcript = ""
         self.last_transcript_confidence = 0.0
@@ -2575,9 +2604,19 @@ class State:
     def set_runtime(self, mic_active: bool, listening: bool, backend: str | None = None) -> None:
         with self.lock:
             self.mic_active = bool(mic_active)
-            self.listening = bool(listening)
+            self.listening = self.ai_active and self.mic_active and bool(listening)
             if backend is not None:
                 self.stt_backend = backend
+
+    def set_ai_active(self, active: bool) -> None:
+        with self.lock:
+            if self.ai_active == active:
+                return
+            self.ai_active = active
+            self.ai_session += 1
+            self.events.clear()
+            self.pending_partial = None
+            self.listening = active and self.accept_listening and self.mic_active
 
     def set_listening_enabled(self, enabled: bool) -> None:
         with self.lock:
@@ -2585,7 +2624,7 @@ class State:
             if not enabled:
                 self.listening = False
                 self.pending_partial = None
-            elif self.mic_active:
+            elif self.ai_active and self.mic_active:
                 self.listening = True
 
     def set_selected_input_device(self, device_index: int, device_name: str) -> None:
@@ -2608,8 +2647,11 @@ class State:
         reachy_transport_backend: str,
         reachy_device_spec: str,
         reachy_device_listing: str,
+        capture_active: bool,
     ) -> None:
         with self.lock:
+            self.mic_active = capture_active
+            self.listening = self.ai_active and capture_active and self.accept_listening and not self.tts_speaking
             self.audio_source_mode = normalize_audio_source_mode(requested_mode)
             self.audio_source_effective = normalize_audio_source_mode(effective_mode)
             self.selected_input_device_index = int(local_device_index)
@@ -2634,7 +2676,7 @@ class State:
 
     def is_listening_enabled(self) -> bool:
         with self.lock:
-            return bool(self.accept_listening)
+            return self.ai_active and self.accept_listening
 
     def clear_pending_partial(self) -> None:
         with self.lock:
@@ -2663,6 +2705,8 @@ class State:
         is_final: bool,
         parser: Parser,
         online_orchestrator=None,
+        *,
+        typed: bool = False,
     ) -> dict:
         text = (transcript or "").strip()
         if not text:
@@ -2671,8 +2715,12 @@ class State:
         confidence = max(0.0, min(1.0, float(confidence)))
 
         with self.lock:
-            if not self.accept_listening:
+            if not self.ai_active:
+                return {"ok": False, "message": "AI is inactive."}
+            if not typed and not self.accept_listening:
                 return {"ok": False, "message": "Listening is disabled."}
+            ai_session = self.ai_session
+            use_online_mode = self.ai_mode == "online"
             self.last_transcript = text
             self.last_transcript_confidence = confidence
             self.last_transcript_is_final = bool(is_final)
@@ -2686,7 +2734,6 @@ class State:
                 }
                 return {"ok": True, "message": "Stored partial transcript.", "intent_name": ""}
 
-        use_online_mode = str(self.config.get("ai_mode", "local")).strip().lower() == "online"
         try:
             if use_online_mode and online_orchestrator is not None:
                 parsed, parse_message = online_orchestrator.handle_transcript(text, confidence)
@@ -2731,6 +2778,8 @@ class State:
             event["intent"] = parsed
 
         with self.lock:
+            if self.ai_session != ai_session:
+                return {"ok": False, "message": "AI mode changed while processing the transcript."}
             self.events.append(event)
             self.pending_partial = None
 
@@ -2782,9 +2831,9 @@ class State:
     def poll(self) -> dict:
         with self.lock:
             base = {
-                "mic_active": self.mic_active,
+                "mic_active": self.ai_active and self.mic_active,
                 "listening": self.listening,
-                "stt_backend": self.stt_backend,
+                "stt_backend": self.stt_backend if self.ai_active else "none",
                 "audio_source_mode": self.audio_source_mode,
                 "audio_source_effective": self.audio_source_effective,
                 "has_intent": False,
@@ -2810,11 +2859,12 @@ class State:
                 "ok": True,
                 "uptime_seconds": int(max(0, time.time() - self.started_at)),
                 "event_queue_size": len(self.events),
-                "mic_active": self.mic_active,
+                "mic_active": self.ai_active and self.mic_active,
                 "listening": self.listening,
                 "tts_speaking": self.tts_speaking,
-                "accept_listening": self.accept_listening,
-                "stt_backend": self.stt_backend,
+                "accept_listening": self.ai_active and self.accept_listening,
+                "ai_active": self.ai_active,
+                "stt_backend": self.stt_backend if self.ai_active else "none",
                 "help_model_backend": str(self.config.get("help_model_backend", "rule_based")),
                 "help_model_path_set": bool(str(self.config.get("help_model_path", "")).strip()),
                 "last_transcript": self.last_transcript,
@@ -2896,6 +2946,7 @@ class TTS:
         self._interrupt_generation_lock = threading.Lock()
         self.thread = None
         self._pyttsx3_module = None
+        self.active_utterance: tuple[object, str] | None = None
         self._powershell_executable = resolve_windows_powershell_executable()
 
     def start(self) -> None:
@@ -3058,11 +3109,18 @@ class TTS:
         normalized = int(round((int(tts_rate) - 175) / 12.5))
         return max(-10, min(10, normalized))
 
-    def _build_windows_sapi_script(self, text: str) -> str:
+    def _build_windows_sapi_script(self, text: str, output_path: str = "") -> str:
         rate = self._rate_to_windows_sapi_scale(int(self.config.get("tts_rate", 175)))
         voice_name = str(self.config.get("tts_voice_name", "")).strip()
         encoded_text = base64.b64encode((text or "").encode("utf-8")).decode("ascii")
         encoded_voice = base64.b64encode(voice_name.encode("utf-8")).decode("ascii")
+        output_setup = ""
+        if output_path:
+            encoded_path = base64.b64encode(output_path.encode("utf-8")).decode("ascii")
+            output_setup = (
+                "$synth.SetOutputToWaveFile([System.Text.Encoding]::UTF8.GetString("
+                f"[System.Convert]::FromBase64String('{encoded_path}'))); "
+            )
         return (
             "$ErrorActionPreference = 'Stop'; "
             "Add-Type -AssemblyName System.Speech; "
@@ -3081,6 +3139,7 @@ class TTS:
             "} "
             f"$speechBytes = [System.Convert]::FromBase64String('{encoded_text}'); "
             "$speechText = [System.Text.Encoding]::UTF8.GetString($speechBytes); "
+            f"{output_setup}"
             "$synth.Speak($speechText); "
             "$synth.Dispose();"
         )
@@ -3115,12 +3174,12 @@ class TTS:
         except Exception:
             return 0.0
 
-    def _speak_with_subprocess(self, text: str) -> tuple[bool, str]:
+    def _speak_with_subprocess(self, text: str, output_path: str = "") -> tuple[bool, str]:
         if not self._powershell_executable:
             return False, "Windows PowerShell executable was not found."
 
         timeout_seconds = self._estimate_timeout_seconds(text)
-        script = self._build_windows_sapi_script(text)
+        script = self._build_windows_sapi_script(text, output_path)
         cmd = build_windows_powershell_command(script, self._powershell_executable)
 
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -3173,7 +3232,7 @@ class TTS:
 
         return True, "TTS spoke."
 
-    def _speak_with_fresh_engine(self, text: str) -> tuple[bool, str]:
+    def _speak_with_fresh_engine(self, text: str, output_path: str = "") -> tuple[bool, str]:
         if self._pyttsx3_module is None:
             return False, "pyttsx3 is not loaded."
 
@@ -3186,7 +3245,10 @@ class TTS:
                     if target_voice in str(voice.name).lower():
                         engine.setProperty("voice", voice.id)
                         break
-            engine.say(text)
+            if output_path:
+                engine.save_to_file(text, output_path)
+            else:
+                engine.say(text)
             engine.runAndWait()
             engine.stop()
             return True, "TTS spoke."
@@ -3203,9 +3265,17 @@ class TTS:
         if not self.local_backend_enabled:
             self.state.log("info", f"TTS stub: {text}")
             return True, "TTS backend disabled; accepted as no-op."
-        if sys.platform.startswith("win"):
-            return self._speak_with_subprocess(text)
-        return self._speak_with_fresh_engine(text)
+        synthesize = self._speak_with_subprocess if sys.platform.startswith("win") else self._speak_with_fresh_engine
+        if self.prefers_reachy_speaker():
+            with tempfile.TemporaryDirectory(prefix="reachy-tts-") as folder:
+                output = Path(folder) / "speech.wav"
+                ok, message = synthesize(text, str(output))
+                if ok and output.is_file() and output.stat().st_size > 44:
+                    return self._play_speech_wav(output.read_bytes(), text)
+                if self._is_expected_tts_abort_message(message):
+                    return False, message
+                self.state.log("warn", f"Local TTS could not produce a WAV for Reachy. {message}")
+        return synthesize(text)
 
     def _build_online_tts_request_payload(self, text: str) -> dict:
         return {
@@ -3405,7 +3475,62 @@ class TTS:
         if self.interrupt_event.is_set():
             self.interrupt_event.clear()
             return False, "TTS interrupted."
+        return self._play_speech_wav(audio_bytes, text)
+
+    def prefers_reachy_speaker(self) -> bool:
+        return (
+            parse_bool(self.config.get("prefer_reachy_speaker"), True)
+            and parse_bool(self.config.get("reachy_mic_robot_connected"), False)
+            and bool(self.config.get("reachy_mic_ssh_host"))
+        )
+
+    def _play_speech_wav(self, audio_bytes: bytes, text: str) -> tuple[bool, str]:
+        if self.prefers_reachy_speaker():
+            ok, message = self._play_wav_on_reachy(audio_bytes)
+            if ok or self._is_expected_tts_abort_message(message):
+                return ok, message
+            self.state.log("warn", f"Reachy speaker unavailable, falling back to PC. {message}")
         return self._play_wav_bytes_with_subprocess(audio_bytes, text)
+
+    def _play_wav_on_reachy(self, audio_bytes: bytes) -> tuple[bool, str]:
+        try:
+            with connect_reachy_ssh(
+                str(self.config["reachy_mic_ssh_host"]),
+                int(self.config.get("reachy_mic_ssh_port", DEFAULT_REACHY_MIC_SSH_PORT)),
+                str(self.config.get("reachy_mic_ssh_user", DEFAULT_REACHY_MIC_SSH_USER)),
+                str(self.config.get("reachy_mic_ssh_password", DEFAULT_REACHY_MIC_SSH_PASSWORD)),
+            ) as client:
+                stdin, _, _ = client.exec_command(REACHY_SPEAKER_PLAYBACK_COMMAND, timeout=4.0)
+                channel = stdin.channel
+                deadline = time.monotonic() + self._estimate_wav_duration_seconds(audio_bytes) + 8.0
+                offset = 0
+                error = bytearray()
+                while not channel.exit_status_ready() and time.monotonic() < deadline:
+                    if self.stop_event.is_set():
+                        return False, "TTS stopped."
+                    if self.interrupt_event.is_set():
+                        self.interrupt_event.clear()
+                        return False, "TTS interrupted."
+                    if channel.recv_stderr_ready():
+                        error.extend(channel.recv_stderr(4096))
+                    if offset < len(audio_bytes) and channel.send_ready():
+                        count = channel.send(audio_bytes[offset:offset + 32768])
+                        if count == 0:
+                            return False, "Reachy speaker closed its audio input."
+                        offset += count
+                        if offset == len(audio_bytes):
+                            channel.shutdown_write()
+                    else:
+                        time.sleep(0.02)
+                if not channel.exit_status_ready():
+                    return False, "Reachy speaker playback timed out."
+                if channel.recv_exit_status() == 0 and offset == len(audio_bytes):
+                    return True, "TTS spoke on Reachy."
+                if channel.recv_stderr_ready():
+                    error.extend(channel.recv_stderr(4096))
+                return False, error.decode("utf-8", errors="replace").strip() or "Reachy speaker playback failed."
+        except Exception as exc:
+            return False, f"SSH playback failed: {exc}"
 
     @staticmethod
     def _is_expected_tts_abort_message(message: str) -> bool:
@@ -3478,6 +3603,7 @@ class TTS:
             try:
                 if self.interrupt_event.is_set():
                     self.interrupt_event.clear()
+                self.active_utterance = (object(), text)
                 self.state.set_tts_speaking(True)
                 ok, message = self._speak_with_selected_provider(text, tts_mode_override)
                 if ok:
@@ -3488,6 +3614,7 @@ class TTS:
                     self.state.log("error", message)
             finally:
                 self.state.set_tts_speaking(False)
+                self.active_utterance = None
                 if completion_queue is not None:
                     try:
                         completion_queue.put_nowait((ok, message))
@@ -3509,8 +3636,8 @@ class DisabledSTT:
         else:
             self.state.log("warn", f"STT backend '{self.requested_backend}' resolved to 'none'.")
 
-    def stop(self) -> None:
-        pass
+    def stop(self) -> bool:
+        return True
 
 
 class VoskKeywordSpotter:
@@ -3602,10 +3729,11 @@ class MicrophoneSTTBase:
         self.thread = threading.Thread(target=self._run, daemon=True, name=self.thread_name)
         self.thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
+        return self.thread is None or not self.thread.is_alive()
 
     @staticmethod
     def _drain_audio_queue(audio_q: "queue.Queue[bytes]") -> int:
@@ -3670,7 +3798,20 @@ class MicrophoneSTTBase:
         normalized_words = [normalize(token) for token in tokenize(transcript) if normalize(token)]
         if not normalized_words:
             return ""
+        if self._uses_shared_reachy_audio():
+            command = " ".join(normalized_words)
+            if command not in REACHY_SHARED_AUDIO_STOP_COMMANDS:
+                return ""
+            utterance = self.tts.active_utterance
+            if utterance is not None:
+                spoken_words = [normalize(token) for token in tokenize(utterance[1])]
+                if contains_word_sequence(spoken_words, normalized_words):
+                    return ""
+            return command
         return extract_matching_phrase(normalized_words, self._tts_barge_phrase_token_sets)
+
+    def _uses_shared_reachy_audio(self) -> bool:
+        return self.state.reachy_mic_available and self.tts.prefers_reachy_speaker()
 
     def _maybe_interrupt_tts_for_keyword(
         self,
@@ -3680,6 +3821,8 @@ class MicrophoneSTTBase:
         rms: float = 0.0,
     ) -> bool:
         if not parse_bool(self.config.get("tts_barge_in_enabled"), True):
+            return False
+        if self._uses_shared_reachy_audio() and detector.endswith("_partial"):
             return False
         matched_phrase = self._match_tts_barge_phrase(transcript)
         if not matched_phrase:
@@ -3695,7 +3838,10 @@ class MicrophoneSTTBase:
         if not parse_bool(self.config.get("tts_barge_in_enabled"), True):
             self._reset_tts_barge_loudness_candidate()
             return False
-        if not parse_bool(self.config.get("tts_barge_in_loudness_enabled"), True):
+        if (
+            not parse_bool(self.config.get("tts_barge_in_loudness_enabled"), True)
+            or self._uses_shared_reachy_audio()
+        ):
             self._reset_tts_barge_loudness_candidate()
             return False
 
@@ -3839,6 +3985,7 @@ class MicrophoneSTTBase:
         if clean_transcript:
             detail += f" Transcript='{clean_transcript[:120]}'"
         self.state.log("info", detail)
+        logging.getLogger("reachy.voice_agent.audio").info("Speech interruption detected by %s: %s", detector, reason)
         self._reset_tts_barge_loudness_candidate()
         return True
 
@@ -3964,6 +4111,23 @@ class MicrophoneSTTBase:
         raise NotImplementedError
 
 
+def connect_reachy_ssh(host: str, port: int, user: str, password: str, timeout: float = 4.0):
+    import paramiko
+
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=host, port=port, username=user, password=password or None,
+            timeout=timeout, banner_timeout=timeout, auth_timeout=timeout,
+        )
+    except Exception:
+        client.close()
+        raise
+    return client
+
+
 class ReachyRemoteMicrophoneStream:
     def __init__(self, config: dict, state: State, sample_rate_hz: int, blocksize: int) -> None:
         self.config = config
@@ -3971,6 +4135,7 @@ class ReachyRemoteMicrophoneStream:
         self.sample_rate_hz = max(8000, int(sample_rate_hz))
         self.blocksize = max(160, int(blocksize))
         self.bytes_per_chunk = self.blocksize * 2
+        self._capture_channels = 1
         self.audio_q: "queue.Queue[bytes]" = queue.Queue(maxsize=120)
         self.stop_event = threading.Event()
         self.thread = None
@@ -4166,6 +4331,8 @@ class ReachyRemoteMicrophoneStream:
         device_spec, device_name = self._resolve_device_spec(listing)
         self._resolved_device_spec = device_spec
         self._device_name = device_name
+        # The ArrayUAC10 firmware exposes the processed speech signal first in its six-channel stream.
+        self._capture_channels = 6 if "arrayuac10" in f"{device_spec} {device_name}".casefold() else 1
         self._last_error = ""
         self.state.log(
             "info",
@@ -4257,38 +4424,16 @@ class ReachyRemoteMicrophoneStream:
         return best_spec, best_name
 
     def _run_paramiko_query(self, command_text: str) -> str:
-        try:
-            import paramiko  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(f"paramiko is unavailable: {exc}") from exc
-
-        timeout_seconds = 6.0
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        try:
-            client.connect(
-                hostname=self._ssh_host,
-                port=self._ssh_port,
-                username=self._ssh_user,
-                password=self._ssh_password or None,
-                timeout=timeout_seconds,
-                banner_timeout=timeout_seconds,
-                auth_timeout=timeout_seconds,
-                look_for_keys=True,
-                allow_agent=True,
-            )
+        timeout_seconds = 5.0
+        with connect_reachy_ssh(
+            self._ssh_host, self._ssh_port, self._ssh_user, self._ssh_password, timeout_seconds,
+        ) as client:
             _stdin, stdout, stderr = client.exec_command(command_text, timeout=timeout_seconds)
             output = stdout.read().decode("utf-8", errors="replace")
             error_text = stderr.read().decode("utf-8", errors="replace").strip()
-            exit_status = stdout.channel.recv_exit_status()
-            if exit_status != 0 and error_text:
+            if stdout.channel.recv_exit_status() != 0 and error_text:
                 raise RuntimeError(error_text)
             return output
-        finally:
-            try:
-                client.close()
-            except Exception:
-                pass
 
     def _run_subprocess_query(self, command_text: str, backend_name: str) -> str:
         cmd = self._build_subprocess_command(command_text, backend_name)
@@ -4312,37 +4457,14 @@ class ReachyRemoteMicrophoneStream:
         return completed.stdout or ""
 
     def _start_paramiko_capture(self, device_spec: str) -> None:
+        client = connect_reachy_ssh(self._ssh_host, self._ssh_port, self._ssh_user, self._ssh_password)
         try:
-            import paramiko  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(f"paramiko is unavailable: {exc}") from exc
-
-        timeout_seconds = 8.0
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=self._ssh_host,
-            port=self._ssh_port,
-            username=self._ssh_user,
-            password=self._ssh_password or None,
-            timeout=timeout_seconds,
-            banner_timeout=timeout_seconds,
-            auth_timeout=timeout_seconds,
-            look_for_keys=True,
-            allow_agent=True,
-        )
-
-        command_text = self._build_arecord_command_text(device_spec)
-        transport = client.get_transport()
-        if transport is None:
+            _, stdout, _ = client.exec_command(self._build_arecord_command_text(device_spec), timeout=4.0)
+        except Exception:
             client.close()
-            raise RuntimeError("paramiko transport was not created.")
-
-        channel = transport.open_session()
-        channel.exec_command(command_text)
+            raise
         self._paramiko_client = client
-        self._paramiko_channel = channel
-        self._available = True
+        self._paramiko_channel = stdout.channel
 
     def _drain_paramiko_channel(self) -> None:
         channel = self._paramiko_channel
@@ -4350,11 +4472,13 @@ class ReachyRemoteMicrophoneStream:
             raise RuntimeError("paramiko capture channel is not open.")
 
         pending = bytearray()
+        last_frame_at = time.monotonic()
         while not self.stop_event.is_set():
             if channel.recv_ready():
                 chunk = channel.recv(max(512, self.bytes_per_chunk))
                 if not chunk:
                     break
+                last_frame_at = time.monotonic()
                 self._available = True
                 pending.extend(chunk)
                 self._flush_capture_chunks(pending)
@@ -4370,6 +4494,8 @@ class ReachyRemoteMicrophoneStream:
                 detail = stderr_text.decode("utf-8", errors="replace").strip()
                 raise RuntimeError(detail or "remote capture process exited.")
 
+            if time.monotonic() - last_frame_at > 4.0:
+                raise RuntimeError("Reachy microphone timed out while waiting for audio.")
             time.sleep(0.01)
 
     def _start_subprocess_capture(self, device_spec: str, backend_name: str) -> None:
@@ -4420,9 +4546,12 @@ class ReachyRemoteMicrophoneStream:
         raise RuntimeError(stderr_text or "remote capture process ended.")
 
     def _flush_capture_chunks(self, pending: bytearray) -> None:
-        while len(pending) >= self.bytes_per_chunk:
-            frame = bytes(pending[: self.bytes_per_chunk])
-            del pending[: self.bytes_per_chunk]
+        capture_bytes = self.bytes_per_chunk * self._capture_channels
+        while len(pending) >= capture_bytes:
+            frame = bytes(pending[:capture_bytes])
+            del pending[:capture_bytes]
+            if self._capture_channels > 1:
+                frame = memoryview(frame).cast("h")[::self._capture_channels].tobytes()
             try:
                 self.audio_q.put_nowait(frame)
             except queue.Full:
@@ -4442,7 +4571,7 @@ class ReachyRemoteMicrophoneStream:
             f"-D {quoted_spec} "
             "-f S16_LE "
             f"-r {self.sample_rate_hz} "
-            "-c 1 "
+            f"-c {self._capture_channels} "
             "-t raw -"
         )
 
@@ -4726,6 +4855,7 @@ class HybridAudioInput:
             reachy_transport_backend=self.remote_stream.transport_backend,
             reachy_device_spec=self.remote_stream.resolved_device_spec,
             reachy_device_listing=self.remote_stream.listing_summary,
+            capture_active=self.has_active_source(),
         )
 
     @staticmethod
@@ -5102,9 +5232,10 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                 + ", ".join(language_names)
                 + ". Prefer those languages when the audio is ambiguous."
             )
-        phrases = normalize_phrase_list(
-            self.config.get("tts_barge_in_phrases", []),
-            DEFAULT_TTS_BARGE_IN_PHRASES,
+        phrases = (
+            sorted(REACHY_SHARED_AUDIO_STOP_COMMANDS)
+            if self._uses_shared_reachy_audio()
+            else normalize_phrase_list(self.config.get("tts_barge_in_phrases", []), DEFAULT_TTS_BARGE_IN_PHRASES)
         )
         if phrases:
             prompt_parts.append(
@@ -5152,6 +5283,10 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
         pre_roll_seconds = float(self.config.get("openai_transcribe_pre_roll_seconds", 0.25))
         pre_roll_chunk_count = max(0, int(round(pre_roll_seconds / max(chunk_duration_seconds, 0.001))))
         pre_roll_chunks = deque(maxlen=max(1, pre_roll_chunk_count or 1))
+        idle_levels: deque[float] = deque(maxlen=30)
+        audio_diagnostics = logging.getLogger("reachy.voice_agent.audio")
+        report_at = time.monotonic() + 2.0
+        report_peak_rms = 0.0
         active_chunks: list[bytes] = []
         active_duration_seconds = 0.0
         trailing_silence_seconds = 0.0
@@ -5186,6 +5321,7 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
         try:
             last_listening_state = None
             tts_gate_active = False
+            tts_utterance = None
             while not self.stop_event.is_set():
                 chunk = audio_input.read_chunk(0.25)
                 if chunk is None:
@@ -5202,8 +5338,10 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                     if last_listening_state is not False:
                         self.state.set_runtime(audio_input.has_active_source(), False, self.backend_name)
                         last_listening_state = False
-                    if not tts_gate_active:
+                    utterance = self.tts.active_utterance
+                    if not tts_gate_active or utterance is not tts_utterance:
                         tts_gate_active = True
+                        tts_utterance = utterance
                         self._begin_tts_barge_session()
                         self.state.clear_pending_partial()
                         reset_segment()
@@ -5230,7 +5368,7 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                         chunk,
                         rms,
                     )
-                    if clip_audio and not self._tts_barge_interrupted_current_session:
+                    if clip_audio and utterance is not None and not self._tts_barge_interrupted_current_session:
                         try:
                             clip_transcript = self._transcribe_tts_barge_in_clip(clip_audio, sample_rate)
                         except Exception as exc:
@@ -5238,7 +5376,7 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                             friendly = OnlineAIOrchestrator._summarize_online_request_error(error_message)
                             self.state.log("warn", f"TTS barge-in transcription failed: {friendly}")
                             continue
-                        if clip_transcript:
+                        if clip_transcript and self.tts.active_utterance is utterance:
                             self._observe_tts_barge_in_chunk(
                                 rms=max(rms, clip_peak_rms),
                                 now=time.time(),
@@ -5276,7 +5414,24 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                     reset_segment()
                     continue
 
-                is_speech_chunk = rms >= rms_threshold
+                reachy_capture = audio_input.effective_mode == "reachy"
+                speech_threshold = rms_threshold
+                if reachy_capture:
+                    speech_threshold = reachy_speech_threshold(rms_threshold, idle_levels)
+                else:
+                    idle_levels.clear()
+                is_speech_chunk = rms >= speech_threshold
+                if reachy_capture and not speech_active and not is_speech_chunk:
+                    idle_levels.append(rms)
+
+                report_peak_rms = max(report_peak_rms, rms)
+                if time.monotonic() >= report_at:
+                    audio_diagnostics.info(
+                        "Microphone source=%s; peak RMS=%.0f; speech threshold=%.0f",
+                        audio_input.effective_mode, report_peak_rms, speech_threshold,
+                    )
+                    report_at = time.monotonic() + 8.0
+                    report_peak_rms = 0.0
 
                 if speech_active:
                     active_chunks.append(chunk)
@@ -5284,9 +5439,9 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                     trailing_silence_seconds = 0.0 if is_speech_chunk else (
                         trailing_silence_seconds + chunk_duration_seconds)
                 else:
-                    if pre_roll_chunk_count > 0:
-                        pre_roll_chunks.append(chunk)
                     if not is_speech_chunk:
+                        if pre_roll_chunk_count > 0:
+                            pre_roll_chunks.append(chunk)
                         continue
                     speech_active = True
                     active_chunks = list(pre_roll_chunks) if pre_roll_chunk_count > 0 else []
@@ -5308,6 +5463,9 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                 if clip_duration_seconds < min_clip_seconds or not clip_audio:
                     continue
 
+                if reachy_capture:
+                    clip_audio = normalize_reachy_speech_level(clip_audio)
+                audio_diagnostics.info("Sending a %.2f s microphone segment to speech recognition.", clip_duration_seconds)
                 try:
                     transcript = self._transcribe_clip(clip_audio, sample_rate)
                 except Exception as exc:
@@ -5316,8 +5474,9 @@ class OpenAITranscribeSTT(MicrophoneSTTBase):
                     self.state.log("error", f"OpenAI transcription failed: {friendly}")
                     continue
 
-                if not transcript:
+                if not transcript or self.stop_event.is_set():
                     continue
+                audio_diagnostics.info("Speech recognition returned text.")
 
                 self.state.process_transcript(
                     transcript,
@@ -8081,18 +8240,23 @@ class OnlineAIOrchestrator:
 
 
 class App:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, start_active: bool = True) -> None:
         self.config = config
         self.state = State(config)
+        self.state.set_ai_active(start_active)
         self.parser = Parser(config)
         self.tts = TTS(config, self.state)
         self.online = OnlineAIOrchestrator(config, self.state, self.tts)
-        self.stt = build_stt_runtime(config, self.state, self.parser, self.online, self.tts)
+        self._ai_mode_lock = threading.Lock()
+        self.stt = None
         self.help_responder = LocalHelpResponder(config, self.state)
 
     def start(self) -> None:
         self.tts.start()
-        self.stt.start()
+        if self.state.ai_active:
+            self._start_stt()
+        else:
+            self.state.set_runtime(False, False, "none")
         self.state.log(
             "info",
             f"Local sidecar ready on {self.config['bind_host']}:{self.config['bind_port']} "
@@ -8102,8 +8266,64 @@ class App:
         )
 
     def stop(self) -> None:
-        self.stt.stop()
+        with self._ai_mode_lock:
+            self.state.set_ai_active(False)
+            if self.stt is not None:
+                self.stt.stop()
         self.tts.stop()
+
+    def _start_stt(self) -> None:
+        self.stt = build_stt_runtime(self.config, self.state, self.parser, self.online, self.tts)
+        self.stt.start()
+
+    def apply_ai_mode(self, payload: dict) -> dict:
+        with self._ai_mode_lock:
+            active = parse_bool(payload.get("ai_active"), self.state.ai_active)
+            mode_config = normalize_online_ai_mode_payload(self.config, payload)
+            key_available, _ = self.state.refresh_online_key_status()
+            target_backend = resolve_effective_stt_backend(self.config | mode_config, key_available)
+            stop_stt = self.stt is not None and (
+                not active or self.stt.backend_name != target_backend
+                or (isinstance(self.stt, MicrophoneSTTBase) and self.stt.stop_event.is_set())
+            )
+            mode_changed = any(
+                self.config.get(key) != mode_config[key]
+                for key in ("ai_mode", "online_ai_enabled", "online_ai_persona_mode")
+            )
+            if self.state.ai_active and (mode_changed or stop_stt or not active):
+                self.state.set_ai_active(False)
+                self.tts.interrupt()
+
+            if stop_stt:
+                if self.stt.stop():
+                    self.stt = None
+                    self.state.set_runtime(False, False, "none")
+                elif active:
+                    return {"ok": False, "message": "Waiting for the previous speech recognizer to stop."}
+
+            with self.state.lock:
+                self.config.update(mode_config)
+                self.state.ai_mode = mode_config["ai_mode"]
+                self.state.online_ai_enabled = mode_config["online_ai_enabled"]
+
+            if "listening_enabled" in payload:
+                self.state.set_listening_enabled(parse_bool(payload["listening_enabled"], True))
+            if isinstance(payload.get("audio_routing"), dict):
+                apply_microphone_routing_payload(self.config, payload["audio_routing"])
+            self.state.set_ai_active(active)
+            if active and self.stt is None:
+                self._start_stt()
+            mode = mode_config["ai_mode"]
+            persona = mode_config["online_ai_persona_mode"]
+            return {
+                "ok": True,
+                "message": f"AI mode updated: mode={mode}, active={active}, persona={persona}.",
+                "ai_active": active,
+                "requested_ai_mode": mode,
+                "effective_ai_mode": mode,
+                "requested_mode": persona,
+                "effective_mode": persona,
+            }
 
     def help_answer(self, query: str, context: str) -> str:
         return self.help_responder.answer(query, context)
@@ -8328,6 +8548,7 @@ class Handler(BaseHTTPRequestHandler):
                 final,
                 self.app.parser,
                 self.app.online,
+                typed=parse_bool(payload.get("typed"), False),
             )
             self.app.state.log("info" if result.get("ok") else "warn", f"/inject_transcript -> {result.get('message')}" )
             self._send(HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST, result)
@@ -8376,20 +8597,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/online-ai-mode":
-            result = apply_online_ai_mode_payload(self.app.config, payload)
-            with self.app.state.lock:
-                self.app.state.ai_mode = str(self.app.config.get("ai_mode", "local")).strip().lower() or "local"
-                self.app.state.online_ai_enabled = parse_bool(self.app.config.get("online_ai_enabled"), False)
-                self.app.state.online_model = (
-                    str(self.app.config.get("online_ai_model", self.app.state.online_model)).strip()
-                    or self.app.state.online_model
-                )
+            result = self.app.apply_ai_mode(payload)
             self.app.state.log(
                 "info",
                 f"/online-ai-mode -> ai_mode={result.get('effective_ai_mode')} "
                 f"requested={result.get('requested_mode')} effective={result.get('effective_mode')}",
             )
-            self._send(HTTPStatus.OK, result)
+            self._send(HTTPStatus.OK if result["ok"] else HTTPStatus.SERVICE_UNAVAILABLE, result)
             return
 
         if path == "/online-ai-custom-persona":
@@ -8453,6 +8667,11 @@ class Handler(BaseHTTPRequestHandler):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run local Reachy voice-agent sidecar.")
     parser.add_argument(
+        "--start-inactive",
+        action="store_true",
+        help="Wait for Unity to activate the selected AI mode before starting speech recognition.",
+    )
+    parser.add_argument(
         "--config",
         type=str,
         default=str(Path(__file__).with_name("local_voice_agent_sidecar_config.json")),
@@ -8491,6 +8710,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(message)s",
         handlers=handlers,
     )
+    logging.getLogger("reachy.voice_agent.audio").setLevel(logging.INFO)
     if log_file:
         logging.info("Writing sidecar diagnostics to %s", log_file)
 
@@ -8501,7 +8721,7 @@ def main() -> int:
         logging.error("Failed to load config '%s': %s", config_path, exc)
         return 2
 
-    app = App(config)
+    app = App(config, start_active=not args.start_inactive)
     app.start()
 
     server = ThreadingHTTPServer((str(config["bind_host"]), int(config["bind_port"])), Handler)
